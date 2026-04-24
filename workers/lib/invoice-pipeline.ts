@@ -49,7 +49,7 @@ export interface PipelineStub {
 			filename: string;
 			mimetype: string;
 			size: number;
-			origin: "unpacked" | "external-url";
+			origin: "unpacked" | "external-url" | "manual-upload";
 			parent_attachment_id?: string;
 			source_url?: string;
 		},

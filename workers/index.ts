@@ -468,6 +468,66 @@ app.delete("/api/v1/mailboxes/:mailboxId/folders/:id", async (c: AppContext) => 
 	return ok ? c.body(null, 204) : c.json({ error: "Folder not found or cannot be deleted" }, 400);
 });
 
+// -- Invoices -------------------------------------------------------
+
+app.get("/api/v1/mailboxes/:mailboxId/invoices", async (c: AppContext) => {
+	const filters = {
+		dateFrom: c.req.query("dateFrom") || undefined,
+		dateTo: c.req.query("dateTo") || undefined,
+		sellerContains: c.req.query("sellerContains") || undefined,
+		buyerContains: c.req.query("buyerContains") || undefined,
+		invoiceNumber: c.req.query("invoiceNumber") || undefined,
+		minAmount: c.req.query("minAmount") ? Number(c.req.query("minAmount")) : undefined,
+		maxAmount: c.req.query("maxAmount") ? Number(c.req.query("maxAmount")) : undefined,
+		page: intQuery(c, "page"),
+		limit: intQuery(c, "limit"),
+	};
+	const result = await c.var.mailboxStub.listInvoices(filters);
+	return c.json(result);
+});
+
+app.get("/api/v1/mailboxes/:mailboxId/invoices/:id", async (c: AppContext) => {
+	const invoiceId = c.req.param("id")!;
+	const result = await c.var.mailboxStub.getInvoice(invoiceId);
+	if (!result) return c.json({ error: "Invoice not found" }, 404);
+	const relatedAttachments = await c.var.mailboxStub.listEmailAttachments(result.invoice.email_id);
+	return c.json({
+		invoice: result.invoice,
+		items: result.items,
+		related_attachments: relatedAttachments,
+	});
+});
+
+app.delete("/api/v1/mailboxes/:mailboxId/invoices/:id", async (c: AppContext) => {
+	const ok = await c.var.mailboxStub.deleteInvoice(c.req.param("id")!);
+	return ok ? c.body(null, 204) : c.json({ error: "Invoice not found" }, 404);
+});
+
+app.post(
+	"/api/v1/mailboxes/:mailboxId/emails/:emailId/invoice-file",
+	async (c: AppContext) => {
+		const mailboxId = c.req.param("mailboxId")!;
+		const emailId = c.req.param("emailId")!;
+		const body = (await c.req.json().catch(() => null)) as
+			| { filename?: string; mimetype?: string; content_base64?: string }
+			| null;
+		if (!body || !body.filename || !body.content_base64) {
+			return c.json({ error: "Body must include filename + content_base64" }, 400);
+		}
+		// Reuse the MCP-layer helper (dedupes, enforces size cap, runs pipeline).
+		const { toolUploadInvoiceFile } = await import("./lib/tools");
+		const result = await toolUploadInvoiceFile(c.env, mailboxId, emailId, {
+			filename: body.filename,
+			mimetype: body.mimetype,
+			content_base64: body.content_base64,
+		});
+		if (!result.attachmentId) {
+			return c.json(result, 400);
+		}
+		return c.json(result, 201);
+	},
+);
+
 // -- Search ---------------------------------------------------------
 
 app.get("/api/v1/mailboxes/:mailboxId/search", async (c: AppContext) => {

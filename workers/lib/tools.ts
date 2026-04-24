@@ -36,6 +36,10 @@ import {
 	CHINA_INVOICE_OCR_SCHEMA,
 	ocrResultToParsedInvoice,
 } from "./invoice-ocr";
+import {
+	uploadInvoiceFileAndExtract,
+	type ManualUploadResult,
+} from "./invoice-manual-upload";
 
 // ── Type casts for DO methods not on the base stub type ────────────
 type MailboxSearchStub = {
@@ -756,4 +760,51 @@ export async function toolExtractInvoiceFromPdf(
 		needs_review: mapped.needsReview,
 		review_fields: mapped.reviewFields,
 	};
+}
+
+// ── Manual invoice file upload ────────────────────────────────────
+
+/** Decode base64 to Uint8Array. Workers/standard `atob`. */
+function base64ToBytes(b64: string): Uint8Array {
+	// Strip common prefixes (e.g. `data:application/xml;base64,...`)
+	const comma = b64.indexOf(",");
+	const pure = comma >= 0 && b64.slice(0, comma).includes("base64") ? b64.slice(comma + 1) : b64;
+	const bin = atob(pure);
+	const out = new Uint8Array(bin.length);
+	for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+	return out;
+}
+
+const MAX_MANUAL_UPLOAD_BYTES = 10 * 1024 * 1024;
+
+export async function toolUploadInvoiceFile(
+	env: Env,
+	mailboxId: string,
+	emailId: string,
+	args: {
+		filename: string;
+		mimetype?: string;
+		content_base64: string;
+	},
+): Promise<ManualUploadResult> {
+	let bytes: Uint8Array;
+	try {
+		bytes = base64ToBytes(args.content_base64);
+	} catch (e) {
+		return { attachmentId: "", reason: `Invalid base64: ${(e as Error).message}` };
+	}
+	if (bytes.byteLength > MAX_MANUAL_UPLOAD_BYTES) {
+		return {
+			attachmentId: "",
+			reason: `File too large (${bytes.byteLength} bytes, max ${MAX_MANUAL_UPLOAD_BYTES})`,
+		};
+	}
+	if (bytes.byteLength === 0) {
+		return { attachmentId: "", reason: "Empty file" };
+	}
+	return uploadInvoiceFileAndExtract(env, mailboxId, emailId, {
+		filename: args.filename,
+		mimetype: args.mimetype,
+		content: bytes,
+	});
 }

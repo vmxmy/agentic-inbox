@@ -27,4 +27,10 @@ export const queryKeys = {
 	whoami: ["whoami"] as const,
 	members: (mailboxId: string) => ["members", mailboxId] as const,
 	adminMailboxes: ["admin", "mailboxes"] as const,
+	invoices: {
+		list: (mailboxId: string, filters: Record<string, unknown>) =>
+			["invoices", mailboxId, filters] as const,
+		detail: (mailboxId: string, invoiceId: string) =>
+			["invoices", mailboxId, invoiceId] as const,
+	},
 };

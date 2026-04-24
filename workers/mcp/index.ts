@@ -24,6 +24,7 @@ import {
 	toolDeleteInvoice,
 	toolReprocessInvoicesForEmail,
 	toolExtractInvoiceFromPdf,
+	toolUploadInvoiceFile,
 } from "../lib/tools";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
 import {
@@ -994,6 +995,29 @@ export class EmailMCP extends McpAgent<Env> {
 				if (denied) return denied;
 				const result = await toolExtractInvoiceFromPdf(env, mailboxId, attachmentId);
 				return mcpResult(result as unknown as Record<string, unknown>);
+			},
+		);
+
+		// ── upload_invoice_file ────────────────────────────────────
+		this.server.tool(
+			"upload_invoice_file",
+			"Attach an invoice file (XML / OFD / PDF / ZIP) to an existing email and run the extraction pipeline on it. Use for emails whose body only contains a short-link to a SPA preview page (e.g. 百望 u.baiwang.com short links) with no downloadable attachment — the user downloads the real invoice file themselves in a browser, then pipes the bytes here as base64. The uploaded file is persisted to R2 with origin='manual-upload'; any invoice fields found are saved via the normal pipeline (ZIP/OFD are unpacked recursively; XML inside is treated as the authoritative source).",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				emailId: z.string().describe("The email id to attach the file to"),
+				filename: z.string().describe("The file name including extension (e.g. 26949...xml)"),
+				mimetype: z.string().optional().describe("Optional MIME type; inferred from filename when omitted"),
+				content_base64: z.string().describe("File bytes encoded as base64. data: URL prefix is accepted but optional."),
+			},
+			async ({ mailboxId, emailId, filename, mimetype, content_base64 }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolUploadInvoiceFile(env, mailboxId, emailId, {
+					filename,
+					mimetype,
+					content_base64,
+				});
+				return mcpText(result);
 			},
 		);
 	}

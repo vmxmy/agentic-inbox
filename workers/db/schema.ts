@@ -42,9 +42,12 @@ export const attachments = sqliteTable("attachments", {
 	content_id: text("content_id"),
 	disposition: text("disposition"),
 	/** How this attachment came to exist:
-	 *  - 'email'        : original MIME attachment from the inbound email
-	 *  - 'unpacked'     : a file extracted from a container (ZIP/OFD)
-	 *  - 'external-url' : downloaded by following a link in the email body */
+	 *  - 'email'         : original MIME attachment from the inbound email
+	 *  - 'unpacked'      : a file extracted from a container (ZIP/OFD)
+	 *  - 'external-url'  : downloaded by following a link in the email body
+	 *  - 'manual-upload' : user uploaded a file through the UI / MCP tool,
+	 *                       because the email body only had a short-link to a
+	 *                       SPA preview page with no direct file download */
 	origin: text("origin").notNull().default("email"),
 	/** Set only when origin='external-url' — the final URL we fetched from. */
 	source_url: text("source_url"),

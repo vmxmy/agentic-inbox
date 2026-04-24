@@ -6,6 +6,7 @@ import EmailAttachmentList from "~/components/EmailAttachmentList";
 import EmailIframe from "~/components/EmailIframe";
 import { formatDetailDate, rewriteInlineImages } from "~/lib/utils";
 import type { Email } from "~/types";
+import InvoiceUploader from "./InvoiceUploader";
 
 interface SingleMessageViewProps {
 	email: Email;
@@ -57,6 +58,12 @@ export default function SingleMessageView({
 				onPreviewImage={onPreviewImage}
 				className="px-4 py-3 border-t border-kumo-line shrink-0 md:px-6"
 				showHeading
+			/>
+
+			<InvoiceUploader
+				mailboxId={mailboxId}
+				emailId={email.id}
+				className="px-4 py-2 border-t border-kumo-line shrink-0 md:px-6"
 			/>
 		</div>
 	);

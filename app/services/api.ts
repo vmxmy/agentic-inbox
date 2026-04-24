@@ -2,7 +2,14 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import type { Email, Folder, Mailbox } from "~/types";
+import type {
+	Email,
+	Folder,
+	Mailbox,
+	InvoiceFilters,
+	InvoiceListResponse,
+	InvoiceDetailResponse,
+} from "~/types";
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -198,6 +205,33 @@ const api = {
 	// Search
 	searchEmails: (mailboxId: string, params: Record<string, string>) =>
 		get<EmailListResponse | Email[]>(`/api/v1/mailboxes/${mailboxId}/search`, { params }),
+
+	// Invoices
+	listInvoices: (mailboxId: string, filters: InvoiceFilters = {}) => {
+		const params: Record<string, string> = {};
+		for (const [k, v] of Object.entries(filters)) {
+			if (v !== undefined && v !== null && v !== "") params[k] = String(v);
+		}
+		return get<InvoiceListResponse>(`/api/v1/mailboxes/${mailboxId}/invoices`, { params });
+	},
+	getInvoice: (mailboxId: string, invoiceId: string) =>
+		get<InvoiceDetailResponse>(`/api/v1/mailboxes/${mailboxId}/invoices/${invoiceId}`),
+	deleteInvoice: (mailboxId: string, invoiceId: string) =>
+		del<void>(`/api/v1/mailboxes/${mailboxId}/invoices/${invoiceId}`),
+	uploadInvoiceFile: (
+		mailboxId: string,
+		emailId: string,
+		args: { filename: string; mimetype?: string; content_base64: string },
+	) =>
+		post<{
+			attachmentId: string;
+			invoiceId?: string;
+			invoice_number?: string;
+			reason?: string;
+		}>(
+			`/api/v1/mailboxes/${mailboxId}/emails/${emailId}/invoice-file`,
+			args,
+		),
 };
 
 export default api;
