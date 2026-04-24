@@ -12,6 +12,12 @@ import type { Env } from "../types";
 import { applyMigrations, mailboxMigrations } from "./migrations";
 import { parseChinaEInvoiceXml, type ParsedInvoice } from "../lib/invoice-parser";
 import { looksLikeXml } from "../lib/attachment-extract";
+import {
+	processEmailForInvoices,
+	type EntryUnit,
+	type ExistingAttachment,
+	type PipelineStub,
+} from "../lib/invoice-pipeline";
 
 export interface InvoiceFilters {
 	dateFrom?: string;
@@ -1052,53 +1058,114 @@ export class MailboxDO extends DurableObject<Env> {
 	}
 
 	/**
-	 * Re-read XML attachments of an email from R2, parse them, and save the
-	 * resulting invoice rows. Idempotent — any existing invoice(s) tied to the
-	 * same attachment are deleted first. Useful for reprocessing after a parser
-	 * fix without asking the sender to re-forward.
+	 * Insert an attachment row for a derived file (a ZIP/OFD container child,
+	 * or an external-URL download). Caller must have already written the bytes
+	 * to R2 at `attachments/<emailId>/<id>/<filename>`.
 	 */
-	async reprocessInvoicesForEmail(emailId: string): Promise<{
-		saved: { filename: string; invoiceId: string }[];
-		skipped: { filename: string; reason: string }[];
-	}> {
-		const atts = this.db
-			.select({
-				id: schema.attachments.id,
-				filename: schema.attachments.filename,
-				mimetype: schema.attachments.mimetype,
+	async saveDerivedAttachment(
+		emailId: string,
+		args: {
+			id: string;
+			filename: string;
+			mimetype: string;
+			size: number;
+			origin: "unpacked" | "external-url";
+			parent_attachment_id?: string;
+			source_url?: string;
+			content_id?: string | null;
+			disposition?: string | null;
+		},
+	): Promise<string> {
+		this.db
+			.insert(schema.attachments)
+			.values({
+				id: args.id,
+				email_id: emailId,
+				filename: args.filename,
+				mimetype: args.mimetype,
+				size: args.size,
+				content_id: args.content_id ?? null,
+				disposition: args.disposition ?? "attachment",
+				origin: args.origin,
+				source_url: args.source_url ?? null,
+				parent_attachment_id: args.parent_attachment_id ?? null,
 			})
+			.run();
+		return args.id;
+	}
+
+	/** List all attachments for an email, including derived/external-url rows. */
+	async listEmailAttachments(emailId: string) {
+		return this.db
+			.select()
+			.from(schema.attachments)
+			.where(eq(schema.attachments.email_id, emailId))
+			.all();
+	}
+
+	/**
+	 * Re-run the invoice-extraction pipeline against an existing email. Walks
+	 * email-origin attachments, follows external download links in the body,
+	 * unpacks ZIP/OFD containers — all via `invoice-pipeline.ts` so fresh
+	 * receives and reprocess paths stay aligned. Idempotent.
+	 */
+	async reprocessInvoicesForEmail(emailId: string) {
+		const email = this.db
+			.select({ body: schema.emails.body })
+			.from(schema.emails)
+			.where(eq(schema.emails.id, emailId))
+			.get();
+		if (!email) {
+			return { saved: [], skipped: [{ source: emailId, reason: "email not found" }] };
+		}
+
+		const allAtts = this.db
+			.select()
 			.from(schema.attachments)
 			.where(eq(schema.attachments.email_id, emailId))
 			.all();
 
-		const saved: { filename: string; invoiceId: string }[] = [];
-		const skipped: { filename: string; reason: string }[] = [];
-
-		for (const att of atts) {
-			if (!looksLikeXml({ filename: att.filename, mimetype: att.mimetype })) {
-				skipped.push({ filename: att.filename, reason: "not XML" });
-				continue;
-			}
-			const key = `attachments/${emailId}/${att.id}/${att.filename}`;
+		// Entry units = email-origin attachments with their R2 bytes materialised.
+		const entryUnits: EntryUnit[] = [];
+		const existing: ExistingAttachment[] = [];
+		for (const a of allAtts) {
+			existing.push({
+				id: a.id,
+				filename: a.filename,
+				mimetype: a.mimetype,
+				size: a.size,
+				origin: a.origin ?? "email",
+				source_url: a.source_url ?? null,
+				parent_attachment_id: a.parent_attachment_id ?? null,
+			});
+			if ((a.origin ?? "email") !== "email") continue;
+			const key = `attachments/${emailId}/${a.id}/${a.filename}`;
 			const obj = await this.env.BUCKET.get(key);
-			if (!obj) {
-				skipped.push({ filename: att.filename, reason: "R2 object missing" });
-				continue;
-			}
-			const bytes = await obj.arrayBuffer();
-			const parsed = parseChinaEInvoiceXml(bytes);
-			if (!parsed) {
-				skipped.push({ filename: att.filename, reason: "parser returned null" });
-				continue;
-			}
-			// Idempotent: drop any prior invoice for this attachment before re-saving.
-			this.db
-				.delete(schema.invoices)
-				.where(eq(schema.invoices.attachment_id, att.id))
-				.run();
-			const invoiceId = await this.saveInvoice(emailId, att.id, parsed);
-			saved.push({ filename: att.filename, invoiceId });
+			if (!obj) continue;
+			const bytes = new Uint8Array(await obj.arrayBuffer());
+			entryUnits.push({
+				attachmentId: a.id,
+				filename: a.filename,
+				mimetype: a.mimetype,
+				bytes,
+			});
 		}
-		return { saved, skipped };
+
+		// Self-adapter so the DO can call the pipeline without going through its
+		// own stub (which would deadlock on the input gate).
+		const selfStub: PipelineStub = {
+			listInvoices: (f) => this.listInvoices(f),
+			saveInvoice: (eId, aId, p) => this.saveInvoice(eId, aId, p),
+			saveDerivedAttachment: (eId, a) => this.saveDerivedAttachment(eId, a),
+		};
+
+		return processEmailForInvoices({
+			env: this.env,
+			stub: selfStub,
+			emailId,
+			entryUnits,
+			bodyHtml: email.body,
+			existingAttachments: existing,
+		});
 	}
 }

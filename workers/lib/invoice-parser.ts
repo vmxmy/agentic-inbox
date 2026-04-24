@@ -63,7 +63,16 @@ const ITEM_CONTAINERS = new Set([
 const HEADER_FIELDS = {
 	// `invoicenumber` appears in 数电票 <TaxSupervisionInfo>. `eiid` is the same
 	// 数电票号码 (redundant in most vendors), kept as a fallback.
-	invoice_number: ["fphm", "fp_hm", "invoicenumber", "invoice_number", "invno", "eiid"],
+	invoice_number: [
+		"fphm",
+		"fp_hm",
+		"invoicenumber",
+		"invoice_number",
+		"invno",
+		"eiid",
+		// 铁路电子客票 XBRL
+		"rai:electronicinvoicerailwayeticketnumber",
+	],
 	invoice_code: ["fpdm", "fp_dm", "invoicecode", "invoice_code"],
 	invoice_type: [
 		"fplx",
@@ -74,6 +83,8 @@ const HEADER_FIELDS = {
 		"fplxmc",
 		// 数电票 <EInvoiceTag> (e.g. SWEI4400) — coarse but stable id.
 		"einvoicetag",
+		// 铁路电子客票 XBRL
+		"rai:typeofvoucher",
 	],
 	// 数电票 uses <IssueTime> or <RequestTime> — old VAT uses Kprq/InvoiceDate.
 	issue_date: [
@@ -84,8 +95,16 @@ const HEADER_FIELDS = {
 		"kpsj",
 		"issuetime",
 		"requesttime",
+		"rai:dateofissue",
 	],
-	seller_name: ["xfmc", "xf_mc", "sellername", "seller_name"],
+	seller_name: [
+		"xfmc",
+		"xf_mc",
+		"sellername",
+		"seller_name",
+		// 铁路电子客票 XBRL — 销方是国铁集团；许多场景 xsi:nil，需要时降级
+		"rai:issueparty",
+	],
 	seller_tax_id: [
 		"xfsbh",
 		"xf_sbh",
@@ -95,8 +114,15 @@ const HEADER_FIELDS = {
 		"sellerid",
 		// 数电票
 		"selleridnum",
+		"rai:issuepartycode",
 	],
-	buyer_name: ["gfmc", "gf_mc", "buyername", "buyer_name"],
+	buyer_name: [
+		"gfmc",
+		"gf_mc",
+		"buyername",
+		"buyer_name",
+		"rai:nameofpurchaser",
+	],
 	buyer_tax_id: [
 		"gfsbh",
 		"gf_sbh",
@@ -106,6 +132,7 @@ const HEADER_FIELDS = {
 		"buyerid",
 		// 数电票
 		"buyeridnum",
+		"rai:unifiedsocialcreditcodeofpurchaser",
 	],
 	amount_excl_tax: [
 		"hjje",
@@ -115,6 +142,7 @@ const HEADER_FIELDS = {
 		"sumamtnotax",
 		"totalexcludetax",
 		"je",
+		"rai:totalamountexcludingtax",
 	],
 	tax_amount: [
 		"hjse",
@@ -125,6 +153,7 @@ const HEADER_FIELDS = {
 		"sumtax",
 		// 数电票 <TotalTaxAm>
 		"totaltaxam",
+		"rai:taxamount",
 	],
 	amount_incl_tax: [
 		"jshj",
@@ -136,8 +165,10 @@ const HEADER_FIELDS = {
 		"priceandtaxtotal",
 		// 数电票 <TotalTax-includedAmount>
 		"totaltax-includedamount",
+		// 铁路电子客票 XBRL — 票价是含税总金额
+		"rai:fare",
 	],
-	remark: ["bz", "remark", "remarks", "memo"],
+	remark: ["bz", "remark", "remarks", "memo", "rai:remarks"],
 } as const;
 
 const ITEM_FIELDS = {

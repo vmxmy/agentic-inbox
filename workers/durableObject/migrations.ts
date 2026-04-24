@@ -217,4 +217,18 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX IF NOT EXISTS idx_invoice_items_invoice_id ON invoice_items(invoice_id);
         `,
 	},
+	{
+		// No txn() wrapper: ALTER TABLE is auto-committed per statement on SQLite,
+		// and DO runtime forbids SQL-level BEGIN. Multiple ALTERs are safe to run
+		// independently because each one is idempotent in effect (re-running the
+		// migration would skip due to the d1_migrations tracking).
+		name: "10_extend_attachments_origin",
+		sql: `
+            ALTER TABLE attachments ADD COLUMN origin TEXT NOT NULL DEFAULT 'email';
+            ALTER TABLE attachments ADD COLUMN source_url TEXT;
+            ALTER TABLE attachments ADD COLUMN parent_attachment_id TEXT;
+            CREATE INDEX IF NOT EXISTS idx_attachments_parent ON attachments(parent_attachment_id);
+            CREATE INDEX IF NOT EXISTS idx_attachments_origin ON attachments(origin);
+        `,
+	},
 ];

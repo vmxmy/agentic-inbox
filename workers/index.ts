@@ -38,8 +38,12 @@ import {
 } from "./lib/auth";
 import { getAgentConfig } from "./lib/agent-config";
 import { evaluateRules } from "./lib/rules";
-import { extensionOf, extractAttachmentsInline, looksLikeXml } from "./lib/attachment-extract";
-import { parseChinaEInvoiceXml } from "./lib/invoice-parser";
+import { extensionOf, extractAttachmentsInline } from "./lib/attachment-extract";
+import {
+	processEmailForInvoices,
+	type EntryUnit,
+	type ExistingAttachment,
+} from "./lib/invoice-pipeline";
 
 type AppContext = Context<MailboxContext>;
 
@@ -602,25 +606,60 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 
 	// Structured invoice extraction. Runs BEFORE the auto-draft early return
 	// so it works alongside skipDraft (which is the common config for invoices).
-	if (action.extractInvoice && parsedEmail.attachments?.length) {
-		const invoiceWrites: Promise<unknown>[] = [];
-		for (const att of parsedEmail.attachments) {
-			if (!looksLikeXml({ filename: att.filename || "", mimetype: att.mimeType })) continue;
-			const parsed = parseChinaEInvoiceXml(
-				typeof att.content === "string"
-					? new TextEncoder().encode(att.content)
-					: att.content,
-			);
-			if (!parsed) continue;
-			const sanitizedName = (att.filename || "untitled").replace(/[\/\\:*?"<>|\x00-\x1f]/g, "_");
-			const attRow = attachmentData.find((r) => r.filename === sanitizedName);
-			if (!attRow) continue;
-			invoiceWrites.push(
-				stub.saveInvoice(messageId, attRow.id, parsed).catch((e: Error) =>
-					console.error(`Invoice save failed for ${messageId}/${attRow.filename}:`, e.message)),
+	// Delegates to the shared pipeline so first-receive and
+	// reprocess-after-parser-fix paths stay in sync.
+	if (action.extractInvoice) {
+		try {
+			const entryUnits: EntryUnit[] = [];
+			for (const att of parsedEmail.attachments ?? []) {
+				const sanitizedName = (att.filename || "untitled").replace(
+					/[\/\\:*?"<>|\x00-\x1f]/g,
+					"_",
+				);
+				const attRow = attachmentData.find((r) => r.filename === sanitizedName);
+				if (!attRow) continue;
+				const raw = att.content;
+				const bytes =
+					typeof raw === "string"
+						? new TextEncoder().encode(raw)
+						: raw instanceof Uint8Array
+							? raw
+							: new Uint8Array(raw);
+				entryUnits.push({
+					attachmentId: attRow.id,
+					filename: sanitizedName,
+					mimetype: att.mimeType,
+					bytes,
+				});
+			}
+			const existingAttachments: ExistingAttachment[] = attachmentData.map((a) => ({
+				id: a.id,
+				filename: a.filename,
+				mimetype: a.mimetype,
+				size: a.size,
+				origin: "email",
+				source_url: null,
+				parent_attachment_id: null,
+			}));
+			const result = await processEmailForInvoices({
+				env,
+				stub,
+				emailId: messageId,
+				entryUnits,
+				bodyHtml: parsedEmail.html || parsedEmail.text || null,
+				existingAttachments,
+			});
+			if (result.saved.length || result.skipped.length) {
+				console.log(
+					`Invoice pipeline for ${messageId}: saved=${result.saved.length} skipped=${result.skipped.length}`,
+				);
+			}
+		} catch (e) {
+			console.error(
+				`Invoice pipeline failed for ${messageId}:`,
+				(e as Error).message,
 			);
 		}
-		if (invoiceWrites.length) await Promise.allSettled(invoiceWrites);
 	}
 
 	const movedOutOfInbox = !!(action.moveTo && action.moveTo !== Folders.INBOX);
