@@ -31,11 +31,8 @@ import { sendEmail } from "../email-sender";
 import { Folders } from "../../shared/folders";
 import type { Env } from "../types";
 import type { InvoiceFilters } from "../durableObject";
-import { submitAndWait, DeepReadError } from "./deepread";
-import {
-	CHINA_INVOICE_OCR_SCHEMA,
-	ocrResultToParsedInvoice,
-} from "./invoice-ocr";
+import { DeepReadError } from "./deepread";
+import { extractInvoiceWithRetry } from "./invoice-ocr";
 import {
 	uploadInvoiceFileAndExtract,
 	type ManualUploadResult,
@@ -715,22 +712,21 @@ export async function toolExtractInvoiceFromPdf(
 	if (!obj) return { error: `R2 object missing at ${r2Key}` };
 	const bytes = new Uint8Array(await obj.arrayBuffer());
 
-	// Submit + poll. DeepRead typically completes Chinese invoices in ~10-30s.
-	let result;
+	// Submit + (conditionally) retry. Retry fires when the first pass's
+	// invoice_number has a suspicious digit length (18/19 where 20 is expected,
+	// 6/7 where 8 is expected). See `extractInvoiceWithRetry`.
+	let mapped;
 	try {
-		({ result } = await submitAndWait(env.DEEPREAD_API_KEY, {
+		mapped = await extractInvoiceWithRetry(env.DEEPREAD_API_KEY, {
 			bytes,
 			filename: att.filename,
-			schema: CHINA_INVOICE_OCR_SCHEMA,
-		}));
+		});
 	} catch (e) {
 		if (e instanceof DeepReadError) {
 			return { error: `DeepRead ${e.code}: ${e.message}` };
 		}
 		return { error: (e as Error).message };
 	}
-
-	const mapped = ocrResultToParsedInvoice(result, { rawBytes: bytes });
 	if (!mapped) {
 		return {
 			error:

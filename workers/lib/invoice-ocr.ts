@@ -20,7 +20,7 @@
  */
 
 import type { ParsedInvoice, ParsedInvoiceItem } from "./invoice-parser";
-import type { OcrFieldMeta, OcrJobResult } from "./deepread";
+import { DeepReadError, submitAndWait, type OcrFieldMeta, type OcrJobResult } from "./deepread";
 
 /**
  * JSON Schema passed to DeepRead. Field names mirror our ParsedInvoice
@@ -241,5 +241,148 @@ export function ocrResultToParsedInvoice(
 		parsed,
 		needsReview: reviewFields.length > 0,
 		reviewFields,
+	};
+}
+
+// ── Shape validation + dual-pass consensus ─────────────────────────
+//
+// DeepRead is mostly right but occasionally clips a digit off a 20-digit
+// 数电票 invoice number — the field ends up 18 or 19 digits long. The
+// shape validator recognises that "suspicious" length bucket and the
+// retry wrapper re-submits the PDF once when it happens, preferring a
+// longer pass-2 result if the retry produces one.
+
+export interface ParsedShapeCheck {
+	ok: boolean;
+	problems: string[];
+}
+
+/**
+ * Flag invoice_number values whose digit length sits in a known-bad bucket
+ * — likely a single-digit OCR clip on a 数电票 (20) or 增值税 (8).
+ * Non-digit invoice numbers (ticket IDs, mixed alphanumeric) pass.
+ */
+export function validateParsedShape(parsed: ParsedInvoice): ParsedShapeCheck {
+	const problems: string[] = [];
+	const num = parsed.invoice_number ?? "";
+	if (/^\d+$/.test(num)) {
+		const len = num.length;
+		if (len === 18 || len === 19) {
+			problems.push(`invoice_number:suspicious-length-${len}-of-20`);
+		} else if (len === 6 || len === 7) {
+			problems.push(`invoice_number:suspicious-length-${len}-of-8`);
+		}
+	}
+	return { ok: problems.length === 0, problems };
+}
+
+export interface ExtractWithRetryOptions {
+	/** Soft knob for tests — disables the pass-2 submit even when pass-1 fails
+	 *  shape validation. Production callers should leave this `false`. */
+	disableRetry?: boolean;
+	/** Override the DeepRead poll/timeout knobs. */
+	pollIntervalMs?: number;
+	timeoutMs?: number;
+}
+
+export interface ExtractWithRetryResult extends OcrMappedInvoice {
+	/** How many DeepRead submissions the wrapper issued for this PDF. */
+	attempts: number;
+	/** Last DeepRead job id — useful for audit. */
+	lastJobId: string;
+}
+
+/**
+ * Submit a PDF for OCR, then retry once if the parsed invoice_number looks
+ * truncated. Used by both the auto-pipeline path (when a PDF-only email
+ * requires OCR) and the explicit `extract_invoice_from_pdf` MCP tool.
+ *
+ * Contract:
+ *  - Returns the pass-1 result when it passes {@link validateParsedShape}.
+ *  - On shape failure, runs one more submit. Picks pass-2 when its
+ *    invoice_number is also all-digits and strictly longer than pass-1's.
+ *  - Otherwise returns pass-1 but forces `needsReview=true` and appends
+ *    `invoice_number:ocr-digit-consensus-failed` to `reviewFields`.
+ *  - Never throws a shape-related error — a dubious-but-complete result
+ *    is still better than nothing; the UI will surface the review badge.
+ *  - DeepRead transport errors (auth/timeout/job-failed) propagate as
+ *    {@link DeepReadError} — caller decides how to surface them.
+ */
+export async function extractInvoiceWithRetry(
+	apiKey: string,
+	args: {
+		bytes: Uint8Array;
+		filename: string;
+	},
+	opts: ExtractWithRetryOptions = {},
+): Promise<ExtractWithRetryResult | null> {
+	const pollIntervalMs = opts.pollIntervalMs;
+	const timeoutMs = opts.timeoutMs;
+
+	const first = await submitAndWait(apiKey, {
+		bytes: args.bytes,
+		filename: args.filename,
+		schema: CHINA_INVOICE_OCR_SCHEMA,
+		pollIntervalMs,
+		timeoutMs,
+	});
+	const firstMapped = ocrResultToParsedInvoice(first.result, { rawBytes: args.bytes });
+	if (!firstMapped) return null;
+
+	const firstCheck = validateParsedShape(firstMapped.parsed);
+	if (firstCheck.ok || opts.disableRetry) {
+		return { ...firstMapped, attempts: 1, lastJobId: first.jobId };
+	}
+
+	// Pass-2. We swallow its transport errors — a second-attempt failure
+	// shouldn't tank the result we already have; just mark it for review.
+	let second: { jobId: string; result: OcrJobResult } | null = null;
+	try {
+		second = await submitAndWait(apiKey, {
+			bytes: args.bytes,
+			filename: args.filename,
+			schema: CHINA_INVOICE_OCR_SCHEMA,
+			pollIntervalMs,
+			timeoutMs,
+		});
+	} catch (e) {
+		if (!(e instanceof DeepReadError)) throw e;
+	}
+
+	if (second) {
+		const secondMapped = ocrResultToParsedInvoice(second.result, { rawBytes: args.bytes });
+		if (secondMapped) {
+			const secondCheck = validateParsedShape(secondMapped.parsed);
+			const firstNum = firstMapped.parsed.invoice_number;
+			const secondNum = secondMapped.parsed.invoice_number;
+			const bothAllDigits = /^\d+$/.test(firstNum) && /^\d+$/.test(secondNum);
+			const secondIsLonger = secondNum.length > firstNum.length;
+			if (secondCheck.ok && bothAllDigits && secondIsLonger) {
+				// Pass-2 wins. Merge HIL flags from both passes so nothing gets
+				// silently resolved when really both passes were unsure.
+				const reviewFields = Array.from(
+					new Set([...firstMapped.reviewFields, ...secondMapped.reviewFields]),
+				);
+				return {
+					parsed: secondMapped.parsed,
+					needsReview: secondMapped.needsReview || reviewFields.length > 0,
+					reviewFields,
+					attempts: 2,
+					lastJobId: second.jobId,
+				};
+			}
+		}
+	}
+
+	// Retry didn't help — keep pass-1 but force review.
+	const reviewFields = Array.from(
+		new Set([...firstMapped.reviewFields, "invoice_number:ocr-digit-consensus-failed"]),
+	);
+	return {
+		parsed: firstMapped.parsed,
+		needsReview: true,
+		reviewFields,
+		attempts: second ? 2 : 1,
+		lastJobId: second?.jobId ?? first.jobId,
 	};
 }
