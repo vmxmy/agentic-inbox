@@ -467,6 +467,94 @@ export async function toolSendReply(
 	return { status: "sent", messageId, message: `Reply sent to ${params.to}` };
 }
 
+// ── forward_email ──────────────────────────────────────────────────
+
+/**
+ * Forward an existing email to a new recipient. Starts a new thread
+ * (forward is a new conversation, not a continuation). Body is verified
+ * via verifyDraft; the original email is appended as a quoted block.
+ */
+export async function toolForwardEmail(
+	env: Env,
+	mailboxId: string,
+	params: {
+		originalEmailId: string;
+		to: string;
+		subject?: string;
+		bodyHtml?: string;
+	},
+): Promise<
+	| { status: "sent"; messageId: string; message: string }
+	| { error: string }
+> {
+	const stub = getMailboxStub(env, mailboxId);
+
+	const rateLimitError = await (stub as unknown as RateLimitStub).checkSendRateLimit();
+	if (rateLimitError) {
+		return { error: rateLimitError };
+	}
+
+	const originalEmail = (await stub.getEmail(params.originalEmailId)) as EmailFull | null;
+	if (!originalEmail) {
+		return { error: "Original email not found" };
+	}
+
+	const fromDomain = mailboxId.split("@")[1];
+	if (!fromDomain) return { error: "Invalid mailbox email address" };
+	const { messageId, outgoingMessageId } = generateMessageId(fromDomain);
+
+	const rawBody = params.bodyHtml ?? "";
+	const sanitizedBody = rawBody
+		? await verifyDraft(env.AI, rawBody)
+		: "";
+	if (rawBody && !sanitizedBody) {
+		return { error: "Draft verification failed — refusing to forward unverified content. Please try again." };
+	}
+
+	const quotedBlock = buildQuotedReplyBlock({
+		date: originalEmail.date,
+		sender: originalEmail.sender || "",
+		body: originalEmail.body ?? undefined,
+	});
+	const fullBodyHtml = (sanitizedBody || "") + quotedBlock;
+
+	const forwardSubject = params.subject
+		?? (originalEmail.subject?.startsWith("Fwd:")
+			? originalEmail.subject
+			: `Fwd: ${originalEmail.subject ?? ""}`);
+
+	try {
+		await sendEmail(env.EMAIL, {
+			to: params.to,
+			from: mailboxId,
+			subject: forwardSubject,
+			html: fullBodyHtml,
+		});
+	} catch (e) {
+		console.error("Email send failed:", (e as Error).message);
+		return { error: `Failed to forward email: ${(e as Error).message}` };
+	}
+
+	await stub.createEmail(
+		Folders.SENT,
+		{
+			id: messageId,
+			subject: forwardSubject,
+			sender: mailboxId.toLowerCase(),
+			recipient: params.to.toLowerCase(),
+			date: new Date().toISOString(),
+			body: fullBodyHtml,
+			in_reply_to: null,
+			email_references: null,
+			thread_id: messageId,
+			message_id: outgoingMessageId,
+		},
+		[],
+	);
+
+	return { status: "sent", messageId, message: `Forwarded to ${params.to}` };
+}
+
 // ── send_email ─────────────────────────────────────────────────────
 
 export async function toolSendEmail(

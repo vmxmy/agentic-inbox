@@ -7,7 +7,7 @@
  * Single source of truth for: auto-draft flag, model, system prompt, rules.
  */
 import type { Env } from "../types";
-import { parseRulesLoose, type Rule } from "./rules";
+import { parseRulesLoose, RulesSchema, type Rule } from "./rules";
 
 /** Supported models. Keep this list in sync with the Settings dropdown. */
 export const ALLOWED_AGENT_MODELS = [
@@ -62,4 +62,79 @@ function defaults(): AgentConfig {
 		customSystemPrompt: null,
 		rules: [],
 	};
+}
+
+// ── Mutation helpers ───────────────────────────────────────────────
+
+export interface AgentConfigUpdate {
+	autoDraft?: boolean;
+	agentModel?: string;
+	/** Pass `null` to clear the custom prompt and fall back to the default. */
+	agentSystemPrompt?: string | null;
+}
+
+function settingsKey(mailboxId: string): string {
+	return `mailboxes/${mailboxId}.json`;
+}
+
+async function readSettings(
+	env: Env,
+	mailboxId: string,
+): Promise<Record<string, unknown>> {
+	const obj = await env.BUCKET.get(settingsKey(mailboxId));
+	if (!obj) throw new Error(`Mailbox "${mailboxId}" not found`);
+	return (await obj.json()) as Record<string, unknown>;
+}
+
+async function writeSettings(
+	env: Env,
+	mailboxId: string,
+	settings: Record<string, unknown>,
+): Promise<void> {
+	await env.BUCKET.put(settingsKey(mailboxId), JSON.stringify(settings));
+}
+
+/**
+ * Patch agent-config fields into the R2 settings blob. Unknown model values
+ * are rejected; absent fields leave the current value untouched.
+ */
+export async function updateAgentConfig(
+	env: Env,
+	mailboxId: string,
+	update: AgentConfigUpdate,
+): Promise<AgentConfig> {
+	const settings = await readSettings(env, mailboxId);
+	if (update.autoDraft !== undefined) {
+		settings.autoDraft = update.autoDraft;
+	}
+	if (update.agentModel !== undefined) {
+		if (!(ALLOWED_AGENT_MODELS as readonly string[]).includes(update.agentModel)) {
+			throw new Error(
+				`Unknown agent model "${update.agentModel}". Allowed: ${ALLOWED_AGENT_MODELS.join(", ")}`,
+			);
+		}
+		settings.agentModel = update.agentModel;
+	}
+	if (update.agentSystemPrompt !== undefined) {
+		if (update.agentSystemPrompt === null) delete settings.agentSystemPrompt;
+		else settings.agentSystemPrompt = update.agentSystemPrompt;
+	}
+	await writeSettings(env, mailboxId, settings);
+	return getAgentConfig(env, mailboxId);
+}
+
+/**
+ * Replace the rules array on the R2 settings blob. Runs `RulesSchema.parse`
+ * so malformed rules are rejected before storage.
+ */
+export async function setRules(
+	env: Env,
+	mailboxId: string,
+	rawRules: unknown,
+): Promise<Rule[]> {
+	const rules = RulesSchema.parse(rawRules);
+	const settings = await readSettings(env, mailboxId);
+	settings.rules = rules;
+	await writeSettings(env, mailboxId, settings);
+	return rules;
 }

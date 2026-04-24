@@ -18,16 +18,30 @@ import {
 	toolSendEmail,
 	toolMarkEmailRead,
 	toolMoveEmail,
+	toolForwardEmail,
 } from "../lib/tools";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
 import {
+	addMailboxMember,
+	assertMailboxOwner,
+	AuthzError,
 	getMailboxAcl,
 	hasMailboxAccess,
 	INTERNAL_USER_HEADER,
+	isAdmin,
 	listUserMailboxes,
 	normalizeEmail,
+	removeMailboxMember,
+	signInviteToken,
+	verifyInviteToken,
 	type AuthUser,
 } from "../lib/auth";
+import {
+	ALLOWED_AGENT_MODELS,
+	getAgentConfig,
+	setRules,
+	updateAgentConfig,
+} from "../lib/agent-config";
 import type { Env } from "../types";
 
 /** Wrap a plain result object into MCP content format. */
@@ -117,6 +131,28 @@ export class EmailMCP extends McpAgent<Env> {
 			}
 			return null;
 		};
+
+		/**
+		 * Owner-only gate for member/invite management. Does NOT auto-claim
+		 * legacy mailboxes via MCP — same stance as {@link verifyMailbox}.
+		 */
+		const verifyOwner = async (mailboxId: string) => {
+			const user = currentUser();
+			if (!user) {
+				return mcpError("MCP request missing authenticated user context.");
+			}
+			try {
+				await assertMailboxOwner(env, mailboxId, user);
+				return null;
+			} catch (e) {
+				if (e instanceof AuthzError) return mcpError(e.message);
+				throw e;
+			}
+		};
+
+		/** Resolve a MailboxDO stub for a mailbox email address. */
+		const mailboxStub = (mailboxId: string) =>
+			env.MAILBOX.get(env.MAILBOX.idFromName(mailboxId));
 
 		// ── list_mailboxes ─────────────────────────────────────────
 		this.server.tool(
@@ -463,6 +499,405 @@ export class EmailMCP extends McpAgent<Env> {
 						],
 						isError: true,
 					};
+				}
+				return mcpText(result);
+			},
+		);
+
+		// ── whoami ─────────────────────────────────────────────────
+		this.server.tool(
+			"whoami",
+			"Return the authenticated user's email and admin flag.",
+			{},
+			async () => {
+				const user = currentUser();
+				if (!user) return mcpError("MCP request missing authenticated user context.");
+				return mcpText({
+					email: user.email,
+					isAdmin: isAdmin(env, user),
+					system: user.system ?? false,
+				});
+			},
+		);
+
+		// ── list_members ───────────────────────────────────────────
+		this.server.tool(
+			"list_members",
+			"List the owner and members of a mailbox. Any member can read this.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+			},
+			async ({ mailboxId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const acl = await getMailboxAcl(env, mailboxId);
+				if (!acl) return mcpError("Mailbox not found");
+				return mcpText({ owner: acl.owner ?? null, members: acl.members });
+			},
+		);
+
+		// ── add_member ─────────────────────────────────────────────
+		this.server.tool(
+			"add_member",
+			"Add a member to a mailbox. Only the mailbox owner may call this.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				email: z.string().email().describe("Member email to grant access"),
+			},
+			async ({ mailboxId, email }) => {
+				const denied = await verifyOwner(mailboxId);
+				if (denied) return denied;
+				try {
+					const acl = await addMailboxMember(env, mailboxId, normalizeEmail(email));
+					return mcpText({ owner: acl.owner ?? null, members: acl.members });
+				} catch (e) {
+					return mcpError((e as Error).message);
+				}
+			},
+		);
+
+		// ── remove_member ──────────────────────────────────────────
+		this.server.tool(
+			"remove_member",
+			"Remove a member from a mailbox. Only the mailbox owner may call this.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				email: z.string().email().describe("Member email to revoke"),
+			},
+			async ({ mailboxId, email }) => {
+				const denied = await verifyOwner(mailboxId);
+				if (denied) return denied;
+				try {
+					const acl = await removeMailboxMember(env, mailboxId, normalizeEmail(email));
+					return mcpText({ owner: acl.owner ?? null, members: acl.members });
+				} catch (e) {
+					return mcpError((e as Error).message);
+				}
+			},
+		);
+
+		// ── create_invite ──────────────────────────────────────────
+		this.server.tool(
+			"create_invite",
+			"Issue a short-lived (7 day) invite token for a mailbox. Only the mailbox owner may call this. Share the token with the invitee who then calls accept_invite.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+			},
+			async ({ mailboxId }) => {
+				const denied = await verifyOwner(mailboxId);
+				if (denied) return denied;
+				const user = currentUser();
+				if (!user) return mcpError("MCP request missing authenticated user context.");
+				try {
+					const { token, expiresAt } = await signInviteToken(env, mailboxId, user.email);
+					return mcpText({ mailboxId, token, expiresAt });
+				} catch (e) {
+					if (e instanceof AuthzError) return mcpError(e.message);
+					return mcpError((e as Error).message);
+				}
+			},
+		);
+
+		// ── accept_invite ──────────────────────────────────────────
+		this.server.tool(
+			"accept_invite",
+			"Accept a mailbox invite token. Grants the current user member access to the mailbox named in the token.",
+			{
+				token: z.string().describe("Invite token issued by create_invite"),
+			},
+			async ({ token }) => {
+				const user = currentUser();
+				if (!user) return mcpError("MCP request missing authenticated user context.");
+				let claims;
+				try {
+					claims = await verifyInviteToken(env, token);
+				} catch (e) {
+					if (e instanceof AuthzError) return mcpError(e.message);
+					return mcpError((e as Error).message);
+				}
+				const acl = await getMailboxAcl(env, claims.mbx);
+				if (!acl) return mcpError("Mailbox no longer exists");
+				if (acl.owner !== claims.by) {
+					return mcpError("Invite issuer is no longer the mailbox owner");
+				}
+				if (acl.owner === user.email) {
+					return mcpText({
+						mailboxId: claims.mbx,
+						already: "owner",
+						owner: acl.owner,
+						members: acl.members,
+					});
+				}
+				const next = await addMailboxMember(env, claims.mbx, user.email);
+				return mcpText({
+					mailboxId: claims.mbx,
+					owner: next.owner ?? null,
+					members: next.members,
+				});
+			},
+		);
+
+		// ── get_mailbox_settings ───────────────────────────────────
+		this.server.tool(
+			"get_mailbox_settings",
+			"Read a mailbox's full settings blob (signature, auto-reply, agent config, rules, ACL).",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+			},
+			async ({ mailboxId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const obj = await env.BUCKET.get(`mailboxes/${mailboxId}.json`);
+				if (!obj) return mcpError("Mailbox not found");
+				const settings = (await obj.json()) as Record<string, unknown>;
+				return mcpText({ id: mailboxId, email: mailboxId, settings });
+			},
+		);
+
+		// ── update_mailbox_settings ────────────────────────────────
+		this.server.tool(
+			"update_mailbox_settings",
+			"Replace a mailbox's settings blob. ACL fields (owner, members) are server-managed and will be stripped from the input — use add_member/remove_member for those.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				settings: z.record(z.unknown()).describe("New settings object. owner/members are ignored."),
+			},
+			async ({ mailboxId, settings }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const key = `mailboxes/${mailboxId}.json`;
+				const existing = await env.BUCKET.get(key);
+				if (!existing) return mcpError("Mailbox not found");
+				const prev = (await existing.json()) as Record<string, unknown>;
+				const { owner: _o, members: _m, ...clientClean } = settings;
+				const merged: Record<string, unknown> = {
+					...clientClean,
+					owner: prev.owner,
+					members: Array.isArray(prev.members) ? prev.members : [],
+				};
+				await env.BUCKET.put(key, JSON.stringify(merged));
+				return mcpText({ id: mailboxId, email: mailboxId, settings: merged });
+			},
+		);
+
+		// ── get_agent_config ───────────────────────────────────────
+		this.server.tool(
+			"get_agent_config",
+			"Read the per-mailbox AI agent configuration: auto-draft flag, model, system prompt override, inbound-email processing rules, allowed model list.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+			},
+			async ({ mailboxId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const config = await getAgentConfig(env, mailboxId);
+				return mcpText({
+					autoDraft: config.autoDraft,
+					model: config.model,
+					customSystemPrompt: config.customSystemPrompt,
+					rules: config.rules,
+					allowedModels: ALLOWED_AGENT_MODELS,
+				});
+			},
+		);
+
+		// ── update_agent_config ────────────────────────────────────
+		this.server.tool(
+			"update_agent_config",
+			`Patch the per-mailbox agent config. Omitted fields stay unchanged. Pass customSystemPrompt as null to clear it. Allowed models: ${ALLOWED_AGENT_MODELS.join(", ")}.`,
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				autoDraft: z.boolean().optional().describe("Whether inbound email triggers an automatic draft"),
+				agentModel: z.string().optional().describe("Model id — must be one of the allowed models"),
+				agentSystemPrompt: z.string().nullable().optional().describe("Custom system prompt override. Null clears it."),
+			},
+			async ({ mailboxId, autoDraft, agentModel, agentSystemPrompt }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				try {
+					const config = await updateAgentConfig(env, mailboxId, {
+						autoDraft,
+						agentModel,
+						agentSystemPrompt,
+					});
+					return mcpText({
+						autoDraft: config.autoDraft,
+						model: config.model,
+						customSystemPrompt: config.customSystemPrompt,
+					});
+				} catch (e) {
+					return mcpError((e as Error).message);
+				}
+			},
+		);
+
+		// ── list_rules ─────────────────────────────────────────────
+		this.server.tool(
+			"list_rules",
+			"List the inbound-email processing rules for a mailbox (evaluated top-down when a new email arrives).",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+			},
+			async ({ mailboxId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const config = await getAgentConfig(env, mailboxId);
+				return mcpText({ rules: config.rules });
+			},
+		);
+
+		// ── set_rules ──────────────────────────────────────────────
+		this.server.tool(
+			"set_rules",
+			"Atomically replace the mailbox's rule array. Each rule: { name?, enabled?, if: {from?, fromDomain?, to?, subjectContains?[], bodyContains?[], hasAttachmentExt?[]}, then: {skipDraft?, moveTo?, markRead?, promptOverride?, extractAttachmentText?} }. Malformed rules are rejected.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				rules: z.array(z.record(z.unknown())).describe("Full replacement array of rules"),
+			},
+			async ({ mailboxId, rules }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				try {
+					const saved = await setRules(env, mailboxId, rules);
+					return mcpText({ rules: saved });
+				} catch (e) {
+					return mcpError((e as Error).message);
+				}
+			},
+		);
+
+		// ── list_folders ───────────────────────────────────────────
+		this.server.tool(
+			"list_folders",
+			"List folders (system + custom) with unread counts.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+			},
+			async ({ mailboxId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const folders = await mailboxStub(mailboxId).getFolders();
+				return mcpText({ folders });
+			},
+		);
+
+		// ── create_folder ──────────────────────────────────────────
+		this.server.tool(
+			"create_folder",
+			"Create a custom folder. The id is derived by slugifying the name (lowercase, alphanumerics + hyphens).",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				name: z.string().min(1).describe("Folder display name"),
+			},
+			async ({ mailboxId, name }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const slug = name
+					.toString()
+					.toLowerCase()
+					.replace(/\s+/g, "-")
+					.replace(/[^\w-]+/g, "")
+					.replace(/--+/g, "-")
+					.replace(/^-+/, "")
+					.replace(/-+$/, "");
+				if (!slug) return mcpError("Folder name must contain alphanumeric characters");
+				const folder = await mailboxStub(mailboxId).createFolder(slug, name);
+				if (!folder) return mcpError("Folder with this name already exists");
+				return mcpText({ folder });
+			},
+		);
+
+		// ── rename_folder ──────────────────────────────────────────
+		this.server.tool(
+			"rename_folder",
+			"Rename a folder. System folders (inbox, sent, draft, archive, trash) keep their id but can be renamed.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				folderId: z.string().describe("The folder id"),
+				name: z.string().min(1).describe("New display name"),
+			},
+			async ({ mailboxId, folderId, name }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const folder = await mailboxStub(mailboxId).updateFolder(folderId, name);
+				if (!folder) return mcpError("Folder not found");
+				return mcpText({ folder });
+			},
+		);
+
+		// ── delete_folder ──────────────────────────────────────────
+		this.server.tool(
+			"delete_folder",
+			"Delete a custom folder. System folders cannot be deleted.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				folderId: z.string().describe("The folder id to delete"),
+			},
+			async ({ mailboxId, folderId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const ok = await mailboxStub(mailboxId).deleteFolder(folderId);
+				if (!ok) return mcpError("Folder not found or cannot be deleted");
+				return mcpText({ status: "deleted", folderId });
+			},
+		);
+
+		// ── mark_thread_read ───────────────────────────────────────
+		this.server.tool(
+			"mark_thread_read",
+			"Mark every email in a thread as read.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				threadId: z.string().describe("The thread id"),
+			},
+			async ({ mailboxId, threadId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				await mailboxStub(mailboxId).markThreadRead(threadId);
+				return mcpText({ status: "marked_read", threadId });
+			},
+		);
+
+		// ── star_email ─────────────────────────────────────────────
+		this.server.tool(
+			"star_email",
+			"Star or unstar an email.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				emailId: z.string().describe("The email id"),
+				starred: z.boolean().describe("true to star, false to unstar"),
+			},
+			async ({ mailboxId, emailId, starred }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const email = await mailboxStub(mailboxId).updateEmail(emailId, { starred });
+				if (!email) return mcpError("Email not found");
+				return mcpText({ status: "updated", emailId, starred });
+			},
+		);
+
+		// ── forward_email ──────────────────────────────────────────
+		this.server.tool(
+			"forward_email",
+			"Forward an existing email to a new recipient. Starts a new thread. bodyHtml is prepended to the quoted original; if omitted, only the quoted original is sent. Subject defaults to 'Fwd: <original>'.",
+			{
+				mailboxId: z.string().describe("The mailbox email address to send from"),
+				originalEmailId: z.string().describe("The id of the email to forward"),
+				to: z.string().email().describe("Recipient email address"),
+				subject: z.string().optional().describe("Override subject"),
+				bodyHtml: z.string().optional().describe("Optional HTML body prepended to the forwarded original"),
+			},
+			async ({ mailboxId, originalEmailId, to, subject, bodyHtml }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolForwardEmail(env, mailboxId, {
+					originalEmailId,
+					to,
+					subject,
+					bodyHtml,
+				});
+				if ("error" in result) {
+					return mcpResult(result);
 				}
 				return mcpText(result);
 			},
