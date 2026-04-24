@@ -56,10 +56,14 @@ const ITEM_CONTAINERS = new Set([
 	"commodity",
 	"invoiceitem",
 	"goodsitem",
+	// 数电票 (fully-digital e-invoice) schema
+	"issuiteminformation",
 ]);
 
 const HEADER_FIELDS = {
-	invoice_number: ["fphm", "fp_hm", "invoicenumber", "invoice_number", "invno"],
+	// `invoicenumber` appears in 数电票 <TaxSupervisionInfo>. `eiid` is the same
+	// 数电票号码 (redundant in most vendors), kept as a fallback.
+	invoice_number: ["fphm", "fp_hm", "invoicenumber", "invoice_number", "invno", "eiid"],
 	invoice_code: ["fpdm", "fp_dm", "invoicecode", "invoice_code"],
 	invoice_type: [
 		"fplx",
@@ -68,8 +72,19 @@ const HEADER_FIELDS = {
 		"invoicetype",
 		"invoicetypename",
 		"fplxmc",
+		// 数电票 <EInvoiceTag> (e.g. SWEI4400) — coarse but stable id.
+		"einvoicetag",
 	],
-	issue_date: ["kprq", "kp_rq", "invoicedate", "issuedate", "kpsj"],
+	// 数电票 uses <IssueTime> or <RequestTime> — old VAT uses Kprq/InvoiceDate.
+	issue_date: [
+		"kprq",
+		"kp_rq",
+		"invoicedate",
+		"issuedate",
+		"kpsj",
+		"issuetime",
+		"requesttime",
+	],
 	seller_name: ["xfmc", "xf_mc", "sellername", "seller_name"],
 	seller_tax_id: [
 		"xfsbh",
@@ -78,6 +93,8 @@ const HEADER_FIELDS = {
 		"seller_taxno",
 		"sellertaxno",
 		"sellerid",
+		// 数电票
+		"selleridnum",
 	],
 	buyer_name: ["gfmc", "gf_mc", "buyername", "buyer_name"],
 	buyer_tax_id: [
@@ -87,6 +104,8 @@ const HEADER_FIELDS = {
 		"buyer_taxno",
 		"buyertaxno",
 		"buyerid",
+		// 数电票
+		"buyeridnum",
 	],
 	amount_excl_tax: [
 		"hjje",
@@ -104,6 +123,8 @@ const HEADER_FIELDS = {
 		"totaltax",
 		"totaltaxamount",
 		"sumtax",
+		// 数电票 <TotalTaxAm>
+		"totaltaxam",
 	],
 	amount_incl_tax: [
 		"jshj",
@@ -113,19 +134,24 @@ const HEADER_FIELDS = {
 		"sumamttax",
 		"totalincludetax",
 		"priceandtaxtotal",
+		// 数电票 <TotalTax-includedAmount>
+		"totaltax-includedamount",
 	],
 	remark: ["bz", "remark", "remarks", "memo"],
 } as const;
 
 const ITEM_FIELDS = {
-	item_name: ["spmc", "sp_mc", "commodityname", "goods_name", "name", "xmmc"],
+	// 数电票 <ItemName>; old VAT <Spmc>; CamelCase variants: CommodityName.
+	item_name: ["spmc", "sp_mc", "commodityname", "goods_name", "name", "xmmc", "itemname"],
 	spec: ["ggxh", "gg_xh", "spec", "specifications"],
 	unit: ["dw", "unit", "measureunit"],
 	quantity: ["spsl", "sp_sl", "num", "quantity", "qty"],
-	unit_price: ["dj", "unitprice", "price"],
+	// 数电票 <UnPrice>
+	unit_price: ["dj", "unitprice", "price", "unprice"],
 	amount: ["je", "detailamount", "amount", "amt"],
 	tax_rate: ["sl", "tax_rate", "taxrate"],
-	tax_amount: ["se", "detailtax", "tax", "taxamount"],
+	// 数电票 <ComTaxAm>
+	tax_amount: ["se", "detailtax", "tax", "taxamount", "comtaxam"],
 } as const;
 
 function pickStr(

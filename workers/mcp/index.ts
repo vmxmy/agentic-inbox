@@ -22,6 +22,7 @@ import {
 	toolListInvoices,
 	toolGetInvoice,
 	toolDeleteInvoice,
+	toolReprocessInvoicesForEmail,
 } from "../lib/tools";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
 import {
@@ -960,6 +961,22 @@ export class EmailMCP extends McpAgent<Env> {
 				if (denied) return denied;
 				const result = await toolDeleteInvoice(env, mailboxId, invoiceId);
 				return mcpResult(result);
+			},
+		);
+
+		// ── reprocess_invoices_for_email ────────────────────────────
+		this.server.tool(
+			"reprocess_invoices_for_email",
+			"Re-read XML attachments of an existing email from R2, re-run the invoice parser, and persist the results. Idempotent — replaces any prior invoice rows tied to the same attachment. Use after a parser fix to avoid asking the sender to re-forward the email.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				emailId: z.string().describe("The email id whose XML attachments should be re-parsed"),
+			},
+			async ({ mailboxId, emailId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolReprocessInvoicesForEmail(env, mailboxId, emailId);
+				return mcpText(result);
 			},
 		);
 	}

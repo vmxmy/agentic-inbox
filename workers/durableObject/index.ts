@@ -10,7 +10,8 @@ import * as schema from "../db/schema";
 import { Folders } from "../../shared/folders";
 import type { Env } from "../types";
 import { applyMigrations, mailboxMigrations } from "./migrations";
-import type { ParsedInvoice } from "../lib/invoice-parser";
+import { parseChinaEInvoiceXml, type ParsedInvoice } from "../lib/invoice-parser";
+import { looksLikeXml } from "../lib/attachment-extract";
 
 export interface InvoiceFilters {
 	dateFrom?: string;
@@ -1048,5 +1049,56 @@ export class MailboxDO extends DurableObject<Env> {
 			.where(eq(schema.invoices.id, invoiceId))
 			.run();
 		return true;
+	}
+
+	/**
+	 * Re-read XML attachments of an email from R2, parse them, and save the
+	 * resulting invoice rows. Idempotent — any existing invoice(s) tied to the
+	 * same attachment are deleted first. Useful for reprocessing after a parser
+	 * fix without asking the sender to re-forward.
+	 */
+	async reprocessInvoicesForEmail(emailId: string): Promise<{
+		saved: { filename: string; invoiceId: string }[];
+		skipped: { filename: string; reason: string }[];
+	}> {
+		const atts = this.db
+			.select({
+				id: schema.attachments.id,
+				filename: schema.attachments.filename,
+				mimetype: schema.attachments.mimetype,
+			})
+			.from(schema.attachments)
+			.where(eq(schema.attachments.email_id, emailId))
+			.all();
+
+		const saved: { filename: string; invoiceId: string }[] = [];
+		const skipped: { filename: string; reason: string }[] = [];
+
+		for (const att of atts) {
+			if (!looksLikeXml({ filename: att.filename, mimetype: att.mimetype })) {
+				skipped.push({ filename: att.filename, reason: "not XML" });
+				continue;
+			}
+			const key = `attachments/${emailId}/${att.id}/${att.filename}`;
+			const obj = await this.env.BUCKET.get(key);
+			if (!obj) {
+				skipped.push({ filename: att.filename, reason: "R2 object missing" });
+				continue;
+			}
+			const bytes = await obj.arrayBuffer();
+			const parsed = parseChinaEInvoiceXml(bytes);
+			if (!parsed) {
+				skipped.push({ filename: att.filename, reason: "parser returned null" });
+				continue;
+			}
+			// Idempotent: drop any prior invoice for this attachment before re-saving.
+			this.db
+				.delete(schema.invoices)
+				.where(eq(schema.invoices.attachment_id, att.id))
+				.run();
+			const invoiceId = await this.saveInvoice(emailId, att.id, parsed);
+			saved.push({ filename: att.filename, invoiceId });
+		}
+		return { saved, skipped };
 	}
 }

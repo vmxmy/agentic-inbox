@@ -651,3 +651,12 @@ export async function toolDeleteInvoice(
 	if (!ok) return { error: "Invoice not found" };
 	return { status: "deleted", invoiceId };
 }
+
+export async function toolReprocessInvoicesForEmail(
+	env: Env,
+	mailboxId: string,
+	emailId: string,
+) {
+	const stub = getMailboxStub(env, mailboxId);
+	return stub.reprocessInvoicesForEmail(emailId);
+}
