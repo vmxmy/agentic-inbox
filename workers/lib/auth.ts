@@ -68,16 +68,39 @@ export function getUserFromRequest<E extends { Bindings: Env }>(
 		throw new AuthzError(403, "Missing Access token");
 	}
 
-	let claims: { email?: unknown };
+	let claims: { email?: unknown; common_name?: unknown; sub?: unknown };
 	try {
-		claims = decodeJwt(token) as { email?: unknown };
+		claims = decodeJwt(token) as {
+			email?: unknown;
+			common_name?: unknown;
+			sub?: unknown;
+		};
 	} catch {
 		throw new AuthzError(403, "Malformed Access token");
 	}
-	if (typeof claims.email !== "string" || !claims.email) {
-		throw new AuthzError(403, "Access token has no email claim");
+
+	// Normal user JWTs carry the `email` claim.
+	if (typeof claims.email === "string" && claims.email) {
+		return { email: normalizeEmail(claims.email) };
 	}
-	return { email: normalizeEmail(claims.email) };
+
+	// Cloudflare Access service tokens do NOT carry `email`; they carry
+	// `common_name` (the token's display name, e.g. "my-token.access") and
+	// `sub` (the token UUID). Synthesize a stable pseudo-email so per-mailbox
+	// ACL treats the token as a distinct identity. Owners grant the token
+	// access by calling `add_member` with this pseudo-email.
+	const commonName = typeof claims.common_name === "string" ? claims.common_name : "";
+	const sub = typeof claims.sub === "string" ? claims.sub : "";
+	if (commonName || sub) {
+		const localPart = commonName
+			? commonName.toLowerCase().replace(/[^a-z0-9_.-]/g, "-").replace(/^-+|-+$/g, "")
+			: `st-${sub}`;
+		if (localPart) {
+			return { email: `${localPart}@service.cloudflareaccess.local` };
+		}
+	}
+
+	throw new AuthzError(403, "Access token has no email or common_name claim");
 }
 
 /** Thrown by ACL checks. Hono handlers should translate to JSON responses. */
