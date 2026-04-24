@@ -2,11 +2,12 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { Button, Input, Tooltip } from "@cloudflare/kumo";
-import { GearSixIcon, ListIcon, MagnifyingGlassIcon, RobotIcon, XIcon } from "@phosphor-icons/react";
+import { Badge, Button, Input, Tooltip } from "@cloudflare/kumo";
+import { GearSixIcon, ListIcon, MagnifyingGlassIcon, RobotIcon, ShieldIcon, XIcon } from "@phosphor-icons/react";
 import { type KeyboardEvent, useEffect, useState } from "react";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 import { useUIStore } from "~/hooks/useUIStore";
+import { useWhoami } from "~/queries/identity";
 
 export default function Header() {
 	const [searchQuery, setSearchQuery] = useState("");
@@ -54,6 +55,7 @@ export default function Header() {
 	};
 
 	const isSettingsActive = location.pathname.includes("/settings");
+	const { data: whoami } = useWhoami();
 
 	return (
 		<header className="flex items-center gap-2 px-3 py-2.5 bg-kumo-base border-b border-kumo-line sticky top-0 z-10 md:px-5 md:gap-4">
@@ -119,6 +121,34 @@ export default function Header() {
 			)}
 
 			<div className="flex items-center gap-1 ml-auto shrink-0">
+				{whoami?.email && (
+					<Tooltip
+						content={`Signed in via Cloudflare Access as ${whoami.email}${whoami.isAdmin ? " (admin)" : ""}`}
+						side="bottom"
+						asChild
+					>
+						<div className="hidden md:flex items-center gap-1.5 mr-1 px-2 py-1 rounded bg-kumo-recessed text-xs text-kumo-subtle max-w-[14rem] truncate">
+							<span className="truncate">{whoami.email}</span>
+							{whoami.isAdmin && (
+								<Badge variant="primary">
+									<ShieldIcon size={10} weight="fill" />
+									<span className="ml-0.5">admin</span>
+								</Badge>
+							)}
+						</div>
+					</Tooltip>
+				)}
+				{whoami?.isAdmin && (
+					<Tooltip content="Admin dashboard" side="bottom" asChild>
+						<Button
+							variant={location.pathname.startsWith("/admin") ? "secondary" : "ghost"}
+							shape="square"
+							icon={<ShieldIcon size={20} />}
+							onClick={() => navigate("/admin")}
+							aria-label="Admin dashboard"
+						/>
+					</Tooltip>
+				)}
 				<Tooltip content={isAgentPanelOpen ? "Hide agent panel" : "Show agent panel"} side="bottom" asChild>
 					<Button
 						variant={isAgentPanelOpen ? "secondary" : "ghost"}

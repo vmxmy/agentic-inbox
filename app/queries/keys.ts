@@ -24,4 +24,7 @@ export const queryKeys = {
 			["search", mailboxId, query, page] as const,
 	},
 	config: ["config"] as const,
+	whoami: ["whoami"] as const,
+	members: (mailboxId: string) => ["members", mailboxId] as const,
+	adminMailboxes: ["admin", "mailboxes"] as const,
 };

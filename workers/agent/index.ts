@@ -30,6 +30,7 @@ import {
 	toolDiscardDraft,
 } from "../lib/tools";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
+import { getAgentConfig } from "../lib/agent-config";
 import type { Env } from "../types";
 
 // AI SDK v6 changed tool() overloads significantly. We define tools as plain
@@ -88,23 +89,17 @@ You can ONLY draft emails. You do NOT have the ability to send emails directly.
 Use discard_draft to delete drafts that the operator rejects or that are no longer needed.`;
 
 /**
- * Fetch the custom system prompt for a mailbox from its R2 settings.
- * Falls back to DEFAULT_SYSTEM_PROMPT if none is configured.
+ * Resolve the system prompt for a mailbox. Uses the custom prompt if set,
+ * otherwise falls back to DEFAULT_SYSTEM_PROMPT. An optional per-email
+ * `promptOverride` (from a matched processing rule) is prepended verbatim.
  */
-async function getSystemPrompt(env: Env, mailboxId: string): Promise<string> {
-	try {
-		const key = `mailboxes/${mailboxId}.json`;
-		const obj = await env.BUCKET.get(key);
-		if (obj) {
-			const settings = await obj.json<Record<string, unknown>>();
-			if (typeof settings.agentSystemPrompt === "string" && settings.agentSystemPrompt.trim()) {
-				return settings.agentSystemPrompt;
-			}
-		}
-	} catch {
-		// Fall through to default
-	}
-	return DEFAULT_SYSTEM_PROMPT;
+function resolveSystemPrompt(
+	customPrompt: string | null,
+	overrideForThisEmail?: string,
+): string {
+	const base = customPrompt?.trim() || DEFAULT_SYSTEM_PROMPT;
+	if (!overrideForThisEmail?.trim()) return base;
+	return `## Per-email instruction (from matched rule)\n${overrideForThisEmail.trim()}\n\n${base}`;
 }
 
 function createEmailTools(env: Env, mailboxId: string) {
@@ -278,10 +273,11 @@ export class EmailAgent extends AIChatAgent<any> {
 		const mailboxId = this.name;
 		const workersai = createWorkersAI({ binding: env.AI });
 		const tools = createEmailTools(env, mailboxId);
-		const systemPrompt = await getSystemPrompt(env, mailboxId);
+		const config = await getAgentConfig(env, mailboxId);
+		const systemPrompt = resolveSystemPrompt(config.customSystemPrompt);
 
 		const result = streamText({
-			model: workersai("@cf/moonshotai/kimi-k2.5"),
+			model: workersai(config.model),
 			system: systemPrompt,
 			messages: await convertToModelMessages(this.messages),
 			tools,
@@ -306,6 +302,8 @@ export class EmailAgent extends AIChatAgent<any> {
 					sender: string;
 					subject: string;
 					threadId: string;
+					/** Optional per-email prompt fragment pushed by a matched processing rule. */
+					promptOverride?: string;
 				};
 				const result = await this.handleNewEmail(emailData);
 				return new Response(JSON.stringify(result), {
@@ -332,11 +330,13 @@ export class EmailAgent extends AIChatAgent<any> {
 		sender: string;
 		subject: string;
 		threadId: string;
+		promptOverride?: string;
 	}) {
 		const env = this.env as Env;
 		const workersai = createWorkersAI({ binding: env.AI });
 		const tools = createEmailTools(env, emailData.mailboxId);
-		const systemPrompt = await getSystemPrompt(env, emailData.mailboxId);
+		const config = await getAgentConfig(env, emailData.mailboxId);
+		const systemPrompt = resolveSystemPrompt(config.customSystemPrompt, emailData.promptOverride);
 
 		// Pre-read the email and thread so the agent has full context
 		// without needing to waste tool calls discovering it
@@ -463,7 +463,7 @@ Based on the email content and thread context above, draft a reply using draft_r
 
 		try {
 			const result = await generateText({
-				model: workersai("@cf/moonshotai/kimi-k2.5"),
+				model: workersai(config.model),
 				system: systemPrompt,
 				messages: await convertToModelMessages(messages),
 				tools,

@@ -99,6 +99,10 @@ const api = {
 	getConfig: () =>
 		get<{ domains: string[]; emailAddresses: string[] }>("/api/v1/config"),
 
+	// Identity
+	whoami: () =>
+		get<{ email: string; isAdmin: boolean; system: boolean }>("/api/v1/whoami"),
+
 	// Mailboxes
 	listMailboxes: () => get<Mailbox[]>("/api/v1/mailboxes"),
 	createMailbox: (email: string, name: string, settings?: unknown) =>
@@ -109,6 +113,40 @@ const api = {
 		put<Mailbox>(`/api/v1/mailboxes/${mailboxId}`, { settings }),
 	deleteMailbox: (mailboxId: string) =>
 		del<void>(`/api/v1/mailboxes/${mailboxId}`),
+
+	// Members
+	listMembers: (mailboxId: string) =>
+		get<{ owner: string | null; members: string[] }>(`/api/v1/mailboxes/${mailboxId}/members`),
+	addMember: (mailboxId: string, email: string) =>
+		post<{ owner: string | null; members: string[] }>(
+			`/api/v1/mailboxes/${mailboxId}/members`,
+			{ email },
+		),
+	removeMember: (mailboxId: string, email: string) =>
+		del<{ owner: string | null; members: string[] }>(
+			`/api/v1/mailboxes/${mailboxId}/members/${encodeURIComponent(email)}`,
+		),
+
+	// Invites
+	createInvite: (mailboxId: string) =>
+		post<{ token: string; url: string; expiresAt: number }>(
+			`/api/v1/mailboxes/${mailboxId}/invites`,
+		),
+	acceptInvite: (token: string) =>
+		post<{ mailboxId: string; owner: string | null; members: string[]; already?: string }>(
+			`/api/v1/invites/accept`,
+			{ token },
+		),
+
+	// Admin
+	adminListMailboxes: () =>
+		get<Array<{
+			id: string;
+			email: string;
+			owner: string | null;
+			memberCount: number;
+			inboxCount: number | null;
+		}>>("/api/v1/admin/mailboxes"),
 
 	// Emails
 	listEmails: (mailboxId: string, params: Record<string, string>, opts?: { signal?: AbortSignal }) =>

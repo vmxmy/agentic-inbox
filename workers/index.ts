@@ -14,12 +14,31 @@ import {
 	generateMessageId,
 	buildThreadingHeaders,
 	listMailboxes,
+	stripHtmlToText,
 } from "./lib/email-helpers";
 import { SendEmailRequestSchema } from "./lib/schemas";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
 import type { Env } from "./types";
 import { requireMailbox, type MailboxContext } from "./lib/mailbox";
+import {
+	addMailboxMember,
+	assertMailboxAccess,
+	assertMailboxOwner,
+	AuthzError,
+	getMailboxAcl,
+	getUserFromRequest,
+	INTERNAL_SYSTEM_HEADER,
+	isAdmin,
+	listUserMailboxes,
+	normalizeEmail,
+	removeMailboxMember,
+	signInviteToken,
+	verifyInviteToken,
+} from "./lib/auth";
+import { getAgentConfig } from "./lib/agent-config";
+import { evaluateRules } from "./lib/rules";
+import { extensionOf, extractAttachmentsInline } from "./lib/attachment-extract";
 
 type AppContext = Context<MailboxContext>;
 
@@ -92,14 +111,28 @@ app.get("/api/v1/config", (c) => {
 	return c.json({ domains, emailAddresses });
 });
 
+app.get("/api/v1/whoami", (c) => {
+	let user;
+	try { user = c.get("user") ?? getUserFromRequest(c); }
+	catch (e) { if (e instanceof AuthzError) return c.json({ error: e.message }, e.status); throw e; }
+	return c.json({ email: user.email, isAdmin: isAdmin(c.env, user), system: user.system ?? false });
+});
+
 // -- Mailboxes ------------------------------------------------------
 
 app.get("/api/v1/mailboxes", async (c) => {
-	const allMailboxes = await listMailboxes(c.env.BUCKET);
-	return c.json(allMailboxes.map((m) => ({ ...m, name: m.id })));
+	let user;
+	try { user = c.get("user") ?? getUserFromRequest(c); }
+	catch (e) { if (e instanceof AuthzError) return c.json({ error: e.message }, e.status); throw e; }
+	const visible = await listUserMailboxes(c.env, user);
+	return c.json(visible.map((m) => ({ ...m, name: m.id })));
 });
 
 app.post("/api/v1/mailboxes", async (c) => {
+	let user;
+	try { user = c.get("user") ?? getUserFromRequest(c); }
+	catch (e) { if (e instanceof AuthzError) return c.json({ error: e.message }, e.status); throw e; }
+
 	const { name, settings, email: rawEmail } = CreateMailboxBody.parse(await c.req.json());
 	const email = rawEmail.toLowerCase();
 	const allowedAddresses = (c.env.EMAIL_ADDRESSES ?? []) as string[];
@@ -109,15 +142,38 @@ app.post("/api/v1/mailboxes", async (c) => {
 	const key = `mailboxes/${email}.json`;
 	if (await c.env.BUCKET.head(key)) return c.json({ error: "Mailbox already exists" }, 409);
 	const defaultSettings = { fromName: name, forwarding: { enabled: false, email: "" }, signature: { enabled: false, text: "" }, autoReply: { enabled: false, subject: "", message: "" } };
-	const finalSettings = { ...defaultSettings, ...settings };
+	// Strip any ACL fields the client may have supplied — ACL is owned by the
+	// server and seeded from the authenticated user's identity.
+	const { owner: _ignoredOwner, members: _ignoredMembers, ...cleanSettings } =
+		(settings ?? {}) as Record<string, unknown>;
+	const finalSettings = {
+		...defaultSettings,
+		...cleanSettings,
+		owner: user.system ? undefined : user.email,
+		members: [] as string[],
+	};
 	await c.env.BUCKET.put(key, JSON.stringify(finalSettings));
 	const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(email));
 	await stub.getFolders();
 	return c.json({ id: email, email, name, settings: finalSettings }, 201);
 });
 
+// Helpers for routes that sit at /api/v1/mailboxes/:mailboxId (no sub-path,
+// so `requireMailbox` — mounted at /api/v1/mailboxes/:mailboxId/* — does NOT
+// cover them). Each handler must enforce ACL explicitly.
+function resolveUser(c: AppContext) {
+	return c.get("user") ?? getUserFromRequest(c);
+}
+function handleAuthz<T>(c: AppContext, e: unknown): Response {
+	if (e instanceof AuthzError) return c.json({ error: e.message }, e.status);
+	throw e;
+}
+
 app.get("/api/v1/mailboxes/:mailboxId", async (c) => {
 	const mailboxId = c.req.param("mailboxId")!;
+	let user;
+	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
+	try { await assertMailboxAccess(c.env, mailboxId, user); } catch (e) { return handleAuthz(c, e); }
 	const obj = await c.env.BUCKET.get(`mailboxes/${mailboxId}.json`);
 	if (!obj) return c.json({ error: "Not found" }, 404);
 	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings: await obj.json() });
@@ -125,19 +181,132 @@ app.get("/api/v1/mailboxes/:mailboxId", async (c) => {
 
 app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 	const mailboxId = c.req.param("mailboxId")!;
+	let user;
+	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
+	try { await assertMailboxAccess(c.env, mailboxId, user); } catch (e) { return handleAuthz(c, e); }
 	const { settings } = (await c.req.json()) as { settings: Record<string, unknown> };
 	const key = `mailboxes/${mailboxId}.json`;
-	if (!(await c.env.BUCKET.head(key))) return c.json({ error: "Not found" }, 404);
-	await c.env.BUCKET.put(key, JSON.stringify(settings));
-	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings });
+	const existing = await c.env.BUCKET.get(key);
+	if (!existing) return c.json({ error: "Not found" }, 404);
+	// Strip ACL fields from client input — ACL is managed via dedicated endpoints.
+	// Preserve the existing owner/members from R2.
+	const { owner: _o, members: _m, ...clientClean } = settings;
+	const prev = (await existing.json()) as Record<string, unknown>;
+	const merged: Record<string, unknown> = {
+		...clientClean,
+		owner: prev.owner,
+		members: Array.isArray(prev.members) ? prev.members : [],
+	};
+	await c.env.BUCKET.put(key, JSON.stringify(merged));
+	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings: merged });
 });
 
 app.delete("/api/v1/mailboxes/:mailboxId", async (c) => {
 	const mailboxId = c.req.param("mailboxId")!;
+	let user;
+	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
+	try { await assertMailboxOwner(c.env, mailboxId, user); } catch (e) { return handleAuthz(c, e); }
 	const key = `mailboxes/${mailboxId}.json`;
 	if (!(await c.env.BUCKET.head(key))) return c.json({ error: "Not found" }, 404);
 	await c.env.BUCKET.delete(key); // TODO: also delete DO data and R2 attachment blobs
 	return c.body(null, 204);
+});
+
+// -- Mailbox membership (owner-only writes) -------------------------
+
+app.get("/api/v1/mailboxes/:mailboxId/members", async (c) => {
+	// This path goes through requireMailbox (access-level check). Current user
+	// is any owner or member — both may read the roster.
+	const mailboxId = c.req.param("mailboxId")!;
+	const acl = await getMailboxAcl(c.env, mailboxId);
+	if (!acl) return c.json({ error: "Not found" }, 404);
+	return c.json({ owner: acl.owner ?? null, members: acl.members });
+});
+
+app.post("/api/v1/mailboxes/:mailboxId/members", async (c) => {
+	const mailboxId = c.req.param("mailboxId")!;
+	let user;
+	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
+	try { await assertMailboxOwner(c.env, mailboxId, user); } catch (e) { return handleAuthz(c, e); }
+	const body = (await c.req.json()) as { email?: unknown };
+	if (typeof body.email !== "string" || !body.email.includes("@")) {
+		return c.json({ error: "email required" }, 400);
+	}
+	const acl = await addMailboxMember(c.env, mailboxId, normalizeEmail(body.email));
+	return c.json({ owner: acl.owner ?? null, members: acl.members });
+});
+
+app.delete("/api/v1/mailboxes/:mailboxId/members/:email", async (c) => {
+	const mailboxId = c.req.param("mailboxId")!;
+	const email = decodeURIComponent(c.req.param("email")!);
+	let user;
+	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
+	try { await assertMailboxOwner(c.env, mailboxId, user); } catch (e) { return handleAuthz(c, e); }
+	const acl = await removeMailboxMember(c.env, mailboxId, email);
+	return c.json({ owner: acl.owner ?? null, members: acl.members });
+});
+
+// -- Invite links (owner issues short-lived token; anyone Access-authed accepts) --
+
+app.post("/api/v1/mailboxes/:mailboxId/invites", async (c) => {
+	const mailboxId = c.req.param("mailboxId")!;
+	let user;
+	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
+	try { await assertMailboxOwner(c.env, mailboxId, user); } catch (e) { return handleAuthz(c, e); }
+	let token: string; let expiresAt: number;
+	try {
+		({ token, expiresAt } = await signInviteToken(c.env, mailboxId, user.email));
+	} catch (e) { return handleAuthz(c, e); }
+	const origin = new URL(c.req.url).origin;
+	return c.json({ token, url: `${origin}/invite/${token}`, expiresAt });
+});
+
+app.post("/api/v1/invites/accept", async (c) => {
+	let user;
+	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
+	const body = (await c.req.json().catch(() => ({}))) as { token?: unknown };
+	if (typeof body.token !== "string" || !body.token) {
+		return c.json({ error: "token required" }, 400);
+	}
+	let claims;
+	try { claims = await verifyInviteToken(c.env, body.token); } catch (e) { return handleAuthz(c, e); }
+	// Mailbox must still exist; invite issuer must still be owner (re-check).
+	const acl = await getMailboxAcl(c.env, claims.mbx);
+	if (!acl) return c.json({ error: "Mailbox no longer exists" }, 404);
+	if (acl.owner !== claims.by) {
+		return c.json({ error: "Invite issuer is no longer the mailbox owner" }, 403);
+	}
+	// If accepter is already the owner, nothing to do; return success.
+	if (acl.owner === user.email) {
+		return c.json({ mailboxId: claims.mbx, already: "owner", owner: acl.owner, members: acl.members });
+	}
+	const next = await addMailboxMember(c.env, claims.mbx, user.email);
+	return c.json({ mailboxId: claims.mbx, owner: next.owner ?? null, members: next.members });
+});
+
+// -- Admin (configured via vars.ADMINS) ------------------------------
+
+app.get("/api/v1/admin/mailboxes", async (c) => {
+	let user;
+	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
+	if (!isAdmin(c.env, user)) return c.json({ error: "Admin access required" }, 403);
+	const entries = await listMailboxes(c.env.BUCKET);
+	const detailed = await Promise.all(entries.map(async ({ id }) => {
+		const acl = await getMailboxAcl(c.env, id);
+		let inboxCount: number | null = null;
+		try {
+			const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(id));
+			inboxCount = await stub.countEmails({ folder: Folders.INBOX });
+		} catch { /* leave null if DO never booted or method errors */ }
+		return {
+			id,
+			email: id,
+			owner: acl?.owner ?? null,
+			memberCount: acl?.members.length ?? 0,
+			inboxCount,
+		};
+	}));
+	return c.json(detailed);
 });
 
 // -- Emails ---------------------------------------------------------
@@ -402,10 +571,82 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 		thread_id: threadId, message_id: originalMessageId, raw_headers: JSON.stringify(parsedEmail.headers),
 	}, attachmentData);
 
+	// Processing rules + auto-draft decision ----------------------------
+	const config = await getAgentConfig(env, mailboxId);
+	const facts = {
+		from: (parsedEmail.from?.address || "").toLowerCase(),
+		to: allRecipients,
+		subject: parsedEmail.subject || "",
+		body: parsedEmail.text || (parsedEmail.html ? stripHtmlToText(parsedEmail.html) : ""),
+		attachmentExts: (parsedEmail.attachments ?? [])
+			.map((a) => extensionOf(a.filename || ""))
+			.filter(Boolean),
+	};
+	const { action, matchedName } = evaluateRules(config.rules, facts);
+	if (matchedName || Object.keys(action).length > 0) {
+		console.log(`Rule matched for ${messageId}: ${matchedName ?? "(unnamed)"} → ${JSON.stringify(action)}`);
+	}
+
+	// Apply side-effect actions in parallel before deciding whether to draft.
+	const sideEffects: Promise<unknown>[] = [];
+	if (action.markRead) {
+		sideEffects.push(stub.updateEmail(messageId, { read: true }).catch((e: Error) =>
+			console.error("Rule markRead failed:", e.message)));
+	}
+	if (action.moveTo && action.moveTo !== Folders.INBOX) {
+		sideEffects.push(stub.moveEmail(messageId, action.moveTo).catch((e: Error) =>
+			console.error("Rule moveTo failed:", e.message)));
+	}
+	if (sideEffects.length) await Promise.allSettled(sideEffects);
+
+	const movedOutOfInbox = !!(action.moveTo && action.moveTo !== Folders.INBOX);
+	const shouldDraft = config.autoDraft && !action.skipDraft && !movedOutOfInbox;
+	if (!shouldDraft) return;
+
+	// Run attachment extraction (XML inline; PDF → deferred OCR follow-up).
+	let extractedBlock = "";
+	let deferredPdfs: string[] = [];
+	if (action.extractAttachmentText && parsedEmail.attachments?.length) {
+		const { text, skippedPdf } = extractAttachmentsInline(
+			parsedEmail.attachments.map((a) => ({
+				filename: a.filename || "untitled",
+				mimetype: a.mimeType,
+				content: a.content,
+			})),
+		);
+		if (text) extractedBlock = text;
+		deferredPdfs = skippedPdf;
+		if (skippedPdf.length) {
+			console.log(`Deferred PDF OCR for ${mailboxId}/${messageId}: ${skippedPdf.join(", ")} (Phase 2 not yet wired)`);
+		}
+	}
+
+	const promptOverrideMerged = [
+		action.promptOverride?.trim(),
+		extractedBlock
+			? `## Extracted attachments\n${extractedBlock}\n\nUse these fields when drafting the reply (e.g. confirm invoice number, amount, date).`
+			: "",
+		deferredPdfs.length
+			? `(Note: ${deferredPdfs.length} PDF attachment(s) — OCR not yet available in this draft. Do not make up PDF contents.)`
+			: "",
+	].filter(Boolean).join("\n\n");
+
 	const agentStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName(mailboxId));
+	// Tag this worker-to-worker call as internal so any ACL-aware handler
+	// downstream recognises it as system-originated and bypasses user checks.
+	const agentHeaders: Record<string, string> = { "Content-Type": "application/json" };
+	if (env.INTERNAL_SECRET) agentHeaders[INTERNAL_SYSTEM_HEADER] = env.INTERNAL_SECRET;
+	const agentBody = {
+		mailboxId,
+		emailId: messageId,
+		sender: facts.from,
+		subject: facts.subject,
+		threadId,
+		...(promptOverrideMerged ? { promptOverride: promptOverrideMerged } : {}),
+	};
 	ctx.waitUntil(agentStub.fetch(new Request("https://agents/onNewEmail", {
-		method: "POST", headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ mailboxId, emailId: messageId, sender: (parsedEmail.from?.address || "").toLowerCase(), subject: parsedEmail.subject || "", threadId }),
+		method: "POST", headers: agentHeaders,
+		body: JSON.stringify(agentBody),
 	})).catch((e) => console.error("Auto-draft trigger failed:", (e as Error).message)));
 }
 

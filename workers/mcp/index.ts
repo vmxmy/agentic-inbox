@@ -6,7 +6,6 @@ import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
-	toolListMailboxes,
 	toolListEmails,
 	toolGetEmail,
 	toolGetThread,
@@ -21,6 +20,14 @@ import {
 	toolMoveEmail,
 } from "../lib/tools";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
+import {
+	getMailboxAcl,
+	hasMailboxAccess,
+	INTERNAL_USER_HEADER,
+	listUserMailboxes,
+	normalizeEmail,
+	type AuthUser,
+} from "../lib/auth";
 import type { Env } from "../types";
 
 /** Wrap a plain result object into MCP content format. */
@@ -67,17 +74,46 @@ export class EmailMCP extends McpAgent<Env> {
 		version: "1.0.0",
 	});
 
+	/**
+	 * Per-request authenticated user email. Populated by {@link fetch} from the
+	 * internal header set by the Hono layer (`workers/app.ts`). DOs serialise
+	 * requests on the fetch boundary, so this field is safe to read inside
+	 * tool handlers for the current request.
+	 */
+	private currentUserEmail: string | null = null;
+
+	override async fetch(request: Request): Promise<Response> {
+		const hdr = request.headers.get(INTERNAL_USER_HEADER);
+		this.currentUserEmail = hdr ? normalizeEmail(hdr) : null;
+		return super.fetch(request);
+	}
+
 	async init() {
 		const env = this.env;
 
+		const currentUser = (): AuthUser | null =>
+			this.currentUserEmail ? { email: this.currentUserEmail } : null;
+
 		/**
-		 * Verify a mailbox exists in R2 before operating on it.
-		 * Returns an MCP error response if the mailbox is not found, or null if valid.
+		 * Verify a mailbox exists AND the current MCP caller has access to it.
+		 * Returns an MCP error response on failure, or null if authorised.
 		 */
 		const verifyMailbox = async (mailboxId: string) => {
-			const obj = await env.BUCKET.head(`mailboxes/${mailboxId}.json`);
-			if (!obj) {
+			const user = currentUser();
+			if (!user) {
+				return mcpError("MCP request missing authenticated user context.");
+			}
+			const acl = await getMailboxAcl(env, mailboxId);
+			if (!acl) {
 				return mcpError(`Mailbox "${mailboxId}" not found. Use list_mailboxes to see available mailboxes.`);
+			}
+			// Legacy mailbox with no owner → treat as not-yet-claimed; surface a
+			// targeted error instead of silently auto-claiming through MCP.
+			if (!acl.owner) {
+				return mcpError(`Mailbox "${mailboxId}" has no owner yet — open it in the web UI once to claim it.`);
+			}
+			if (!hasMailboxAccess(acl, user)) {
+				return mcpError(`Not authorized for mailbox "${mailboxId}".`);
 			}
 			return null;
 		};
@@ -85,10 +121,12 @@ export class EmailMCP extends McpAgent<Env> {
 		// ── list_mailboxes ─────────────────────────────────────────
 		this.server.tool(
 			"list_mailboxes",
-			"List all available mailboxes",
+			"List all available mailboxes visible to the authenticated user",
 			{},
 			async () => {
-				const result = await toolListMailboxes(env);
+				const user = currentUser();
+				if (!user) return mcpError("MCP request missing authenticated user context.");
+				const result = await listUserMailboxes(env, user);
 				return mcpText(result);
 			},
 		);
