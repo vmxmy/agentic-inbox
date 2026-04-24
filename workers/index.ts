@@ -38,7 +38,8 @@ import {
 } from "./lib/auth";
 import { getAgentConfig } from "./lib/agent-config";
 import { evaluateRules } from "./lib/rules";
-import { extensionOf, extractAttachmentsInline } from "./lib/attachment-extract";
+import { extensionOf, extractAttachmentsInline, looksLikeXml } from "./lib/attachment-extract";
+import { parseChinaEInvoiceXml } from "./lib/invoice-parser";
 
 type AppContext = Context<MailboxContext>;
 
@@ -598,6 +599,29 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 			console.error("Rule moveTo failed:", e.message)));
 	}
 	if (sideEffects.length) await Promise.allSettled(sideEffects);
+
+	// Structured invoice extraction. Runs BEFORE the auto-draft early return
+	// so it works alongside skipDraft (which is the common config for invoices).
+	if (action.extractInvoice && parsedEmail.attachments?.length) {
+		const invoiceWrites: Promise<unknown>[] = [];
+		for (const att of parsedEmail.attachments) {
+			if (!looksLikeXml({ filename: att.filename || "", mimetype: att.mimeType })) continue;
+			const parsed = parseChinaEInvoiceXml(
+				typeof att.content === "string"
+					? new TextEncoder().encode(att.content)
+					: att.content,
+			);
+			if (!parsed) continue;
+			const sanitizedName = (att.filename || "untitled").replace(/[\/\\:*?"<>|\x00-\x1f]/g, "_");
+			const attRow = attachmentData.find((r) => r.filename === sanitizedName);
+			if (!attRow) continue;
+			invoiceWrites.push(
+				stub.saveInvoice(messageId, attRow.id, parsed).catch((e: Error) =>
+					console.error(`Invoice save failed for ${messageId}/${attRow.filename}:`, e.message)),
+			);
+		}
+		if (invoiceWrites.length) await Promise.allSettled(invoiceWrites);
+	}
 
 	const movedOutOfInbox = !!(action.moveTo && action.moveTo !== Folders.INBOX);
 	const shouldDraft = config.autoDraft && !action.skipDraft && !movedOutOfInbox;

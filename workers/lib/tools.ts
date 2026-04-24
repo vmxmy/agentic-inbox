@@ -30,6 +30,7 @@ import { verifyDraft } from "./ai";
 import { sendEmail } from "../email-sender";
 import { Folders } from "../../shared/folders";
 import type { Env } from "../types";
+import type { InvoiceFilters } from "../durableObject";
 
 // ── Type casts for DO methods not on the base stub type ────────────
 type MailboxSearchStub = {
@@ -616,4 +617,37 @@ export async function toolSendEmail(
 	);
 
 	return { status: "sent", messageId, message: `Email sent to ${params.to}` };
+}
+
+// ── invoices ───────────────────────────────────────────────────────
+
+export async function toolListInvoices(
+	env: Env,
+	mailboxId: string,
+	filters: InvoiceFilters = {},
+) {
+	const stub = getMailboxStub(env, mailboxId);
+	return stub.listInvoices(filters);
+}
+
+export async function toolGetInvoice(
+	env: Env,
+	mailboxId: string,
+	invoiceId: string,
+) {
+	const stub = getMailboxStub(env, mailboxId);
+	const result = await stub.getInvoice(invoiceId);
+	if (!result) return { error: "Invoice not found" };
+	return result;
+}
+
+export async function toolDeleteInvoice(
+	env: Env,
+	mailboxId: string,
+	invoiceId: string,
+) {
+	const stub = getMailboxStub(env, mailboxId);
+	const ok = await stub.deleteInvoice(invoiceId);
+	if (!ok) return { error: "Invoice not found" };
+	return { status: "deleted", invoiceId };
 }

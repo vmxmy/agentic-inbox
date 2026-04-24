@@ -168,4 +168,53 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX IF NOT EXISTS idx_emails_folder_date ON emails(folder_id, date DESC);
         `,
 	},
+	{
+		// No txn() wrapper — runner uses storage.transactionSync(); CREATE TABLE IF NOT EXISTS
+		// is idempotent and safe to retry.
+		name: "9_add_invoices_tables",
+		sql: `
+            CREATE TABLE IF NOT EXISTS invoices (
+                id TEXT PRIMARY KEY,
+                email_id TEXT NOT NULL,
+                attachment_id TEXT NOT NULL,
+                invoice_number TEXT NOT NULL,
+                invoice_code TEXT,
+                invoice_type TEXT,
+                issue_date TEXT NOT NULL,
+                seller_name TEXT,
+                seller_tax_id TEXT,
+                buyer_name TEXT,
+                buyer_tax_id TEXT,
+                amount_excl_tax REAL,
+                tax_amount REAL,
+                amount_incl_tax REAL,
+                currency TEXT DEFAULT 'CNY',
+                remark TEXT,
+                raw_xml TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(email_id) REFERENCES emails(id) ON DELETE CASCADE,
+                FOREIGN KEY(attachment_id) REFERENCES attachments(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS invoice_items (
+                id TEXT PRIMARY KEY,
+                invoice_id TEXT NOT NULL,
+                ord INTEGER NOT NULL,
+                item_name TEXT,
+                spec TEXT,
+                unit TEXT,
+                quantity REAL,
+                unit_price REAL,
+                amount REAL,
+                tax_rate REAL,
+                tax_amount REAL,
+                FOREIGN KEY(invoice_id) REFERENCES invoices(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_invoices_email_id ON invoices(email_id);
+            CREATE INDEX IF NOT EXISTS idx_invoices_issue_date ON invoices(issue_date DESC);
+            CREATE INDEX IF NOT EXISTS idx_invoices_invoice_number ON invoices(invoice_number);
+            CREATE INDEX IF NOT EXISTS idx_invoice_items_invoice_id ON invoice_items(invoice_id);
+        `,
+	},
 ];

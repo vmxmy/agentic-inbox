@@ -4,12 +4,25 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { drizzle } from "drizzle-orm/durable-sqlite";
-import { eq, and, or, asc, desc, sql } from "drizzle-orm";
+import { eq, and, or, asc, desc, sql, gte, lte, like } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import * as schema from "../db/schema";
 import { Folders } from "../../shared/folders";
 import type { Env } from "../types";
 import { applyMigrations, mailboxMigrations } from "./migrations";
+import type { ParsedInvoice } from "../lib/invoice-parser";
+
+export interface InvoiceFilters {
+	dateFrom?: string;
+	dateTo?: string;
+	sellerContains?: string;
+	buyerContains?: string;
+	invoiceNumber?: string;
+	minAmount?: number;
+	maxAmount?: number;
+	page?: number;
+	limit?: number;
+}
 
 /**
  * SQL expression to normalize email subjects by stripping common
@@ -868,5 +881,172 @@ export class MailboxDO extends DurableObject<Env> {
 		if (attachments.length > 0) {
 			this.db.insert(schema.attachments).values(attachments).run();
 		}
+	}
+
+	// ── Invoices (Drizzle) ─────────────────────────────────────────
+
+	/**
+	 * Atomically persist a parsed invoice + its line items. Returns the new
+	 * invoice id. Uses storage.transactionSync so a partial write can never
+	 * leave dangling header/items.
+	 */
+	async saveInvoice(
+		emailId: string,
+		attachmentId: string,
+		parsed: ParsedInvoice,
+	): Promise<string> {
+		const invoiceId = crypto.randomUUID();
+		const createdAt = new Date().toISOString();
+
+		const itemsRows = parsed.items.map((it, idx) => ({
+			id: crypto.randomUUID(),
+			invoice_id: invoiceId,
+			ord: idx,
+			item_name: it.item_name,
+			spec: it.spec,
+			unit: it.unit,
+			quantity: it.quantity,
+			unit_price: it.unit_price,
+			amount: it.amount,
+			tax_rate: it.tax_rate,
+			tax_amount: it.tax_amount,
+		}));
+
+		this.ctx.storage.transactionSync(() => {
+			this.db
+				.insert(schema.invoices)
+				.values({
+					id: invoiceId,
+					email_id: emailId,
+					attachment_id: attachmentId,
+					invoice_number: parsed.invoice_number,
+					invoice_code: parsed.invoice_code,
+					invoice_type: parsed.invoice_type,
+					issue_date: parsed.issue_date,
+					seller_name: parsed.seller.name,
+					seller_tax_id: parsed.seller.tax_id,
+					buyer_name: parsed.buyer.name,
+					buyer_tax_id: parsed.buyer.tax_id,
+					amount_excl_tax: parsed.amount_excl_tax,
+					tax_amount: parsed.tax_amount,
+					amount_incl_tax: parsed.amount_incl_tax,
+					remark: parsed.remark,
+					raw_xml: parsed.raw_xml,
+					created_at: createdAt,
+				})
+				.run();
+
+			if (itemsRows.length > 0) {
+				this.db.insert(schema.invoiceItems).values(itemsRows).run();
+			}
+		});
+
+		return invoiceId;
+	}
+
+	async getInvoice(invoiceId: string) {
+		const invoice = this.db
+			.select()
+			.from(schema.invoices)
+			.where(eq(schema.invoices.id, invoiceId))
+			.get();
+		if (!invoice) return null;
+		const items = this.db
+			.select()
+			.from(schema.invoiceItems)
+			.where(eq(schema.invoiceItems.invoice_id, invoiceId))
+			.orderBy(asc(schema.invoiceItems.ord))
+			.all();
+		return { invoice, items };
+	}
+
+	async listInvoices(filters: InvoiceFilters = {}) {
+		const limit = Math.min(Math.max(filters.limit ?? 50, 1), 200);
+		const page = Math.max(filters.page ?? 1, 1);
+		const offset = (page - 1) * limit;
+
+		const conditions: SQL[] = [];
+		if (filters.dateFrom) {
+			conditions.push(gte(schema.invoices.issue_date, filters.dateFrom));
+		}
+		if (filters.dateTo) {
+			conditions.push(lte(schema.invoices.issue_date, filters.dateTo));
+		}
+		if (filters.sellerContains) {
+			conditions.push(
+				like(schema.invoices.seller_name, `%${filters.sellerContains}%`),
+			);
+		}
+		if (filters.buyerContains) {
+			conditions.push(
+				like(schema.invoices.buyer_name, `%${filters.buyerContains}%`),
+			);
+		}
+		if (filters.invoiceNumber) {
+			conditions.push(eq(schema.invoices.invoice_number, filters.invoiceNumber));
+		}
+		if (filters.minAmount !== undefined) {
+			conditions.push(gte(schema.invoices.amount_incl_tax, filters.minAmount));
+		}
+		if (filters.maxAmount !== undefined) {
+			conditions.push(lte(schema.invoices.amount_incl_tax, filters.maxAmount));
+		}
+		const where = conditions.length ? and(...conditions) : undefined;
+
+		// Exclude raw_xml from list payload — bulk JSON is wasteful; callers
+		// load it via getInvoice when they need the full document.
+		const rows = this.db
+			.select({
+				id: schema.invoices.id,
+				email_id: schema.invoices.email_id,
+				attachment_id: schema.invoices.attachment_id,
+				invoice_number: schema.invoices.invoice_number,
+				invoice_code: schema.invoices.invoice_code,
+				invoice_type: schema.invoices.invoice_type,
+				issue_date: schema.invoices.issue_date,
+				seller_name: schema.invoices.seller_name,
+				seller_tax_id: schema.invoices.seller_tax_id,
+				buyer_name: schema.invoices.buyer_name,
+				buyer_tax_id: schema.invoices.buyer_tax_id,
+				amount_excl_tax: schema.invoices.amount_excl_tax,
+				tax_amount: schema.invoices.tax_amount,
+				amount_incl_tax: schema.invoices.amount_incl_tax,
+				currency: schema.invoices.currency,
+				remark: schema.invoices.remark,
+				created_at: schema.invoices.created_at,
+			})
+			.from(schema.invoices)
+			.where(where)
+			.orderBy(desc(schema.invoices.issue_date), desc(schema.invoices.created_at))
+			.limit(limit)
+			.offset(offset)
+			.all();
+
+		const totalRow = this.db
+			.select({ count: sql<number>`COUNT(*)`.mapWith(Number) })
+			.from(schema.invoices)
+			.where(where)
+			.get();
+
+		return {
+			invoices: rows,
+			totalCount: totalRow?.count ?? 0,
+			page,
+			limit,
+		};
+	}
+
+	async deleteInvoice(invoiceId: string): Promise<boolean> {
+		const existing = this.db
+			.select({ id: schema.invoices.id })
+			.from(schema.invoices)
+			.where(eq(schema.invoices.id, invoiceId))
+			.get();
+		if (!existing) return false;
+		this.db
+			.delete(schema.invoices)
+			.where(eq(schema.invoices.id, invoiceId))
+			.run();
+		return true;
 	}
 }

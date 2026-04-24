@@ -19,6 +19,9 @@ import {
 	toolMarkEmailRead,
 	toolMoveEmail,
 	toolForwardEmail,
+	toolListInvoices,
+	toolGetInvoice,
+	toolDeleteInvoice,
 } from "../lib/tools";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
 import {
@@ -900,6 +903,63 @@ export class EmailMCP extends McpAgent<Env> {
 					return mcpResult(result);
 				}
 				return mcpText(result);
+			},
+		);
+
+		// ── list_invoices ──────────────────────────────────────────
+		this.server.tool(
+			"list_invoices",
+			"List structured invoice records persisted from inbound XML 全电/增值税发票 attachments. Filters are AND-combined; sorted by issue_date DESC.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				dateFrom: z.string().optional().describe("Issue date lower bound, ISO YYYY-MM-DD inclusive"),
+				dateTo: z.string().optional().describe("Issue date upper bound, ISO YYYY-MM-DD inclusive"),
+				sellerContains: z.string().optional().describe("Substring match on seller_name (case-insensitive in SQLite by default)"),
+				buyerContains: z.string().optional().describe("Substring match on buyer_name"),
+				invoiceNumber: z.string().optional().describe("Exact invoice_number match"),
+				minAmount: z.number().optional().describe("Lower bound on amount_incl_tax"),
+				maxAmount: z.number().optional().describe("Upper bound on amount_incl_tax"),
+				page: z.number().int().positive().optional().describe("1-indexed page number (default 1)"),
+				limit: z.number().int().positive().max(200).optional().describe("Page size (default 50, max 200)"),
+			},
+			async ({ mailboxId, ...filters }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolListInvoices(env, mailboxId, filters);
+				return mcpText(result);
+			},
+		);
+
+		// ── get_invoice ────────────────────────────────────────────
+		this.server.tool(
+			"get_invoice",
+			"Read one invoice by id. Returns the full header (including raw_xml) plus all line items ordered by their original sequence.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				invoiceId: z.string().describe("The invoice id from list_invoices"),
+			},
+			async ({ mailboxId, invoiceId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolGetInvoice(env, mailboxId, invoiceId);
+				if ("error" in result) return mcpError(result.error);
+				return mcpText(result);
+			},
+		);
+
+		// ── delete_invoice ─────────────────────────────────────────
+		this.server.tool(
+			"delete_invoice",
+			"Delete one invoice and all its line items. Cascade only on the invoice tables — does NOT delete the source email or attachment.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				invoiceId: z.string().describe("The invoice id"),
+			},
+			async ({ mailboxId, invoiceId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolDeleteInvoice(env, mailboxId, invoiceId);
+				return mcpResult(result);
 			},
 		);
 	}

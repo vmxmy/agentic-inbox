@@ -46,6 +46,10 @@ export const RuleActionSchema = z.object({
 	/** When true, parse eligible attachments (XML today, PDF via OCR later)
 	 *  and prepend their extracted text to the agent's prompt for this email. */
 	extractAttachmentText: z.boolean().optional(),
+	/** When true, parse XML attachments as Chinese 全电/增值税发票 and persist
+	 *  the structured fields (header + line items) to the mailbox database.
+	 *  Runs BEFORE the auto-draft early-return, so it works alongside skipDraft. */
+	extractInvoice: z.boolean().optional(),
 }).strict();
 
 export const RuleSchema = z.object({

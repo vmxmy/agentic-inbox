@@ -25,7 +25,7 @@ export function extensionOf(filename: string | undefined | null): string {
  * Best-effort decode bytes to text. Tries UTF-8 first (most invoices), falls
  * back to GBK for older mainland-China XML payloads. Returns "" on failure.
  */
-function decodeBytes(bytes: ArrayBuffer | Uint8Array): string {
+export function decodeBytes(bytes: ArrayBuffer | Uint8Array): string {
 	const buf = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
 	try {
 		const utf8 = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true }).decode(buf);
