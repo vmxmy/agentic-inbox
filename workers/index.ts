@@ -486,6 +486,70 @@ app.get("/api/v1/mailboxes/:mailboxId/invoices", async (c: AppContext) => {
 	return c.json(result);
 });
 
+// CSV export — same filter surface as the JSON list, but streams all pages
+// (up to INVOICE_CSV_ROW_LIMIT) so "export what I see" covers the entire
+// filtered set, not just the current UI page. Excel-friendly (UTF-8 BOM).
+app.get("/api/v1/mailboxes/:mailboxId/invoices.csv", async (c: AppContext) => {
+	const { INVOICE_CSV_HEADER, INVOICE_CSV_ROW_LIMIT, CSV_BOM, invoicesRowsToCsvBody, invoiceCsvFilename } =
+		await import("./lib/invoice-csv");
+
+	const baseFilters = {
+		dateFrom: c.req.query("dateFrom") || undefined,
+		dateTo: c.req.query("dateTo") || undefined,
+		sellerContains: c.req.query("sellerContains") || undefined,
+		buyerContains: c.req.query("buyerContains") || undefined,
+		invoiceNumber: c.req.query("invoiceNumber") || undefined,
+		minAmount: c.req.query("minAmount") ? Number(c.req.query("minAmount")) : undefined,
+		maxAmount: c.req.query("maxAmount") ? Number(c.req.query("maxAmount")) : undefined,
+	};
+
+	const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+	const writer = writable.getWriter();
+	const encoder = new TextEncoder();
+
+	// Drive the page loop off to the background so we can return the response
+	// head (status + content-disposition) immediately and stream rows.
+	(async () => {
+		try {
+			await writer.write(encoder.encode(CSV_BOM + INVOICE_CSV_HEADER));
+			const pageSize = 200; // DO cap
+			let page = 1;
+			let emitted = 0;
+			while (emitted < INVOICE_CSV_ROW_LIMIT) {
+				const result = await c.var.mailboxStub.listInvoices({
+					...baseFilters,
+					page,
+					limit: pageSize,
+				});
+				const rows = result?.invoices ?? [];
+				if (rows.length === 0) break;
+				const remaining = INVOICE_CSV_ROW_LIMIT - emitted;
+				const batch = rows.length > remaining ? rows.slice(0, remaining) : rows;
+				await writer.write(encoder.encode(invoicesRowsToCsvBody(batch)));
+				emitted += batch.length;
+				if (rows.length < pageSize) break;
+				page += 1;
+			}
+		} catch (e) {
+			// Surface the error inline as a CSV comment-style trailing row so
+			// the downloaded file still opens but the user sees the failure.
+			await writer
+				.write(encoder.encode(`\r\n# export failed: ${(e as Error).message}\r\n`))
+				.catch(() => {});
+		} finally {
+			await writer.close().catch(() => {});
+		}
+	})();
+
+	return new Response(readable, {
+		headers: {
+			"Content-Type": "text/csv; charset=utf-8",
+			"Content-Disposition": `attachment; filename="${invoiceCsvFilename()}"`,
+			"Cache-Control": "no-store",
+		},
+	});
+});
+
 app.get("/api/v1/mailboxes/:mailboxId/invoices/:id", async (c: AppContext) => {
 	const invoiceId = c.req.param("id")!;
 	const result = await c.var.mailboxStub.getInvoice(invoiceId);

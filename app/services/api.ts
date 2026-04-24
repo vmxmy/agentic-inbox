@@ -218,6 +218,22 @@ const api = {
 		get<InvoiceDetailResponse>(`/api/v1/mailboxes/${mailboxId}/invoices/${invoiceId}`),
 	deleteInvoice: (mailboxId: string, invoiceId: string) =>
 		del<void>(`/api/v1/mailboxes/${mailboxId}/invoices/${invoiceId}`),
+	/**
+	 * Build a download URL for the CSV export. Returned as a string (not
+	 * fetched) so the caller can hand it to the browser's download path
+	 * (`<a href>` / `window.open`) and let the streamed response come down
+	 * directly.
+	 */
+	invoicesExportUrl: (mailboxId: string, filters: InvoiceFilters = {}): string => {
+		const qs = new URLSearchParams();
+		for (const [k, v] of Object.entries(filters)) {
+			if (v !== undefined && v !== null && v !== "") qs.set(k, String(v));
+		}
+		const query = qs.toString();
+		return query
+			? `/api/v1/mailboxes/${mailboxId}/invoices.csv?${query}`
+			: `/api/v1/mailboxes/${mailboxId}/invoices.csv`;
+	},
 	uploadInvoiceFile: (
 		mailboxId: string,
 		emailId: string,

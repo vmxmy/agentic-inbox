@@ -1023,6 +1023,8 @@ export class MailboxDO extends DurableObject<Env> {
 				amount_incl_tax: schema.invoices.amount_incl_tax,
 				currency: schema.invoices.currency,
 				remark: schema.invoices.remark,
+				source_kind: schema.invoices.source_kind,
+				needs_review: schema.invoices.needs_review,
 				created_at: schema.invoices.created_at,
 			})
 			.from(schema.invoices)

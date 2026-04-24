@@ -3,11 +3,12 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import { Badge, Button, Empty, Input, Loader, Pagination } from "@cloudflare/kumo";
-import { ReceiptIcon, TrashIcon, WarningIcon } from "@phosphor-icons/react";
+import { DownloadSimpleIcon, ReceiptIcon, TrashIcon, WarningIcon } from "@phosphor-icons/react";
 import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router";
 import { formatListDate } from "shared/dates";
 import { useDeleteInvoice, useInvoices } from "~/queries/invoices";
+import api from "~/services/api";
 import type { InvoiceFilters } from "~/types";
 
 const PAGE_SIZE = 25;
@@ -109,6 +110,20 @@ export default function InvoicesRoute() {
 						</label>
 						<Button variant="ghost" onClick={resetFilters}>
 							清除筛选
+						</Button>
+						<Button
+							variant="secondary"
+							disabled={!mailboxId || totalCount === 0}
+							onClick={() => {
+								if (!mailboxId) return;
+								// Strip pagination — export covers the entire filtered set.
+								const { page: _p, limit: _l, ...exportFilters } = filters;
+								const url = api.invoicesExportUrl(mailboxId, exportFilters);
+								window.location.href = url;
+							}}
+						>
+							<DownloadSimpleIcon size={14} weight="regular" />
+							导出 CSV
 						</Button>
 					</div>
 				</div>
