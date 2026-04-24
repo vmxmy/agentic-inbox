@@ -46,17 +46,17 @@ export default function InvoiceUploader({
 				setLastResult(
 					`已提取发票 ${result.invoice_number}`,
 				);
-				toast.success?.(`发票已入库：${result.invoice_number}`);
+				toast.add({ title: `发票已入库：${result.invoice_number}` });
 			} else if (result.reason) {
 				setLastResult(`文件已保存，但未入库：${result.reason}`);
-				toast.warning?.(result.reason);
+				toast.add({ title: result.reason });
 			} else {
 				setLastResult("已上传");
 			}
 		} catch (err) {
 			const message = (err as Error).message || "上传失败";
 			setLastResult(`上传失败：${message}`);
-			toast.error?.(message);
+			toast.add({ title: message });
 		}
 	};
 

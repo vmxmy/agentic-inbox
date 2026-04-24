@@ -24,7 +24,7 @@
 import { unzipSync } from "fflate";
 import { parseChinaEInvoiceXml, type ParsedInvoice } from "./invoice-parser";
 
-export type UnitOrigin = "email" | "unpacked" | "external-url";
+export type UnitOrigin = "email" | "unpacked" | "external-url" | "manual-upload";
 
 export interface ExtractionUnit {
 	/** The attachment_id row this unit corresponds to. */
