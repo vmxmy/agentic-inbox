@@ -3,8 +3,9 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMemo } from "react";
 import api from "~/services/api";
-import type { InvoiceFilters } from "~/types";
+import type { Invoice, InvoiceFilters } from "~/types";
 import { queryKeys } from "./keys";
 
 export function useInvoices(mailboxId: string | undefined, filters: InvoiceFilters) {
@@ -62,6 +63,38 @@ export function fileToBase64(file: File): Promise<string> {
 		};
 		reader.readAsDataURL(file);
 	});
+}
+
+/**
+ * Fetch the mailbox-wide list once and project it to a map keyed by
+ * `email_id`. Feeds the "已提取发票" badge in the email list + detail
+ * views. Capped at 200 invoices per call, which is enough for any
+ * mailbox we currently expect.
+ */
+export function useInvoicesIndexByEmail(mailboxId: string | undefined) {
+	const query = useInvoices(mailboxId, { limit: 200 });
+	const index = useMemo(() => {
+		const map = new Map<string, Invoice[]>();
+		for (const inv of query.data?.invoices ?? []) {
+			const arr = map.get(inv.email_id);
+			if (arr) arr.push(inv);
+			else map.set(inv.email_id, [inv]);
+		}
+		return map;
+	}, [query.data]);
+	return { index, isLoading: query.isLoading };
+}
+
+/** Invoices associated with a single email id (derived from the index). */
+export function useInvoicesForEmail(
+	mailboxId: string | undefined,
+	emailId: string | undefined,
+): Invoice[] {
+	const { index } = useInvoicesIndexByEmail(mailboxId);
+	return useMemo(() => {
+		if (!emailId) return [];
+		return index.get(emailId) ?? [];
+	}, [index, emailId]);
 }
 
 export function useUploadInvoiceFile(

@@ -4,7 +4,9 @@
 
 import EmailAttachmentList from "~/components/EmailAttachmentList";
 import EmailIframe from "~/components/EmailIframe";
+import { InvoiceBadgeCard } from "~/components/InvoiceBadge";
 import { formatDetailDate, rewriteInlineImages } from "~/lib/utils";
+import { useInvoicesForEmail } from "~/queries/invoices";
 import type { Email } from "~/types";
 import InvoiceUploader from "./InvoiceUploader";
 
@@ -19,6 +21,7 @@ export default function SingleMessageView({
 	mailboxId,
 	onPreviewImage,
 }: SingleMessageViewProps) {
+	const emailInvoices = useInvoicesForEmail(mailboxId, email.id);
 	return (
 		<div className="flex flex-col h-full">
 			<div className="px-4 py-4 border-b border-kumo-line md:px-6">
@@ -39,6 +42,12 @@ export default function SingleMessageView({
 					</span>
 				</div>
 			</div>
+
+			{emailInvoices.length > 0 && mailboxId ? (
+				<div className="px-4 py-3 border-b border-kumo-line shrink-0 md:px-6">
+					<InvoiceBadgeCard mailboxId={mailboxId} invoices={emailInvoices} />
+				</div>
+			) : null}
 
 			<div className="flex-1 min-h-0">
 				<EmailIframe
