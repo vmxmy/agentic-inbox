@@ -40,6 +40,7 @@ export interface PipelineStub {
 		emailId: string,
 		attachmentId: string,
 		parsed: ParsedInvoice,
+		opts?: { sourceKind?: "xml" | "pdf-ocr"; needsReview?: boolean },
 	): Promise<string>;
 	saveDerivedAttachment(
 		emailId: string,

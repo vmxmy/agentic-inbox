@@ -901,6 +901,7 @@ export class MailboxDO extends DurableObject<Env> {
 		emailId: string,
 		attachmentId: string,
 		parsed: ParsedInvoice,
+		opts: { sourceKind?: "xml" | "pdf-ocr"; needsReview?: boolean } = {},
 	): Promise<string> {
 		const invoiceId = crypto.randomUUID();
 		const createdAt = new Date().toISOString();
@@ -940,6 +941,8 @@ export class MailboxDO extends DurableObject<Env> {
 					remark: parsed.remark,
 					raw_xml: parsed.raw_xml,
 					created_at: createdAt,
+					source_kind: opts.sourceKind ?? "xml",
+					needs_review: opts.needsReview ? 1 : 0,
 				})
 				.run();
 
@@ -1101,6 +1104,16 @@ export class MailboxDO extends DurableObject<Env> {
 			.from(schema.attachments)
 			.where(eq(schema.attachments.email_id, emailId))
 			.all();
+	}
+
+	/** Look up a single attachment by id (scoped to this mailbox's DB). */
+	async findAttachmentById(attachmentId: string) {
+		const row = this.db
+			.select()
+			.from(schema.attachments)
+			.where(eq(schema.attachments.id, attachmentId))
+			.get();
+		return row ?? null;
 	}
 
 	/**

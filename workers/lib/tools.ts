@@ -31,6 +31,11 @@ import { sendEmail } from "../email-sender";
 import { Folders } from "../../shared/folders";
 import type { Env } from "../types";
 import type { InvoiceFilters } from "../durableObject";
+import { submitAndWait, DeepReadError } from "./deepread";
+import {
+	CHINA_INVOICE_OCR_SCHEMA,
+	ocrResultToParsedInvoice,
+} from "./invoice-ocr";
 
 // ── Type casts for DO methods not on the base stub type ────────────
 type MailboxSearchStub = {
@@ -659,4 +664,96 @@ export async function toolReprocessInvoicesForEmail(
 ) {
 	const stub = getMailboxStub(env, mailboxId);
 	return stub.reprocessInvoicesForEmail(emailId);
+}
+
+// ── PDF OCR via DeepRead ──────────────────────────────────────────
+
+export interface ExtractInvoiceFromPdfResult {
+	invoiceId?: string;
+	invoice_number?: string;
+	needs_review?: boolean;
+	review_fields?: string[];
+	error?: string;
+}
+
+/**
+ * Manual PDF → invoice extraction for cases where no XML source is available
+ * (the file format is PDF-only). Submits the PDF to DeepRead, polls, maps
+ * the response into our ParsedInvoice shape, and persists with
+ * `source_kind='pdf-ocr'`. The invoice row is flagged `needs_review` when
+ * any extracted field carries DeepRead's `hil_flag`.
+ */
+export async function toolExtractInvoiceFromPdf(
+	env: Env,
+	mailboxId: string,
+	attachmentId: string,
+): Promise<ExtractInvoiceFromPdfResult> {
+	if (!env.DEEPREAD_API_KEY) {
+		return { error: "DEEPREAD_API_KEY is not configured on this Worker. Run `wrangler secret put DEEPREAD_API_KEY`." };
+	}
+	const stub = getMailboxStub(env, mailboxId);
+
+	const att = await stub.findAttachmentById(attachmentId);
+	if (!att) return { error: `Attachment ${attachmentId} not found in this mailbox` };
+	const lowerName = att.filename.toLowerCase();
+	const mt = (att.mimetype || "").toLowerCase();
+	const looksLikePdf = lowerName.endsWith(".pdf") || mt === "application/pdf";
+	if (!looksLikePdf) {
+		return {
+			error: `Attachment ${attachmentId} is not a PDF (filename=${att.filename}, mimetype=${att.mimetype})`,
+		};
+	}
+
+	const r2Key = `attachments/${att.email_id}/${att.id}/${att.filename}`;
+	const obj = await env.BUCKET.get(r2Key);
+	if (!obj) return { error: `R2 object missing at ${r2Key}` };
+	const bytes = new Uint8Array(await obj.arrayBuffer());
+
+	// Submit + poll. DeepRead typically completes Chinese invoices in ~10-30s.
+	let result;
+	try {
+		({ result } = await submitAndWait(env.DEEPREAD_API_KEY, {
+			bytes,
+			filename: att.filename,
+			schema: CHINA_INVOICE_OCR_SCHEMA,
+		}));
+	} catch (e) {
+		if (e instanceof DeepReadError) {
+			return { error: `DeepRead ${e.code}: ${e.message}` };
+		}
+		return { error: (e as Error).message };
+	}
+
+	const mapped = ocrResultToParsedInvoice(result, { rawBytes: bytes });
+	if (!mapped) {
+		return {
+			error:
+				"DeepRead returned no usable invoice fields (missing invoice_number or issue_date)",
+		};
+	}
+
+	// Dedupe by invoice_number per mailbox — same semantics as the XML
+	// pipeline.
+	const existing = await stub.listInvoices({
+		invoiceNumber: mapped.parsed.invoice_number,
+		limit: 1,
+	});
+	if (existing.totalCount > 0) {
+		return {
+			error: `duplicate invoice_number=${mapped.parsed.invoice_number} already saved in this mailbox`,
+		};
+	}
+
+	const invoiceId = await stub.saveInvoice(
+		att.email_id,
+		att.id,
+		mapped.parsed,
+		{ sourceKind: "pdf-ocr", needsReview: mapped.needsReview },
+	);
+	return {
+		invoiceId,
+		invoice_number: mapped.parsed.invoice_number,
+		needs_review: mapped.needsReview,
+		review_fields: mapped.reviewFields,
+	};
 }

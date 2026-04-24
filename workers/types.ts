@@ -9,4 +9,10 @@
 export interface Env extends Cloudflare.Env {
 	POLICY_AUD: string;
 	TEAM_DOMAIN: string;
+	/**
+	 * DeepRead API key for PDF OCR fallback. Optional: if unset the
+	 * PDF OCR MCP tool will return a clear error. Set via:
+	 *   wrangler secret put DEEPREAD_API_KEY
+	 */
+	DEEPREAD_API_KEY?: string;
 }

@@ -75,6 +75,10 @@ export const invoices = sqliteTable("invoices", {
 	remark: text("remark"),
 	raw_xml: text("raw_xml"),
 	created_at: text("created_at").notNull(),
+	/** 'xml' for XML attachments, 'pdf-ocr' for DeepRead results. */
+	source_kind: text("source_kind").notNull().default("xml"),
+	/** 1 if any OCR'd field tripped DeepRead's HIL flag; user should audit. */
+	needs_review: integer("needs_review").notNull().default(0),
 });
 
 export const invoiceItems = sqliteTable("invoice_items", {

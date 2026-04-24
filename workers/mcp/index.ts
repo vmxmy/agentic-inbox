@@ -23,6 +23,7 @@ import {
 	toolGetInvoice,
 	toolDeleteInvoice,
 	toolReprocessInvoicesForEmail,
+	toolExtractInvoiceFromPdf,
 } from "../lib/tools";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
 import {
@@ -977,6 +978,22 @@ export class EmailMCP extends McpAgent<Env> {
 				if (denied) return denied;
 				const result = await toolReprocessInvoicesForEmail(env, mailboxId, emailId);
 				return mcpText(result);
+			},
+		);
+
+		// ── extract_invoice_from_pdf ────────────────────────────────
+		this.server.tool(
+			"extract_invoice_from_pdf",
+			"Run PDF OCR (DeepRead) on a specific attachment to extract invoice fields. Use as a fallback when an email only contains a PDF — no XML/OFD source. Synchronously submits + polls (up to 90s). Requires DEEPREAD_API_KEY configured on the Worker. Flags `needs_review=true` when any field requires human verification (e.g. ambiguous dates, unreadable numbers).",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				attachmentId: z.string().describe("The attachment id of a PDF invoice"),
+			},
+			async ({ mailboxId, attachmentId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolExtractInvoiceFromPdf(env, mailboxId, attachmentId);
+				return mcpResult(result as unknown as Record<string, unknown>);
 			},
 		);
 	}

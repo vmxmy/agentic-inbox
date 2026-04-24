@@ -231,4 +231,11 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX IF NOT EXISTS idx_attachments_origin ON attachments(origin);
         `,
 	},
+	{
+		name: "11_add_invoice_source_kind_and_review",
+		sql: `
+            ALTER TABLE invoices ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'xml';
+            ALTER TABLE invoices ADD COLUMN needs_review INTEGER NOT NULL DEFAULT 0;
+        `,
+	},
 ];
