@@ -19,8 +19,10 @@
  */
 
 const API_BASE = "https://api.deepread.tech";
-const DEFAULT_POLL_MS = 2_000;
-const DEFAULT_TIMEOUT_MS = 90_000;
+const DEFAULT_POLL_MS = 3_000;
+// 180s covers free-tier queue delays. Empirically Chinese invoice PDFs
+// finish in 15-60s on hot start, sometimes 120s+ on first submit.
+const DEFAULT_TIMEOUT_MS = 180_000;
 
 export class DeepReadError extends Error {
 	constructor(
@@ -126,11 +128,19 @@ export async function submitOcr(
 	} catch {
 		throw new DeepReadError("bad-response", "DeepRead submit returned non-JSON");
 	}
-	const jobId = (json as { job_id?: unknown }).job_id;
-	if (typeof jobId !== "string" || !jobId) {
+	// Real response uses `id`; older docs and some examples say `job_id`.
+	// Accept either.
+	const body = json as { id?: unknown; job_id?: unknown };
+	const jobId =
+		typeof body.id === "string" && body.id
+			? body.id
+			: typeof body.job_id === "string" && body.job_id
+				? body.job_id
+				: null;
+	if (!jobId) {
 		throw new DeepReadError(
 			"bad-response",
-			`DeepRead submit missing job_id: ${JSON.stringify(json).slice(0, 300)}`,
+			`DeepRead submit returned no id: ${JSON.stringify(json).slice(0, 300)}`,
 		);
 	}
 	return jobId;
