@@ -666,8 +666,10 @@ export async function toolReprocessInvoicesForEmail(
 	mailboxId: string,
 	emailId: string,
 ) {
+	const { resolveInvoiceSourceDomains } = await import("./agent-config");
+	const allowedDomains = await resolveInvoiceSourceDomains(env, mailboxId);
 	const stub = getMailboxStub(env, mailboxId);
-	return stub.reprocessInvoicesForEmail(emailId);
+	return stub.reprocessInvoicesForEmail(emailId, { allowedDomains });
 }
 
 // ── PDF OCR via DeepRead ──────────────────────────────────────────

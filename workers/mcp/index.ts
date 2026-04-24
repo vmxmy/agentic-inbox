@@ -663,7 +663,7 @@ export class EmailMCP extends McpAgent<Env> {
 		// ── update_mailbox_settings ────────────────────────────────
 		this.server.tool(
 			"update_mailbox_settings",
-			"Replace a mailbox's settings blob. ACL fields (owner, members) are server-managed and will be stripped from the input — use add_member/remove_member for those.",
+			"Replace a mailbox's settings blob. ACL fields (owner, members) are server-managed and will be stripped from the input — use add_member/remove_member for those. Recognised keys include: autoDraft (bool), agentModel (string), agentSystemPrompt (string|null), rules (array), invoiceSourceDomains (array of hostnames or leading-dot suffixes, e.g. ['.new-tax-platform.cn'] — appended to the built-in invoice-source whitelist; malformed entries are silently dropped).",
 			{
 				mailboxId: z.string().describe("The mailbox email address"),
 				settings: z.record(z.unknown()).describe("New settings object. owner/members are ignored."),

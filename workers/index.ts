@@ -37,6 +37,7 @@ import {
 	verifyInviteToken,
 } from "./lib/auth";
 import { getAgentConfig } from "./lib/agent-config";
+import { DEFAULT_INVOICE_SOURCE_DOMAINS } from "./lib/invoice-link-scanner";
 import { evaluateRules } from "./lib/rules";
 import { extensionOf, extractAttachmentsInline } from "./lib/attachment-extract";
 import {
@@ -772,6 +773,10 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 				entryUnits,
 				bodyHtml: parsedEmail.html || parsedEmail.text || null,
 				existingAttachments,
+				allowedDomains:
+					config.invoiceSourceDomains.length === 0
+						? DEFAULT_INVOICE_SOURCE_DOMAINS
+						: [...DEFAULT_INVOICE_SOURCE_DOMAINS, ...config.invoiceSourceDomains],
 			});
 			if (result.saved.length || result.skipped.length) {
 				console.log(

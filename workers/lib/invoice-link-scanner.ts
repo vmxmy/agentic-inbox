@@ -26,14 +26,16 @@ export interface InvoiceDownloadLink {
 }
 
 /**
- * Hostnames allowed for outbound invoice-file fetches. Matches either an exact
- * hostname or a suffix match against a leading-dot entry (`.chinatax.gov.cn`
- * covers `dppt.guangdong.chinatax.gov.cn`).
+ * Built-in hostnames allowed for outbound invoice-file fetches. Matches either
+ * an exact hostname or a suffix match against a leading-dot entry
+ * (`.chinatax.gov.cn` covers `dppt.guangdong.chinatax.gov.cn`).
  *
- * Keep this list tight — every entry is an implicit trust decision. Anything
- * not in the list is rejected by {@link isUrlAllowed}.
+ * These are the **defaults** — per-mailbox extras live in the settings blob
+ * and are merged in by callers that have a mailboxId in scope (see
+ * `resolveInvoiceSourceDomains` in `agent-config.ts`). Library functions here
+ * fall back to this default list when no explicit set is passed.
  */
-export const INVOICE_SOURCE_DOMAINS: readonly string[] = [
+export const DEFAULT_INVOICE_SOURCE_DOMAINS: readonly string[] = [
 	// 国家税务总局各省 e-invoice delivery endpoints
 	".chinatax.gov.cn",
 	// 铁路客票
@@ -55,7 +57,17 @@ export const INVOICE_SOURCE_DOMAINS: readonly string[] = [
 	".chanjet.com",
 ];
 
-export function isUrlAllowed(urlStr: string): boolean {
+/** Per-entry validator for user-supplied extras. Hostname or leading-dot
+ *  suffix, no slashes/colons/spaces/wildcards/upper-case. */
+const VALID_DOMAIN_RE = /^\.?[a-z0-9][a-z0-9.-]*[a-z0-9]$/;
+export function isValidInvoiceSourceDomain(entry: unknown): entry is string {
+	return typeof entry === "string" && entry.length <= 253 && VALID_DOMAIN_RE.test(entry);
+}
+
+export function isUrlAllowed(
+	urlStr: string,
+	domains: readonly string[] = DEFAULT_INVOICE_SOURCE_DOMAINS,
+): boolean {
 	let u: URL;
 	try {
 		u = new URL(urlStr);
@@ -64,7 +76,7 @@ export function isUrlAllowed(urlStr: string): boolean {
 	}
 	if (u.protocol !== "https:" && u.protocol !== "http:") return false;
 	const host = u.hostname.toLowerCase();
-	return INVOICE_SOURCE_DOMAINS.some((d) =>
+	return domains.some((d) =>
 		d.startsWith(".") ? host.endsWith(d) || host === d.slice(1) : host === d,
 	);
 }
@@ -133,8 +145,12 @@ function stripInnerTags(inner: string): string {
  * query-parameter normalisation via `URL`) appears at most once; `kind`
  * preference is XML > OFD > PDF > unknown.
  */
-export function scanInvoiceLinks(html: string | null | undefined): InvoiceDownloadLink[] {
+export function scanInvoiceLinks(
+	html: string | null | undefined,
+	opts: { domains?: readonly string[] } = {},
+): InvoiceDownloadLink[] {
 	if (!html) return [];
+	const domains = opts.domains ?? DEFAULT_INVOICE_SOURCE_DOMAINS;
 
 	// Match <a ... href="..."...> INNER </a>. Inner is non-greedy and we don't
 	// care about nested anchors because HTML forbids them.
@@ -147,7 +163,7 @@ export function scanInvoiceLinks(html: string | null | undefined): InvoiceDownlo
 	while ((m = anchorRe.exec(html)) !== null) {
 		const rawHref = decodeEntities(m[1] ?? m[2] ?? m[3] ?? "");
 		if (!rawHref) continue;
-		if (!isUrlAllowed(rawHref)) continue;
+		if (!isUrlAllowed(rawHref, domains)) continue;
 
 		// Normalise: strip URL fragments; keep query intact (signed tokens live there).
 		let normalised: string;

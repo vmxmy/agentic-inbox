@@ -82,6 +82,10 @@ export interface PipelineInput {
 	/** All current attachment rows for this email (includes prior derived ones
 	 *  when re-running). Caller queries once before invoking. */
 	existingAttachments: ExistingAttachment[];
+	/** Merged whitelist (defaults + mailbox extras) for body-link scanning and
+	 *  outbound fetches. Required — callers must resolve via
+	 *  `resolveInvoiceSourceDomains(env, mailboxId)` before invoking. */
+	allowedDomains: readonly string[];
 }
 
 export interface PipelineResult {
@@ -143,7 +147,8 @@ function filenameFromLink(link: InvoiceDownloadLink, finalUrl: string): string {
 export async function processEmailForInvoices(
 	input: PipelineInput,
 ): Promise<PipelineResult> {
-	const { env, stub, emailId, entryUnits, bodyHtml, existingAttachments } = input;
+	const { env, stub, emailId, entryUnits, bodyHtml, existingAttachments, allowedDomains } =
+		input;
 
 	const saved: PipelineResult["saved"] = [];
 	const skipped: PipelineResult["skipped"] = [];
@@ -252,7 +257,7 @@ export async function processEmailForInvoices(
 	}
 
 	// ── 2) Scan body HTML for external download links ──────────────────
-	const links = scanInvoiceLinks(bodyHtml);
+	const links = scanInvoiceLinks(bodyHtml, { domains: allowedDomains });
 	for (const link of links) {
 		let bytes: Uint8Array;
 		let downloadedAttId: string;
@@ -276,7 +281,7 @@ export async function processEmailForInvoices(
 			mimetype = priorExternal.mimetype;
 		} else {
 			try {
-				const res = await fetchInvoiceFile(link.url);
+				const res = await fetchInvoiceFile(link.url, { allowedDomains });
 				bytes = res.bytes;
 				mimetype = res.contentType.split(";", 1)[0].trim() || "application/octet-stream";
 				storedFilename = sanitizeFilename(filenameFromLink(link, res.finalUrl));

@@ -5,7 +5,8 @@
 /**
  * Download an invoice file from an external URL, subject to strict guards:
  *
- *  - Hostname must match {@link INVOICE_SOURCE_DOMAINS} (anti-SSRF).
+ *  - Hostname must match the supplied whitelist (defaults to the built-in
+ *    list; pipeline callers pass the mailbox-merged list; anti-SSRF).
  *  - Timeout (default 10s).
  *  - Max response size (default 5MB).
  *  - Content-Type whitelist (XML / OFD / PDF / generic octet-stream).
@@ -16,7 +17,7 @@
  * Content-Type. Throws {@link InvoiceFetchError} on any guard failure.
  */
 
-import { isUrlAllowed } from "./invoice-link-scanner";
+import { DEFAULT_INVOICE_SOURCE_DOMAINS, isUrlAllowed } from "./invoice-link-scanner";
 
 export interface FetchResult {
 	bytes: Uint8Array;
@@ -67,6 +68,9 @@ function isAllowedContentType(ct: string): boolean {
 export interface FetchOptions {
 	timeoutMs?: number;
 	maxBytes?: number;
+	/** Effective hostname whitelist — defaults to the built-in list. Pipeline
+	 *  callers pass the mailbox-merged list so per-mailbox extras apply. */
+	allowedDomains?: readonly string[];
 }
 
 export async function fetchInvoiceFile(
@@ -75,10 +79,11 @@ export async function fetchInvoiceFile(
 ): Promise<FetchResult> {
 	const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
+	const allowedDomains = opts.allowedDomains ?? DEFAULT_INVOICE_SOURCE_DOMAINS;
 
 	let currentUrl = url;
 	for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-		if (!isUrlAllowed(currentUrl)) {
+		if (!isUrlAllowed(currentUrl, allowedDomains)) {
 			throw new InvoiceFetchError(
 				"not-allowed",
 				`URL host not in invoice-source whitelist: ${currentUrl}`,

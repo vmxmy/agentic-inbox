@@ -1124,7 +1124,10 @@ export class MailboxDO extends DurableObject<Env> {
 	 * unpacks ZIP/OFD containers — all via `invoice-pipeline.ts` so fresh
 	 * receives and reprocess paths stay aligned. Idempotent.
 	 */
-	async reprocessInvoicesForEmail(emailId: string) {
+	async reprocessInvoicesForEmail(
+		emailId: string,
+		opts: { allowedDomains: readonly string[] },
+	) {
 		const email = this.db
 			.select({ body: schema.emails.body })
 			.from(schema.emails)
@@ -1181,6 +1184,7 @@ export class MailboxDO extends DurableObject<Env> {
 			entryUnits,
 			bodyHtml: email.body,
 			existingAttachments: existing,
+			allowedDomains: opts.allowedDomains,
 		});
 	}
 }

@@ -7,6 +7,10 @@
  * Single source of truth for: auto-draft flag, model, system prompt, rules.
  */
 import type { Env } from "../types";
+import {
+	DEFAULT_INVOICE_SOURCE_DOMAINS,
+	isValidInvoiceSourceDomain,
+} from "./invoice-link-scanner";
 import { parseRulesLoose, RulesSchema, type Rule } from "./rules";
 
 /** Supported models. Keep this list in sync with the Settings dropdown. */
@@ -25,6 +29,11 @@ export interface AgentConfig {
 	model: AgentModel;
 	customSystemPrompt: string | null;
 	rules: Rule[];
+	/** Per-mailbox extras appended to the built-in invoice-source whitelist.
+	 *  Stored on the settings blob as `invoiceSourceDomains`. Malformed
+	 *  entries are filtered out silently — tighter than an error, but still
+	 *  observable because they won't show up in get_mailbox_settings. */
+	invoiceSourceDomains: readonly string[];
 }
 
 function coerceModel(raw: unknown): AgentModel {
@@ -32,6 +41,20 @@ function coerceModel(raw: unknown): AgentModel {
 		return raw as AgentModel;
 	}
 	return DEFAULT_AGENT_MODEL;
+}
+
+function coerceInvoiceSourceDomains(raw: unknown): readonly string[] {
+	if (!Array.isArray(raw)) return [];
+	const seen = new Set<string>();
+	const out: string[] = [];
+	for (const entry of raw) {
+		if (!isValidInvoiceSourceDomain(entry)) continue;
+		const lower = entry.toLowerCase();
+		if (seen.has(lower)) continue;
+		seen.add(lower);
+		out.push(lower);
+	}
+	return out;
 }
 
 export async function getAgentConfig(env: Env, mailboxId: string): Promise<AgentConfig> {
@@ -49,6 +72,7 @@ export async function getAgentConfig(env: Env, mailboxId: string): Promise<Agent
 					? settings.agentSystemPrompt
 					: null,
 			rules: parseRulesLoose(settings),
+			invoiceSourceDomains: coerceInvoiceSourceDomains(settings.invoiceSourceDomains),
 		};
 	} catch {
 		return defaults();
@@ -61,7 +85,23 @@ function defaults(): AgentConfig {
 		model: DEFAULT_AGENT_MODEL,
 		customSystemPrompt: null,
 		rules: [],
+		invoiceSourceDomains: [],
 	};
+}
+
+/**
+ * Effective invoice-source domain whitelist for a mailbox: built-in defaults
+ * concatenated with valid per-mailbox extras. Pipeline callers feed this to
+ * `fetchInvoiceFile` / `scanInvoiceLinks` so per-mailbox onboarding of new
+ * tax/ticket platforms doesn't need a redeploy.
+ */
+export async function resolveInvoiceSourceDomains(
+	env: Env,
+	mailboxId: string,
+): Promise<readonly string[]> {
+	const config = await getAgentConfig(env, mailboxId);
+	if (config.invoiceSourceDomains.length === 0) return DEFAULT_INVOICE_SOURCE_DOMAINS;
+	return [...DEFAULT_INVOICE_SOURCE_DOMAINS, ...config.invoiceSourceDomains];
 }
 
 // ── Mutation helpers ───────────────────────────────────────────────
