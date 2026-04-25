@@ -13,6 +13,7 @@ import {
 } from "@phosphor-icons/react";
 import { Link, useNavigate, useParams } from "react-router";
 import { formatDetailDate } from "shared/dates";
+import { InvoicePreview } from "~/components/InvoicePreview";
 import { formatBytes, getAttachmentUrl } from "~/lib/utils";
 import { useDeleteInvoice, useInvoice } from "~/queries/invoices";
 import type { Attachment } from "~/types";
@@ -290,6 +291,13 @@ export default function InvoiceDetailRoute() {
 						</div>
 					</div>
 				</section>
+
+				<InvoicePreview
+					related={related_attachments}
+					mailboxId={mailboxId!}
+					emailId={invoice.email_id}
+					rawXml={invoice.raw_xml}
+				/>
 
 				{items.length > 0 ? (
 					<section>
