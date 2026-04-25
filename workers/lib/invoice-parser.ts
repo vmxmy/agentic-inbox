@@ -37,6 +37,7 @@ export interface ParsedInvoice {
 	tax_amount: number | null;
 	amount_incl_tax: number | null;
 	remark: string | null;
+	original_invoice_number: string | null;
 	items: ParsedInvoiceItem[];
 	raw_xml: string;
 }
@@ -169,6 +170,13 @@ const HEADER_FIELDS = {
 		"rai:fare",
 	],
 	remark: ["bz", "remark", "remarks", "memo", "rai:remarks"],
+	original_invoice_number: [
+		"OriginalInvoiceNumber",
+		"YfpHm",
+		"YuanFpHm",
+		"RedInfoCode",
+		"原发票号码",
+	],
 } as const;
 
 const ITEM_FIELDS = {
@@ -360,6 +368,7 @@ export function parseChinaEInvoiceXml(
 		tax_amount: pickNum(flat, HEADER_FIELDS.tax_amount),
 		amount_incl_tax: pickNum(flat, HEADER_FIELDS.amount_incl_tax),
 		remark: pickStr(flat, HEADER_FIELDS.remark),
+		original_invoice_number: pickStr(flat, HEADER_FIELDS.original_invoice_number),
 		items: parsedItems,
 		raw_xml: raw,
 	};

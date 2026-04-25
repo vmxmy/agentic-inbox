@@ -237,6 +237,23 @@ export default function InvoiceDetailRoute() {
 				</div>
 			</div>
 
+			{invoice.is_voided ? (
+				<div className="border-b border-kumo-muted bg-kumo-muted px-6 py-3 text-sm text-kumo-subtle">
+					此发票已被红冲，不应计入报销
+				</div>
+			) : null}
+			{invoice.original_invoice_number ? (
+				<div className="border-b border-kumo-muted bg-kumo-raised px-6 py-3 text-sm text-kumo-default">
+					此为红字发票，对应原票号{" "}
+					<Link
+						to={`/mailbox/${mailboxId}/invoices?invoiceNumber=${encodeURIComponent(invoice.original_invoice_number)}`}
+						className="font-mono text-kumo-accent hover:underline"
+					>
+						#{invoice.original_invoice_number}
+					</Link>
+				</div>
+			) : null}
+
 			<div className="flex-1 overflow-auto px-6 py-6 space-y-6">
 				<section>
 					<h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-kumo-subtle">

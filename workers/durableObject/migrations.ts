@@ -238,4 +238,12 @@ export const mailboxMigrations: Migration[] = [
             ALTER TABLE invoices ADD COLUMN needs_review INTEGER NOT NULL DEFAULT 0;
         `,
 	},
+	{
+		name: "12_add_invoice_red_invoice_link",
+		sql: `
+            ALTER TABLE invoices ADD COLUMN original_invoice_number TEXT;
+            ALTER TABLE invoices ADD COLUMN is_voided INTEGER NOT NULL DEFAULT 0;
+            CREATE INDEX IF NOT EXISTS idx_invoices_original_number ON invoices(original_invoice_number);
+        `,
+	},
 ];

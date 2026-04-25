@@ -233,6 +233,7 @@ export function ocrResultToParsedInvoice(
 		tax_amount: toNum(data.tax_amount),
 		amount_incl_tax: toNum(data.amount_incl_tax),
 		remark: toStr(data.remark),
+		original_invoice_number: null,
 		items,
 		raw_xml: rawAudit,
 	};

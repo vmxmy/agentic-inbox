@@ -922,6 +922,17 @@ export class MailboxDO extends DurableObject<Env> {
 		}));
 
 		this.ctx.storage.transactionSync(() => {
+			// Check if a red invoice already points at this normal invoice number,
+			// meaning this invoice should be marked voided on arrival.
+			const alreadyVoided =
+				parsed.original_invoice_number == null
+					? (this.db
+						.select({ one: sql<number>`1` })
+						.from(schema.invoices)
+						.where(eq(schema.invoices.original_invoice_number, parsed.invoice_number))
+						.get() != null)
+					: false;
+
 			this.db
 				.insert(schema.invoices)
 				.values({
@@ -944,8 +955,24 @@ export class MailboxDO extends DurableObject<Env> {
 					created_at: createdAt,
 					source_kind: opts.sourceKind ?? "xml",
 					needs_review: opts.needsReview ? 1 : 0,
+					original_invoice_number: parsed.original_invoice_number ?? null,
+					is_voided: alreadyVoided ? 1 : 0,
 				})
 				.run();
+
+			if (parsed.original_invoice_number != null) {
+				// This is a red invoice — mark its predecessor as voided.
+				this.db
+					.update(schema.invoices)
+					.set({ is_voided: 1 })
+					.where(
+						and(
+							eq(schema.invoices.invoice_number, parsed.original_invoice_number),
+							sql`${schema.invoices.id} != ${invoiceId}`,
+						),
+					)
+					.run();
+			}
 
 			if (itemsRows.length > 0) {
 				this.db.insert(schema.invoiceItems).values(itemsRows).run();
@@ -1036,6 +1063,8 @@ export class MailboxDO extends DurableObject<Env> {
 				remark: schema.invoices.remark,
 				source_kind: schema.invoices.source_kind,
 				needs_review: schema.invoices.needs_review,
+				original_invoice_number: schema.invoices.original_invoice_number,
+				is_voided: schema.invoices.is_voided,
 				created_at: schema.invoices.created_at,
 			})
 			.from(schema.invoices)

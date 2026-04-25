@@ -85,6 +85,12 @@ export function InvoiceBadgeCard({ mailboxId, invoices }: DetailCardProps) {
 							{inv.source_kind === "pdf-ocr" ? (
 								<Badge variant="warning">PDF OCR</Badge>
 							) : null}
+							{inv.is_voided ? (
+								<Badge variant="neutral">已红冲</Badge>
+							) : null}
+							{inv.original_invoice_number ? (
+								<Badge variant="error">红字</Badge>
+							) : null}
 							{inv.needs_review ? (
 								<Badge variant="warning">
 									<WarningIcon size={10} weight="fill" />

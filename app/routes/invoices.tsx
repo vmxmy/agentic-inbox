@@ -22,6 +22,7 @@ export default function InvoicesRoute() {
 	const { mailboxId } = useParams<{ mailboxId: string }>();
 	const [page, setPage] = useState(1);
 	const [reviewOnly, setReviewOnly] = useState(false);
+	const [hideVoided, setHideVoided] = useState(true);
 	const [sellerContains, setSellerContains] = useState("");
 	const [buyerContains, setBuyerContains] = useState("");
 	const [itemContains, setItemContains] = useState("");
@@ -48,13 +49,15 @@ export default function InvoicesRoute() {
 	const { data, isLoading, isFetching } = useInvoices(mailboxId, filters);
 	const deleteInvoice = useDeleteInvoice(mailboxId);
 
-	// Client-side `needs_review` filter — backend doesn't index it yet, so the
-	// toggle works against the current page. With a typical invoice volume
-	// (tens per month) this is fine.
+	// Client-side filters for needs_review and hideVoided — backend doesn't
+	// index these yet, so filtering works against the current page. With a
+	// typical invoice volume (tens per month) this is fine.
 	const rawInvoices = data?.invoices ?? [];
-	const invoices = reviewOnly
-		? rawInvoices.filter((inv) => Boolean(inv.needs_review))
-		: rawInvoices;
+	const invoices = rawInvoices.filter((inv) => {
+		if (reviewOnly && !inv.needs_review) return false;
+		if (hideVoided && inv.is_voided) return false;
+		return true;
+	});
 	const totalCount = data?.totalCount ?? 0;
 	const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
 
@@ -67,6 +70,7 @@ export default function InvoicesRoute() {
 		setMaxAmount("");
 		setItemContains("");
 		setReviewOnly(false);
+		setHideVoided(true);
 		setPage(1);
 	};
 
@@ -99,6 +103,18 @@ export default function InvoicesRoute() {
 						</p>
 					</div>
 					<div className="flex items-center gap-2">
+						<label className="inline-flex items-center gap-2 text-sm text-kumo-default">
+							<input
+								type="checkbox"
+								className="h-4 w-4"
+								checked={hideVoided}
+								onChange={(e) => {
+									setHideVoided(e.target.checked);
+									setPage(1);
+								}}
+							/>
+							隐藏已红冲
+						</label>
 						<label className="inline-flex items-center gap-2 text-sm text-kumo-default">
 							<input
 								type="checkbox"

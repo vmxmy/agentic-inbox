@@ -98,6 +98,8 @@ export interface Invoice {
 	created_at: string;
 	source_kind?: "xml" | "pdf-ocr";
 	needs_review?: boolean | number;
+	original_invoice_number?: string | null;
+	is_voided?: number;
 }
 
 export interface InvoiceListResponse {

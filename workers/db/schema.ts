@@ -82,6 +82,10 @@ export const invoices = sqliteTable("invoices", {
 	source_kind: text("source_kind").notNull().default("xml"),
 	/** 1 if any OCR'd field tripped DeepRead's HIL flag; user should audit. */
 	needs_review: integer("needs_review").notNull().default(0),
+	/** 红字发票指向的原票号；普通票为 null。 */
+	original_invoice_number: text("original_invoice_number"),
+	/** 1 = 此票已被红冲（原票视角）。 */
+	is_voided: integer("is_voided").notNull().default(0),
 });
 
 export const invoiceItems = sqliteTable("invoice_items", {
