@@ -6,7 +6,6 @@ import { Badge, Button, Loader, Tooltip } from "@cloudflare/kumo";
 import {
 	ArrowUpIcon,
 	ArrowsClockwiseIcon,
-	CheckCircleIcon,
 	EyeIcon,
 	FoldersIcon,
 	MagnifyingGlassIcon,
@@ -17,16 +16,14 @@ import {
 	RobotIcon,
 	StopIcon,
 	TrashIcon,
-	UserIcon,
-	WrenchIcon,
 } from "@phosphor-icons/react";
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import type { UIMessage } from "ai";
+import { MessageBubble } from "./chat/MessageBubble";
+import { StreamingIndicator } from "./chat/StreamingIndicator";
+import type { ToolLabels } from "./chat/ToolCallBadge";
 
-const TOOL_LABELS: Record<string, { label: string; icon: React.ReactNode }> = {
+const INVOICE_TOOL_LABELS: ToolLabels = {
 	process_email_invoices: {
 		label: "Re-extracting invoices",
 		icon: <ArrowsClockwiseIcon size={14} weight="bold" />,
@@ -68,183 +65,6 @@ const TOOL_LABELS: Record<string, { label: string; icon: React.ReactNode }> = {
 		icon: <MinusIcon size={14} weight="bold" />,
 	},
 };
-
-function ToolCallBadge({
-	toolName,
-	state,
-}: {
-	toolName: string;
-	state: string;
-}) {
-	const info = TOOL_LABELS[toolName] || {
-		label: toolName,
-		icon: <WrenchIcon size={14} weight="bold" />,
-	};
-	const isDone =
-		state === "output-available" ||
-		state === "result" ||
-		state === "output-error";
-
-	return (
-		<div className="flex items-center gap-1.5 py-1 px-2 rounded bg-kumo-fill/50 text-xs">
-			<span className="text-kumo-brand">{info.icon}</span>
-			<span className="text-kumo-strong">{info.label}</span>
-			{isDone ? (
-				<CheckCircleIcon
-					size={12}
-					weight="fill"
-					className="text-kumo-success ml-auto"
-				/>
-			) : (
-				<Loader size="sm" className="ml-auto" />
-			)}
-		</div>
-	);
-}
-
-function getToolNameFromPart(part: UIMessage["parts"][number]): string | null {
-	if (part.type === "dynamic-tool") return (part as any).toolName ?? null;
-	if (part.type.startsWith("tool-")) return part.type.replace("tool-", "");
-	return null;
-}
-
-function MessageBubble({ message }: { message: UIMessage }) {
-	const isUser = message.role === "user";
-
-	return (
-		<div className={`flex gap-2 ${isUser ? "flex-row-reverse" : "flex-row"}`}>
-			<div
-				className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${
-					isUser
-						? "bg-kumo-brand text-kumo-inverse"
-						: "bg-kumo-fill text-kumo-default"
-				}`}
-			>
-				{isUser ? (
-					<UserIcon size={12} weight="bold" />
-				) : (
-					<ReceiptIcon size={12} weight="bold" />
-				)}
-			</div>
-			<div
-				className={`flex flex-col gap-1 max-w-[85%] min-w-0 ${
-					isUser ? "items-end" : "items-start"
-				}`}
-			>
-				{message.parts.map((part, i) => {
-					const key = `${message.id}-part-${i}`;
-					if (part.type === "text" && part.text.trim()) {
-						return (
-							<div
-								key={key}
-								className={`rounded-lg px-3 py-2 text-[13px] leading-relaxed break-words overflow-wrap-anywhere ${
-									isUser
-										? "bg-kumo-brand text-kumo-inverse rounded-br-sm"
-										: "bg-kumo-elevated text-kumo-default border border-kumo-line rounded-bl-sm overflow-hidden"
-								}`}
-							>
-								{isUser ? (
-									part.text
-								) : (
-									<Markdown
-										remarkPlugins={[remarkGfm]}
-										components={{
-											a: ({ href, children }) => (
-												<a
-													href={href}
-													target="_blank"
-													rel="noopener noreferrer"
-													style={{
-														color: "var(--color-link)",
-														textDecoration: "underline",
-													}}
-												>
-													{children}
-												</a>
-											),
-											p: ({ children }) => (
-												<p className="mb-2 last:mb-0">{children}</p>
-											),
-											strong: ({ children }) => (
-												<strong className="font-semibold">{children}</strong>
-											),
-											ul: ({ children }) => (
-												<ul className="list-disc pl-4 mb-2 last:mb-0 space-y-0.5">
-													{children}
-												</ul>
-											),
-											ol: ({ children }) => (
-												<ol className="list-decimal pl-4 mb-2 last:mb-0 space-y-0.5">
-													{children}
-												</ol>
-											),
-											li: ({ children }) => <li>{children}</li>,
-											h1: ({ children }) => (
-												<h3 className="font-semibold text-sm mb-1">
-													{children}
-												</h3>
-											),
-											h2: ({ children }) => (
-												<h4 className="font-semibold text-[13px] mb-1">
-													{children}
-												</h4>
-											),
-											h3: ({ children }) => (
-												<h5 className="font-semibold text-[13px] mb-0.5">
-													{children}
-												</h5>
-											),
-											code: ({ children }) => (
-												<code className="bg-kumo-fill px-1 py-0.5 rounded text-[12px]">
-													{children}
-												</code>
-											),
-											table: ({ children }) => (
-												<div className="overflow-x-auto my-2">
-													<table className="w-full text-xs border-collapse">
-														{children}
-													</table>
-												</div>
-											),
-											thead: ({ children }) => (
-												<thead className="border-b border-kumo-line bg-kumo-fill/30">
-													{children}
-												</thead>
-											),
-											th: ({ children }) => (
-												<th className="text-left px-2 py-1 font-semibold text-kumo-strong">
-													{children}
-												</th>
-											),
-											td: ({ children }) => (
-												<td className="px-2 py-1 border-b border-kumo-line/50">
-													{children}
-												</td>
-											),
-										}}
-									>
-										{part.text}
-									</Markdown>
-								)}
-							</div>
-						);
-					}
-					const toolName = getToolNameFromPart(part);
-					if (toolName) {
-						return (
-							<ToolCallBadge
-								key={key}
-								toolName={toolName}
-								state={(part as any).state ?? "running"}
-							/>
-						);
-					}
-					return null;
-				})}
-			</div>
-		</div>
-	);
-}
 
 function InvoiceChatConnected({
 	mailboxId,
@@ -355,19 +175,14 @@ function InvoiceChatConnected({
 				) : (
 					<div className="flex flex-col gap-3">
 						{messages.map((msg) => (
-							<MessageBubble key={msg.id} message={msg} />
+							<MessageBubble
+								key={msg.id}
+								message={msg}
+								avatarIcon={{ assistant: ReceiptIcon }}
+								toolLabels={INVOICE_TOOL_LABELS}
+							/>
 						))}
-						{isStreaming && (
-							<div className="flex gap-2">
-								<div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-kumo-fill text-kumo-default">
-									<RobotIcon size={12} weight="bold" />
-								</div>
-								<div className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-kumo-elevated border border-kumo-line rounded-bl-sm">
-									<Loader size="sm" />
-									<span className="text-xs text-kumo-subtle">Thinking...</span>
-								</div>
-							</div>
-						)}
+						{isStreaming && <StreamingIndicator avatarIcon={RobotIcon} />}
 					</div>
 				)}
 			</div>

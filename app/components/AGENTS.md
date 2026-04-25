@@ -29,6 +29,7 @@ Top-level React components composing the inbox UI: layout (header, sidebar, spli
 | Directory | Purpose |
 |-----------|---------|
 | `email-panel/` | Internal building blocks for `EmailPanel.tsx` — header, toolbar, dialogs, single-message view, thread message item (see `email-panel/AGENTS.md`) |
+| `chat/` | Shared chat-bubble primitives reused by every domain agent panel (`AgentPanel`, `InvoicePanel`, future Search / Calendar agents): `MessageBubble`, `ToolCallBadge`, `StreamingIndicator`, `markdown-components`. Domain panels supply their own avatar + tool label map; behaviour is identical across panels |
 
 ## For AI Agents
 
