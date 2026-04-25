@@ -19,9 +19,8 @@ Top-level React components composing the inbox UI: layout (header, sidebar, spli
 | `ComposeEmail.tsx` | Modal compose dialog (legacy / mobile path) — wraps `RichTextEditor` |
 | `ComposePanel.tsx` | Side-panel compose surface used by the desktop split view |
 | `RichTextEditor.tsx` | TipTap editor wrapper — toolbar, link/image extensions, paste handling. **Sole TipTap consumer** |
-| `AgentSidebar.tsx` | Right-edge trigger that lazy-loads `AgentPanel` on demand (avoids loading the AI SDK on first paint) |
-| `AgentPanel.tsx` | Chat surface for the `EmailAgent` Durable Object — streaming markdown, tool-call visualisation, system-prompt input |
-| `InvoicePanel.tsx` | Chat surface for the `InvoiceAgent` Durable Object — same shape as `AgentPanel` but wired to `useAgent({ agent: "InvoiceAgent" })`, with invoice / bundle tool labels and no draft handling. Lazy-loaded from `AgentSidebar`'s "Invoice" tab |
+| `AgentSidebar.tsx` | Right-edge tabbed panel — "Chat" tab lazy-loads `UnifiedAgentPanel`, "MCP" tab shows `/mcp` endpoint info |
+| `UnifiedAgentPanel.tsx` | Single chat surface routing to multiple agent DOs via `@`-mention. Holds two parallel `useAgent` connections (EmailAgent + InvoiceAgent), merges their messages by `createdAt`, renders bubbles via `agent-chat/MessageBubble`. The composer is `agent-chat/MentionAutocomplete`. Default routing target = last-used agent (sessionStorage), falling back to `email`. Email-specific draft action footer wired via `renderActions` |
 | `MCPPanel.tsx` | Settings panel showing the `/mcp` endpoint URL with copy buttons (consumed by the Settings route) |
 
 ## Subdirectories
@@ -34,7 +33,8 @@ Top-level React components composing the inbox UI: layout (header, sidebar, spli
 ## For AI Agents
 
 ### Working In This Directory
-- **`AgentPanel` is lazy-loaded.** Always go through `AgentSidebar` so the AI SDK bundle (`ai`, `@cloudflare/ai-chat`) is not pulled into the initial route. If you need to render the agent eagerly, audit the bundle impact first.
+- **`UnifiedAgentPanel` is lazy-loaded** by `AgentSidebar`. The two `useAgent` connections (EmailAgent + InvoiceAgent) come up in parallel only after the user opens the agent panel — initial paint stays free of the AI SDK bundle.
+- **Adding a new agent** = append to `app/components/agent-chat/agents.tsx:AGENTS` (label, icon, toolLabels, suggestedPrompts) + ensure the DO binding exists in `wrangler.jsonc`. The `@`-mention dropdown picks up the new entry automatically. Agent-specific UI extensions (e.g. email's draft action footer) live in `UnifiedAgentPanel` itself, branched by agent id.
 - **Email HTML is dangerous.** Render bodies inside `EmailIframe` (sandboxed) or run them through `app/lib/utils.ts` helpers (`htmlToPlainText`, `getSnippetText`, `escapeHtml`). Do **not** set `dangerouslySetInnerHTML` directly with email bodies.
 - **TipTap lives only in `RichTextEditor.tsx`.** All `@tiptap/*` imports are pinned to `3.20.2` via `package.json` overrides — do not bypass.
 - **Compose state belongs in `useComposeForm`** (`app/hooks/useComposeForm.ts`). The two compose surfaces (`ComposeEmail`, `ComposePanel`) share that hook so behaviour stays consistent.
@@ -65,7 +65,7 @@ Top-level React components composing the inbox UI: layout (header, sidebar, spli
 - `@cloudflare/kumo` (Button, Dialog, Tooltip, Loader, Empty, Toasty, etc.)
 - `@phosphor-icons/react`
 - `@tiptap/react` + `@tiptap/starter-kit` (only in `RichTextEditor.tsx`)
-- `react-markdown` + `remark-gfm` (only in `AgentPanel.tsx`)
+- `react-markdown` + `remark-gfm` (only in `agent-chat/MessageBubble.tsx`)
 - `dompurify` (only in `EmailIframe.tsx` paths)
 
 <!-- MANUAL: -->
