@@ -412,8 +412,10 @@ export default function EmailListRoute() {
 										</div>
 									</div>
 
-										{/* Hover actions */}
-										<div className="hidden group-hover:flex items-center shrink-0">
+										{/* Row actions — always visible on mobile (no hover state),
+										    hover-only on md+ to keep the row uncluttered when
+										    scanning many emails. */}
+										<div className="flex md:hidden md:group-hover:flex items-center shrink-0">
 											<Tooltip content={email.read ? "Mark unread" : "Mark read"} asChild>
 												<Button
 													variant="ghost"
