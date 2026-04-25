@@ -10,17 +10,15 @@ The `InvoiceAgent` Durable Object — per-mailbox DO that owns the invoice domai
 
 ## Status
 
-This directory is a **PR1 skeleton**. The class, binding (`INVOICE_AGENT`), and migration tag (`v4`) are wired so the runtime registers the DO, but behaviour is empty:
-- `handleNewEmail` is a no-op (PR3 inlines the pipeline).
-- `onChatMessage` returns 501 (PR4 wires the tool surface).
+PR1 (skeleton + binding) and PR2 (tool wrappers) are landed. PR3 — switching `receiveEmail` to `ctx.waitUntil(INVOICE_AGENT.fetch("/onNewEmail"))` and wiring `handleNewEmail` to `toolProcessEmailInvoices` — is also landed: invoice extraction now runs asynchronously in this DO, isolated from `receiveEmail`. The pipeline (`workers/lib/invoice-pipeline.ts`) and the canonical entrypoint (`MailboxDO.reprocessInvoicesForEmail`) are unchanged — extraction logic stays byte-identical, only the trigger timing changed.
+
+`onChatMessage` still returns 501 — PR4 will wire the full tool surface.
 
 Follow-up PRs:
 
 | PR | Scope |
 |----|-------|
-| PR2 | Extract `processEmailForInvoices` steps into `workers/lib/invoice-tools.ts` (pure functions, callable as agent tools); `receiveEmail` keeps calling the synchronous orchestrator unchanged. |
-| PR3 | Switch `receiveEmail` to `ctx.waitUntil(INVOICE_AGENT.fetch("/onNewEmail"))`; `handleNewEmail` invokes the same tool sequence. Auto-extraction becomes async + isolated. |
-| PR4 | Implement `onChatMessage` with the full tool set (extraction + invoice queries + bundle ops). Add `INVOICE_DEFAULT_SYSTEM_PROMPT`. Reuse `mailboxes/<id>.json:agentSystemPrompt` (per-mailbox override) — pending decision in PR4. |
+| PR4 | Implement `onChatMessage` with the full tool set (extraction + invoice queries + bundle ops) from `workers/lib/invoice-tools.ts`. Add `INVOICE_DEFAULT_SYSTEM_PROMPT`. Decide where the per-mailbox prompt override lives (likely `mailboxes/<id>.json:invoiceAgentSystemPrompt`). |
 | PR5 | Front-end `InvoicePanel` (clone of `AgentPanel` pointing at `/agents/invoice-agent/<mailboxId>`) on the invoices/bundles routes. |
 
 ## Key Files
