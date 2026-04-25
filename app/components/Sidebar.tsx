@@ -8,6 +8,7 @@ import {
 	CaretLeftIcon,
 	FileIcon,
 	FolderIcon,
+	PackageIcon,
 	PaperPlaneTiltIcon,
 	PencilSimpleIcon,
 	PlusIcon,
@@ -177,6 +178,12 @@ export default function Sidebar() {
 						to={`/mailbox/${mailboxId}/invoices`}
 						icon={<ReceiptIcon size={18} weight="regular" />}
 						label="发票"
+						onClick={handleNavClick}
+					/>
+					<FolderLink
+						to={`/mailbox/${mailboxId}/bundles`}
+						icon={<PackageIcon size={18} weight="regular" />}
+						label="报销单"
 						onClick={handleNavClick}
 					/>
 				</div>

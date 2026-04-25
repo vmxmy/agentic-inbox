@@ -2,11 +2,22 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { Badge, Button, Empty, Input, Loader, Pagination } from "@cloudflare/kumo";
-import { DownloadSimpleIcon, ReceiptIcon, TrashIcon, WarningIcon } from "@phosphor-icons/react";
+import { Badge, Button, Dialog, Empty, Input, Loader, Pagination } from "@cloudflare/kumo";
+import {
+	DownloadSimpleIcon,
+	PackageIcon,
+	ReceiptIcon,
+	TrashIcon,
+	WarningIcon,
+} from "@phosphor-icons/react";
 import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router";
 import { formatListDate } from "shared/dates";
+import {
+	useAddToBundle,
+	useBundles,
+	useCreateBundle,
+} from "~/queries/bundles";
 import { useDeleteInvoice, useInvoices } from "~/queries/invoices";
 import api from "~/services/api";
 import type { InvoiceFilters } from "~/types";
@@ -49,6 +60,25 @@ export default function InvoicesRoute() {
 	const { data, isLoading, isFetching } = useInvoices(mailboxId, filters);
 	const deleteInvoice = useDeleteInvoice(mailboxId);
 
+	const [selected, setSelected] = useState<Set<string>>(new Set());
+	const [addOpen, setAddOpen] = useState(false);
+	const { data: bundles = [] } = useBundles(mailboxId);
+	const createBundle = useCreateBundle(mailboxId);
+	const addToBundle = useAddToBundle(mailboxId);
+	const [chosenBundleId, setChosenBundleId] = useState<string>("");
+	const [newBundleName, setNewBundleName] = useState("");
+	const [addPending, setAddPending] = useState(false);
+
+	const toggleSelect = (id: string) => {
+		setSelected((prev) => {
+			const next = new Set(prev);
+			if (next.has(id)) next.delete(id);
+			else next.add(id);
+			return next;
+		});
+	};
+	const clearSelection = () => setSelected(new Set());
+
 	// Client-side filters for needs_review and hideVoided — backend doesn't
 	// index these yet, so filtering works against the current page. With a
 	// typical invoice volume (tens per month) this is fine.
@@ -72,6 +102,85 @@ export default function InvoicesRoute() {
 		setReviewOnly(false);
 		setHideVoided(true);
 		setPage(1);
+	};
+
+	const allSelectableIds = useMemo(
+		() =>
+			(data?.invoices ?? [])
+				.filter(
+					(inv) => !inv.is_voided && !inv.original_invoice_number,
+				)
+				.map((inv) => inv.id),
+		[data?.invoices],
+	);
+	const allSelected =
+		allSelectableIds.length > 0 &&
+		allSelectableIds.every((id) => selected.has(id));
+	const someSelected = allSelectableIds.some((id) => selected.has(id));
+
+	const toggleSelectAll = () => {
+		if (allSelected) {
+			setSelected((prev) => {
+				const next = new Set(prev);
+				for (const id of allSelectableIds) next.delete(id);
+				return next;
+			});
+		} else {
+			setSelected((prev) => {
+				const next = new Set(prev);
+				for (const id of allSelectableIds) next.add(id);
+				return next;
+			});
+		}
+	};
+
+	const handleAddToBundle = async () => {
+		if (!mailboxId || selected.size === 0) return;
+		setAddPending(true);
+		try {
+			let targetId = chosenBundleId;
+			if (!targetId) {
+				const trimmed = newBundleName.trim();
+				if (!trimmed) {
+					window.alert("请选择一个报销单或填写新报销单名称");
+					setAddPending(false);
+					return;
+				}
+				const created = await createBundle.mutateAsync({
+					name: trimmed,
+					note: null,
+				});
+				targetId = created.id;
+			}
+			let success = 0;
+			const failures: string[] = [];
+			for (const invoiceId of selected) {
+				try {
+					await addToBundle.mutateAsync({
+						bundleId: targetId,
+						invoiceId,
+					});
+					success += 1;
+				} catch (err) {
+					failures.push(
+						`${invoiceId.slice(0, 8)}: ${(err as Error).message}`,
+					);
+				}
+			}
+			if (failures.length === 0) {
+				window.alert(`已加入 ${success} 张发票`);
+			} else {
+				window.alert(
+					`加入 ${success} 张成功，${failures.length} 张失败：\n${failures.join("\n")}`,
+				);
+			}
+			setAddOpen(false);
+			setChosenBundleId("");
+			setNewBundleName("");
+			clearSelection();
+		} finally {
+			setAddPending(false);
+		}
 	};
 
 	const handleDelete = async (invoiceId: string, invoiceNumber: string) => {
@@ -103,6 +212,23 @@ export default function InvoicesRoute() {
 						</p>
 					</div>
 					<div className="flex items-center gap-2">
+						{selected.size > 0 ? (
+							<>
+								<span className="text-sm text-kumo-subtle">
+									已选 {selected.size} 张
+								</span>
+								<Button
+									variant="primary"
+									onClick={() => setAddOpen(true)}
+								>
+									<PackageIcon size={14} weight="regular" />
+									加入报销单
+								</Button>
+								<Button variant="ghost" onClick={clearSelection}>
+									取消选择
+								</Button>
+							</>
+						) : null}
 						<label className="inline-flex items-center gap-2 text-sm text-kumo-default">
 							<input
 								type="checkbox"
@@ -229,7 +355,19 @@ export default function InvoicesRoute() {
 					<table className="w-full text-sm">
 						<thead className="sticky top-0 border-b border-kumo-default bg-kumo-raised text-left text-xs uppercase text-kumo-subtle">
 							<tr>
-								<th className="px-6 py-2 font-medium">开票日期</th>
+								<th className="px-3 py-2 font-medium">
+									<input
+										type="checkbox"
+										className="h-4 w-4"
+										aria-label="Select all on page"
+										checked={allSelected}
+										ref={(el) => {
+											if (el) el.indeterminate = !allSelected && someSelected;
+										}}
+										onChange={toggleSelectAll}
+									/>
+								</th>
+								<th className="px-3 py-2 font-medium">开票日期</th>
 								<th className="px-3 py-2 font-medium">发票号码</th>
 								<th className="px-3 py-2 font-medium">销方</th>
 								<th className="px-3 py-2 font-medium">购方</th>
@@ -241,12 +379,25 @@ export default function InvoicesRoute() {
 							</tr>
 						</thead>
 						<tbody>
-							{invoices.map((inv) => (
+							{invoices.map((inv) => {
+								const disabled =
+									!!inv.is_voided || !!inv.original_invoice_number;
+								return (
 								<tr
 									key={inv.id}
 									className="border-b border-kumo-muted hover:bg-kumo-muted"
 								>
-									<td className="px-6 py-2 whitespace-nowrap">
+									<td className="px-3 py-2">
+										<input
+											type="checkbox"
+											className="h-4 w-4"
+											aria-label={`Select invoice ${inv.invoice_number}`}
+											disabled={disabled}
+											checked={selected.has(inv.id)}
+											onChange={() => toggleSelect(inv.id)}
+										/>
+									</td>
+									<td className="px-3 py-2 whitespace-nowrap">
 										<Link
 											to={`/mailbox/${mailboxId}/invoices/${inv.id}`}
 											className="text-kumo-default hover:text-kumo-accent"
@@ -301,7 +452,8 @@ export default function InvoicesRoute() {
 										</Button>
 									</td>
 								</tr>
-							))}
+								);
+							})}
 						</tbody>
 					</table>
 				)}
@@ -320,6 +472,74 @@ export default function InvoicesRoute() {
 					) : null}
 				</div>
 			) : null}
+
+			<Dialog.Root open={addOpen} onOpenChange={setAddOpen}>
+				<Dialog size="sm" className="p-6">
+					<Dialog.Title className="text-base font-semibold mb-2">
+						加入报销单
+					</Dialog.Title>
+					<p className="mb-4 text-sm text-kumo-subtle">
+						将选中的 {selected.size} 张发票加入既有报销单，或新建一个。
+					</p>
+					<div className="space-y-4">
+						{bundles.length > 0 ? (
+							<div>
+								<label className="block text-sm font-medium text-kumo-default mb-1">
+									选择已有报销单
+								</label>
+								<select
+									className="w-full rounded border border-kumo-default bg-kumo-raised px-2 py-1.5 text-sm"
+									value={chosenBundleId}
+									onChange={(e) => {
+										setChosenBundleId(e.target.value);
+										if (e.target.value) setNewBundleName("");
+									}}
+								>
+									<option value="">— 不选 —</option>
+									{bundles.map((b) => (
+										<option key={b.id} value={b.id}>
+											{b.name}（{b.invoice_count} 张）
+										</option>
+									))}
+								</select>
+							</div>
+						) : null}
+						<div>
+							<label className="block text-sm font-medium text-kumo-default mb-1">
+								或新建报销单
+							</label>
+							<Input
+								placeholder="例如：2026-04 出差报销"
+								value={newBundleName}
+								onChange={(e) => {
+									setNewBundleName(e.target.value);
+									if (e.target.value) setChosenBundleId("");
+								}}
+								disabled={!!chosenBundleId}
+							/>
+						</div>
+					</div>
+					<div className="mt-6 flex justify-end gap-2">
+						<Dialog.Close
+							render={(props) => (
+								<Button {...props} variant="secondary">
+									取消
+								</Button>
+							)}
+						/>
+						<Button
+							variant="primary"
+							onClick={handleAddToBundle}
+							disabled={
+								addPending ||
+								(!chosenBundleId && !newBundleName.trim())
+							}
+						>
+							确认加入
+						</Button>
+					</div>
+				</Dialog>
+			</Dialog.Root>
 		</div>
 	);
 }

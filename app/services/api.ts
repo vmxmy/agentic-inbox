@@ -3,6 +3,9 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import type {
+	Bundle,
+	BundleDetail,
+	BundleSummary,
 	Email,
 	Folder,
 	Mailbox,
@@ -248,6 +251,35 @@ const api = {
 			`/api/v1/mailboxes/${mailboxId}/emails/${emailId}/invoice-file`,
 			args,
 		),
+
+	// Reimbursement bundles
+	listBundles: (mailboxId: string) =>
+		get<BundleSummary[]>(`/api/v1/mailboxes/${mailboxId}/bundles`),
+	createBundle: (mailboxId: string, args: { name: string; note?: string | null }) =>
+		post<Bundle>(`/api/v1/mailboxes/${mailboxId}/bundles`, args),
+	getBundle: (mailboxId: string, bundleId: string) =>
+		get<BundleDetail>(`/api/v1/mailboxes/${mailboxId}/bundles/${bundleId}`),
+	updateBundle: (
+		mailboxId: string,
+		bundleId: string,
+		patch: { name?: string; note?: string | null; status?: string },
+	) =>
+		put<Bundle>(
+			`/api/v1/mailboxes/${mailboxId}/bundles/${bundleId}`,
+			patch,
+		),
+	deleteBundle: (mailboxId: string, bundleId: string) =>
+		del<void>(`/api/v1/mailboxes/${mailboxId}/bundles/${bundleId}`),
+	addInvoiceToBundle: (mailboxId: string, bundleId: string, invoiceId: string) =>
+		post<{ ok: boolean }>(
+			`/api/v1/mailboxes/${mailboxId}/bundles/${bundleId}/invoices/${invoiceId}`,
+		),
+	removeInvoiceFromBundle: (mailboxId: string, bundleId: string, invoiceId: string) =>
+		del<void>(
+			`/api/v1/mailboxes/${mailboxId}/bundles/${bundleId}/invoices/${invoiceId}`,
+		),
+	bundleZipUrl: (mailboxId: string, bundleId: string): string =>
+		`/api/v1/mailboxes/${mailboxId}/bundles/${bundleId}.zip`,
 };
 
 export default api;

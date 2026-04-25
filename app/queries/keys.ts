@@ -33,4 +33,9 @@ export const queryKeys = {
 		detail: (mailboxId: string, invoiceId: string) =>
 			["invoices", mailboxId, invoiceId] as const,
 	},
+	bundles: {
+		list: (mailboxId: string) => ["bundles", mailboxId] as const,
+		detail: (mailboxId: string, bundleId: string) =>
+			["bundles", mailboxId, bundleId] as const,
+	},
 };

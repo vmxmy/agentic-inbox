@@ -133,3 +133,21 @@ export interface Folder {
 	name: string;
 	unreadCount: number;
 }
+
+export interface Bundle {
+	id: string;
+	name: string;
+	note: string | null;
+	status: string;
+	created_at: string;
+}
+
+export interface BundleSummary extends Bundle {
+	invoice_count: number;
+	total_amount: number | null;
+}
+
+export interface BundleDetail {
+	bundle: Bundle;
+	invoices: (Invoice & { position?: number })[];
+}
