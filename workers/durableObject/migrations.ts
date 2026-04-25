@@ -246,4 +246,32 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX IF NOT EXISTS idx_invoices_original_number ON invoices(original_invoice_number);
         `,
 	},
+	{
+		// Reimbursement bundles. A bundle is a named collection of invoices —
+		// no field copies; the relation table is the source of truth.
+		// CREATE TABLE IF NOT EXISTS keeps re-run idempotent.
+		name: "13_add_bundles",
+		sql: `
+            CREATE TABLE IF NOT EXISTS bundles (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                note TEXT,
+                status TEXT NOT NULL DEFAULT 'draft',
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS bundle_invoices (
+                bundle_id TEXT NOT NULL,
+                invoice_id TEXT NOT NULL,
+                position INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (bundle_id, invoice_id),
+                FOREIGN KEY(bundle_id) REFERENCES bundles(id) ON DELETE CASCADE,
+                FOREIGN KEY(invoice_id) REFERENCES invoices(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_bundle_invoices_bundle ON bundle_invoices(bundle_id);
+            CREATE INDEX IF NOT EXISTS idx_bundle_invoices_invoice ON bundle_invoices(invoice_id);
+            CREATE INDEX IF NOT EXISTS idx_bundles_created_at ON bundles(created_at DESC);
+        `,
+	},
 ];

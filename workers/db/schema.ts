@@ -2,7 +2,7 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, primaryKey } from "drizzle-orm/sqlite-core";
 
 export const folders = sqliteTable("folders", {
 	id: text("id").primaryKey(),
@@ -103,3 +103,28 @@ export const invoiceItems = sqliteTable("invoice_items", {
 	tax_rate: real("tax_rate"),
 	tax_amount: real("tax_amount"),
 });
+
+export const bundles = sqliteTable("bundles", {
+	id: text("id").primaryKey(),
+	name: text("name").notNull(),
+	note: text("note"),
+	/** 'draft' | 'submitted' | 'reimbursed' — free-form enum, not enforced. */
+	status: text("status").notNull().default("draft"),
+	created_at: text("created_at").notNull(),
+});
+
+export const bundleInvoices = sqliteTable(
+	"bundle_invoices",
+	{
+		bundle_id: text("bundle_id")
+			.notNull()
+			.references(() => bundles.id, { onDelete: "cascade" }),
+		invoice_id: text("invoice_id")
+			.notNull()
+			.references(() => invoices.id, { onDelete: "cascade" }),
+		position: integer("position").notNull().default(0),
+	},
+	(t) => ({
+		pk: primaryKey({ columns: [t.bundle_id, t.invoice_id] }),
+	}),
+);

@@ -1158,6 +1158,235 @@ export class MailboxDO extends DurableObject<Env> {
 		return row ?? null;
 	}
 
+	// ── Reimbursement bundles ──────────────────────────────────────
+
+	async createBundle(args: { name: string; note?: string | null }) {
+		const id = crypto.randomUUID();
+		const created_at = new Date().toISOString();
+		const row = {
+			id,
+			name: args.name,
+			note: args.note ?? null,
+			status: "draft" as const,
+			created_at,
+		};
+		this.db
+			.insert(schema.bundles)
+			.values(row)
+			.run();
+		return row;
+	}
+
+	async listBundles() {
+		const rows = this.db
+			.select({
+				id: schema.bundles.id,
+				name: schema.bundles.name,
+				note: schema.bundles.note,
+				status: schema.bundles.status,
+				created_at: schema.bundles.created_at,
+				invoice_count: sql<number>`COUNT(${schema.bundleInvoices.invoice_id})`.mapWith(Number),
+				total_amount: sql<number | null>`SUM(${schema.invoices.amount_incl_tax})`.mapWith((v) =>
+					v === null || v === undefined ? null : Number(v),
+				),
+			})
+			.from(schema.bundles)
+			.leftJoin(
+				schema.bundleInvoices,
+				eq(schema.bundleInvoices.bundle_id, schema.bundles.id),
+			)
+			.leftJoin(
+				schema.invoices,
+				eq(schema.invoices.id, schema.bundleInvoices.invoice_id),
+			)
+			.groupBy(schema.bundles.id)
+			.orderBy(desc(schema.bundles.created_at))
+			.all();
+		return rows;
+	}
+
+	async getBundle(bundleId: string) {
+		const bundle = this.db
+			.select()
+			.from(schema.bundles)
+			.where(eq(schema.bundles.id, bundleId))
+			.get();
+		if (!bundle) return null;
+		const invoices = this.db
+			.select({
+				id: schema.invoices.id,
+				email_id: schema.invoices.email_id,
+				attachment_id: schema.invoices.attachment_id,
+				invoice_number: schema.invoices.invoice_number,
+				invoice_code: schema.invoices.invoice_code,
+				invoice_type: schema.invoices.invoice_type,
+				issue_date: schema.invoices.issue_date,
+				seller_name: schema.invoices.seller_name,
+				seller_tax_id: schema.invoices.seller_tax_id,
+				buyer_name: schema.invoices.buyer_name,
+				buyer_tax_id: schema.invoices.buyer_tax_id,
+				amount_excl_tax: schema.invoices.amount_excl_tax,
+				tax_amount: schema.invoices.tax_amount,
+				amount_incl_tax: schema.invoices.amount_incl_tax,
+				currency: schema.invoices.currency,
+				remark: schema.invoices.remark,
+				source_kind: schema.invoices.source_kind,
+				needs_review: schema.invoices.needs_review,
+				original_invoice_number: schema.invoices.original_invoice_number,
+				is_voided: schema.invoices.is_voided,
+				created_at: schema.invoices.created_at,
+				position: schema.bundleInvoices.position,
+			})
+			.from(schema.bundleInvoices)
+			.innerJoin(
+				schema.invoices,
+				eq(schema.invoices.id, schema.bundleInvoices.invoice_id),
+			)
+			.where(eq(schema.bundleInvoices.bundle_id, bundleId))
+			.orderBy(asc(schema.bundleInvoices.position), asc(schema.invoices.issue_date))
+			.all();
+		return { bundle, invoices };
+	}
+
+	async updateBundle(
+		bundleId: string,
+		patch: { name?: string; note?: string | null; status?: string },
+	) {
+		const data: { name?: string; note?: string | null; status?: string } = {};
+		if (patch.name !== undefined) data.name = patch.name;
+		if (patch.note !== undefined) data.note = patch.note;
+		if (patch.status !== undefined) data.status = patch.status;
+		if (Object.keys(data).length === 0) {
+			return (
+				this.db
+					.select()
+					.from(schema.bundles)
+					.where(eq(schema.bundles.id, bundleId))
+					.get() ?? null
+			);
+		}
+		this.db
+			.update(schema.bundles)
+			.set(data)
+			.where(eq(schema.bundles.id, bundleId))
+			.run();
+		return (
+			this.db
+				.select()
+				.from(schema.bundles)
+				.where(eq(schema.bundles.id, bundleId))
+				.get() ?? null
+		);
+	}
+
+	async deleteBundle(bundleId: string): Promise<boolean> {
+		const existing = this.db
+			.select({ id: schema.bundles.id })
+			.from(schema.bundles)
+			.where(eq(schema.bundles.id, bundleId))
+			.get();
+		if (!existing) return false;
+		this.db
+			.delete(schema.bundles)
+			.where(eq(schema.bundles.id, bundleId))
+			.run();
+		return true;
+	}
+
+	/**
+	 * Add an invoice to a bundle. Refuses voided invoices and red-credit
+	 * (negative-correction) invoices — neither belongs in a reimbursement
+	 * packet. Idempotent: re-adding an already-present invoice is a no-op.
+	 */
+	async addInvoiceToBundle(
+		bundleId: string,
+		invoiceId: string,
+	): Promise<{ ok: boolean; error?: string }> {
+		const bundle = this.db
+			.select({ id: schema.bundles.id })
+			.from(schema.bundles)
+			.where(eq(schema.bundles.id, bundleId))
+			.get();
+		if (!bundle) return { ok: false, error: "bundle not found" };
+
+		const invoice = this.db
+			.select({
+				id: schema.invoices.id,
+				is_voided: schema.invoices.is_voided,
+				original_invoice_number: schema.invoices.original_invoice_number,
+			})
+			.from(schema.invoices)
+			.where(eq(schema.invoices.id, invoiceId))
+			.get();
+		if (!invoice) return { ok: false, error: "invoice not found" };
+		if (invoice.is_voided) {
+			return { ok: false, error: "此发票已被红冲，不能加入报销单" };
+		}
+		if (invoice.original_invoice_number) {
+			return { ok: false, error: "红字发票不能单独加入报销单" };
+		}
+
+		const existing = this.db
+			.select({ bundle_id: schema.bundleInvoices.bundle_id })
+			.from(schema.bundleInvoices)
+			.where(
+				and(
+					eq(schema.bundleInvoices.bundle_id, bundleId),
+					eq(schema.bundleInvoices.invoice_id, invoiceId),
+				),
+			)
+			.get();
+		if (existing) return { ok: true };
+
+		const maxRow = this.db
+			.select({
+				max: sql<number | null>`MAX(${schema.bundleInvoices.position})`.mapWith(
+					(v) => (v === null || v === undefined ? null : Number(v)),
+				),
+			})
+			.from(schema.bundleInvoices)
+			.where(eq(schema.bundleInvoices.bundle_id, bundleId))
+			.get();
+		const nextPosition = (maxRow?.max ?? -1) + 1;
+
+		this.db
+			.insert(schema.bundleInvoices)
+			.values({
+				bundle_id: bundleId,
+				invoice_id: invoiceId,
+				position: nextPosition,
+			})
+			.run();
+		return { ok: true };
+	}
+
+	async removeInvoiceFromBundle(
+		bundleId: string,
+		invoiceId: string,
+	): Promise<boolean> {
+		const existing = this.db
+			.select({ bundle_id: schema.bundleInvoices.bundle_id })
+			.from(schema.bundleInvoices)
+			.where(
+				and(
+					eq(schema.bundleInvoices.bundle_id, bundleId),
+					eq(schema.bundleInvoices.invoice_id, invoiceId),
+				),
+			)
+			.get();
+		if (!existing) return false;
+		this.db
+			.delete(schema.bundleInvoices)
+			.where(
+				and(
+					eq(schema.bundleInvoices.bundle_id, bundleId),
+					eq(schema.bundleInvoices.invoice_id, invoiceId),
+				),
+			)
+			.run();
+		return true;
+	}
+
 	/**
 	 * Re-run the invoice-extraction pipeline against an existing email. Walks
 	 * email-origin attachments, follows external download links in the body,

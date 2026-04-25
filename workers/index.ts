@@ -595,6 +595,157 @@ app.post(
 	},
 );
 
+// -- Bundles --------------------------------------------------------
+
+app.get("/api/v1/mailboxes/:mailboxId/bundles", async (c: AppContext) => {
+	const stub = c.var.mailboxStub as unknown as {
+		listBundles: () => Promise<unknown>;
+	};
+	return c.json(await stub.listBundles());
+});
+
+app.post("/api/v1/mailboxes/:mailboxId/bundles", async (c: AppContext) => {
+	const body = (await c.req.json().catch(() => null)) as
+		| { name?: unknown; note?: unknown }
+		| null;
+	if (!body || typeof body.name !== "string" || !body.name.trim()) {
+		return c.json({ error: "name is required" }, 400);
+	}
+	const note = typeof body.note === "string" ? body.note : null;
+	const stub = c.var.mailboxStub as unknown as {
+		createBundle: (a: { name: string; note?: string | null }) => Promise<unknown>;
+	};
+	const bundle = await stub.createBundle({ name: body.name.trim(), note });
+	return c.json(bundle, 201);
+});
+
+app.get(
+	"/api/v1/mailboxes/:mailboxId/bundles/:bundleId",
+	async (c: AppContext) => {
+		const bundleId = c.req.param("bundleId")!;
+		const stub = c.var.mailboxStub as unknown as {
+			getBundle: (id: string) => Promise<{ bundle: unknown; invoices: unknown } | null>;
+		};
+		const result = await stub.getBundle(bundleId);
+		if (!result) return c.json({ error: "Bundle not found" }, 404);
+		return c.json(result);
+	},
+);
+
+app.put(
+	"/api/v1/mailboxes/:mailboxId/bundles/:bundleId",
+	async (c: AppContext) => {
+		const bundleId = c.req.param("bundleId")!;
+		const body = (await c.req.json().catch(() => null)) as
+			| { name?: unknown; note?: unknown; status?: unknown }
+			| null;
+		if (!body) return c.json({ error: "body required" }, 400);
+		const patch: { name?: string; note?: string | null; status?: string } = {};
+		if (typeof body.name === "string") patch.name = body.name.trim();
+		if (body.note === null || typeof body.note === "string") {
+			patch.note = body.note as string | null;
+		}
+		if (typeof body.status === "string") patch.status = body.status;
+		const stub = c.var.mailboxStub as unknown as {
+			updateBundle: (
+				id: string,
+				p: typeof patch,
+			) => Promise<unknown | null>;
+		};
+		const updated = await stub.updateBundle(bundleId, patch);
+		if (!updated) return c.json({ error: "Bundle not found" }, 404);
+		return c.json(updated);
+	},
+);
+
+app.delete(
+	"/api/v1/mailboxes/:mailboxId/bundles/:bundleId",
+	async (c: AppContext) => {
+		const bundleId = c.req.param("bundleId")!;
+		const stub = c.var.mailboxStub as unknown as {
+			deleteBundle: (id: string) => Promise<boolean>;
+		};
+		const ok = await stub.deleteBundle(bundleId);
+		return ok ? c.body(null, 204) : c.json({ error: "Bundle not found" }, 404);
+	},
+);
+
+app.post(
+	"/api/v1/mailboxes/:mailboxId/bundles/:bundleId/invoices/:invoiceId",
+	async (c: AppContext) => {
+		const bundleId = c.req.param("bundleId")!;
+		const invoiceId = c.req.param("invoiceId")!;
+		const stub = c.var.mailboxStub as unknown as {
+			addInvoiceToBundle: (
+				b: string,
+				i: string,
+			) => Promise<{ ok: boolean; error?: string }>;
+		};
+		const result = await stub.addInvoiceToBundle(bundleId, invoiceId);
+		if (!result.ok) {
+			const status = result.error === "bundle not found" || result.error === "invoice not found" ? 404 : 400;
+			return c.json({ error: result.error ?? "failed to add invoice" }, status);
+		}
+		return c.json({ ok: true });
+	},
+);
+
+app.delete(
+	"/api/v1/mailboxes/:mailboxId/bundles/:bundleId/invoices/:invoiceId",
+	async (c: AppContext) => {
+		const bundleId = c.req.param("bundleId")!;
+		const invoiceId = c.req.param("invoiceId")!;
+		const stub = c.var.mailboxStub as unknown as {
+			removeInvoiceFromBundle: (b: string, i: string) => Promise<boolean>;
+		};
+		const ok = await stub.removeInvoiceFromBundle(bundleId, invoiceId);
+		return ok
+			? c.body(null, 204)
+			: c.json({ error: "Invoice not in bundle" }, 404);
+	},
+);
+
+app.get(
+	"/api/v1/mailboxes/:mailboxId/bundles/:bundleId.zip",
+	async (c: AppContext) => {
+		const mailboxId = c.req.param("mailboxId")!;
+		const bundleId = c.req.param("bundleId")!;
+		const stub = c.var.mailboxStub as unknown as {
+			getBundle: (id: string) => Promise<
+				| {
+						bundle: import("./lib/invoice-bundle-zip").BundleHeaderForZip;
+						invoices: import("./lib/invoice-bundle-zip").InvoiceForZip[];
+				  }
+				| null
+			>;
+		};
+		const result = await stub.getBundle(bundleId);
+		if (!result) return c.json({ error: "Bundle not found" }, 404);
+		const { streamBundleZip, bundleZipFilename } = await import(
+			"./lib/invoice-bundle-zip"
+		);
+		const bytes = await streamBundleZip({
+			env: c.env,
+			mailboxId,
+			bundle: result.bundle,
+			invoices: result.invoices,
+		});
+		const filename = bundleZipFilename(result.bundle);
+		// Copy into a fresh ArrayBuffer so BodyInit picks the unambiguous
+		// `ArrayBuffer` overload — Workers types reject `Uint8Array<ArrayBufferLike>`
+		// directly because of the generic widening fflate's typings introduce.
+		const ab = new ArrayBuffer(bytes.byteLength);
+		new Uint8Array(ab).set(bytes);
+		return new Response(ab, {
+			headers: {
+				"Content-Type": "application/zip",
+				"Content-Disposition": `attachment; filename="${filename}"`,
+				"Cache-Control": "no-store",
+			},
+		});
+	},
+);
+
 // -- Search ---------------------------------------------------------
 
 app.get("/api/v1/mailboxes/:mailboxId/search", async (c: AppContext) => {
