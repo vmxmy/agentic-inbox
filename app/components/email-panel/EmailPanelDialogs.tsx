@@ -81,7 +81,7 @@ export default function EmailPanelDialogs({
 						)}
 					</Dialog.Title>
 					{sourceViewEmail && (
-						<div className="mt-4 max-h-[60vh] overflow-y-auto">
+						<div className="mt-4 max-h-[60vh] max-h-[60dvh] overflow-y-auto">
 							<table className="w-full text-sm border-collapse">
 								<tbody>
 									{sourceHeaders.map((header, idx) => (
@@ -129,7 +129,7 @@ export default function EmailPanelDialogs({
 							<img
 								src={previewImage.url}
 								alt={previewImage.filename}
-								className="max-w-full max-h-[70vh] object-contain rounded shadow-sm"
+								className="max-w-full max-h-[70vh] max-h-[70dvh] object-contain rounded shadow-sm"
 							/>
 						</div>
 					)}
