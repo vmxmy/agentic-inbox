@@ -20,6 +20,7 @@ Worker-side shared library — the support layer between Hono route handlers and
 | `email-helpers.ts` | Cross-cutting helpers — `getMailboxStub(env, id)`, `listMailboxes(bucket)`, `validateSender` + `SenderValidationError`, `generateMessageId(domain)`, `buildReferencesChain`, `buildThreadingHeaders`, `resolveOriginalEmail`, `getFullEmail`/`getFullThread`, `stripHtmlToText`, `textToHtml`, `formatEmailDate` |
 | `schemas.ts` | Shared Zod schemas + TypeScript types — `EmailMetadata`, `EmailFull`, `AttachmentInfo`, `SendEmailRequestSchema`, etc. Single source of truth for request/response shapes used by routes and tools |
 | `tools.ts` | Implementation of every email tool (list/get/get_thread/search/draft_reply/draft_email/update_draft/delete_email/send_reply/send_email/mark_read/move/discard_draft). Same module powers both `EmailAgent` and `EmailMCP` so the two surfaces stay aligned |
+| `invoice-tools.ts` | Invoice + reimbursement-bundle tool wrappers consumed by `InvoiceAgent` (auto-extract in PR3, chat tool surface in PR4). Same `(env, mailboxId, params)` style as `tools.ts`. `toolProcessEmailInvoices` is the orchestration entrypoint — resolves allowed domains, delegates to `MailboxDO.reprocessInvoicesForEmail` (the canonical pipeline entrypoint shared with the existing reprocess path). MCP invoice/bundle tools intentionally stay wired directly to MailboxDO RPC for backwards compatibility |
 
 ## For AI Agents
 
