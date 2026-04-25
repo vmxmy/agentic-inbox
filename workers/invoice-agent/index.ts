@@ -3,6 +3,8 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import { AIChatAgent } from "@cloudflare/ai-chat";
+import { toolProcessEmailInvoices } from "../lib/invoice-tools";
+import type { Env } from "../types";
 
 interface OnNewEmailPayload {
 	mailboxId: string;
@@ -16,13 +18,12 @@ interface OnNewEmailPayload {
  * InvoiceAgent — per-mailbox DO that handles invoice extraction (auto-triggered
  * from receiveEmail) and exposes a chat surface for invoice / bundle queries.
  *
- * PR1 is a skeleton: the DO class, binding, and migration tag exist so the
- * runtime is wired up, but handleNewEmail and onChatMessage are stubs. Behaviour
- * lands in subsequent PRs:
- *   - PR2: workers/lib/invoice-tools.ts — extract pipeline steps into tools
- *   - PR3: receiveEmail → ctx.waitUntil(INVOICE_AGENT.fetch("/onNewEmail"))
- *   - PR4: onChatMessage with full invoice + bundle tool surface
- *   - PR5: front-end InvoicePanel (under /mailbox/:id/invoices and /bundles)
+ * Status:
+ *   - PR1: skeleton + binding ✓
+ *   - PR2: workers/lib/invoice-tools.ts tool wrappers ✓
+ *   - PR3: receiveEmail → ctx.waitUntil(INVOICE_AGENT.fetch("/onNewEmail")) ✓
+ *   - PR4: onChatMessage with full invoice + bundle tool surface (pending)
+ *   - PR5: front-end InvoicePanel (pending)
  */
 export class InvoiceAgent extends AIChatAgent<any> {
 	async onRequest(request: Request): Promise<Response> {
@@ -50,11 +51,30 @@ export class InvoiceAgent extends AIChatAgent<any> {
 	}
 
 	/**
-	 * Auto-triggered when a new email arrives. Stub in PR1; the deterministic
-	 * invoice-pipeline orchestration moves here in PR3.
+	 * Auto-triggered when a new email arrives. Delegates to the shared tool
+	 * which resolves the per-mailbox allowed-domains config and calls
+	 * MailboxDO.reprocessInvoicesForEmail — the canonical pipeline entrypoint
+	 * shared with the manual reprocess path. Idempotent.
 	 */
-	async handleNewEmail(_payload: OnNewEmailPayload): Promise<void> {
-		// PR3 will orchestrate detect → parse → save via invoice-tools.
+	async handleNewEmail(payload: OnNewEmailPayload): Promise<void> {
+		const env = this.env as Env;
+		try {
+			const result = await toolProcessEmailInvoices(
+				env,
+				payload.mailboxId,
+				payload.emailId,
+			);
+			if (result.saved.length || result.skipped.length) {
+				console.log(
+					`Invoice pipeline for ${payload.emailId}: saved=${result.saved.length} skipped=${result.skipped.length}`,
+				);
+			}
+		} catch (e) {
+			console.error(
+				`Invoice pipeline failed for ${payload.emailId}:`,
+				(e as Error).message,
+			);
+		}
 	}
 
 	/**

@@ -37,14 +37,8 @@ import {
 	verifyInviteToken,
 } from "./lib/auth";
 import { getAgentConfig } from "./lib/agent-config";
-import { DEFAULT_INVOICE_SOURCE_DOMAINS } from "./lib/invoice-link-scanner";
 import { evaluateRules } from "./lib/rules";
 import { extensionOf, extractAttachmentsInline } from "./lib/attachment-extract";
-import {
-	processEmailForInvoices,
-	type EntryUnit,
-	type ExistingAttachment,
-} from "./lib/invoice-pipeline";
 
 type AppContext = Context<MailboxContext>;
 
@@ -884,64 +878,19 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 
 	// Structured invoice extraction. Runs BEFORE the auto-draft early return
 	// so it works alongside skipDraft (which is the common config for invoices).
-	// Delegates to the shared pipeline so first-receive and
-	// reprocess-after-parser-fix paths stay in sync.
+	// Async via INVOICE_AGENT — receiveEmail returns immediately; the agent
+	// reads the email back from MailboxDO and runs the deterministic pipeline
+	// (workers/lib/invoice-tools.ts:toolProcessEmailInvoices →
+	//  MailboxDO.reprocessInvoicesForEmail → workers/lib/invoice-pipeline.ts).
 	if (action.extractInvoice) {
-		try {
-			const entryUnits: EntryUnit[] = [];
-			for (const att of parsedEmail.attachments ?? []) {
-				const sanitizedName = (att.filename || "untitled").replace(
-					/[\/\\:*?"<>|\x00-\x1f]/g,
-					"_",
-				);
-				const attRow = attachmentData.find((r) => r.filename === sanitizedName);
-				if (!attRow) continue;
-				const raw = att.content;
-				const bytes =
-					typeof raw === "string"
-						? new TextEncoder().encode(raw)
-						: raw instanceof Uint8Array
-							? raw
-							: new Uint8Array(raw);
-				entryUnits.push({
-					attachmentId: attRow.id,
-					filename: sanitizedName,
-					mimetype: att.mimeType,
-					bytes,
-				});
-			}
-			const existingAttachments: ExistingAttachment[] = attachmentData.map((a) => ({
-				id: a.id,
-				filename: a.filename,
-				mimetype: a.mimetype,
-				size: a.size,
-				origin: "email",
-				source_url: null,
-				parent_attachment_id: null,
-			}));
-			const result = await processEmailForInvoices({
-				env,
-				stub,
-				emailId: messageId,
-				entryUnits,
-				bodyHtml: parsedEmail.html || parsedEmail.text || null,
-				existingAttachments,
-				allowedDomains:
-					config.invoiceSourceDomains.length === 0
-						? DEFAULT_INVOICE_SOURCE_DOMAINS
-						: [...DEFAULT_INVOICE_SOURCE_DOMAINS, ...config.invoiceSourceDomains],
-			});
-			if (result.saved.length || result.skipped.length) {
-				console.log(
-					`Invoice pipeline for ${messageId}: saved=${result.saved.length} skipped=${result.skipped.length}`,
-				);
-			}
-		} catch (e) {
-			console.error(
-				`Invoice pipeline failed for ${messageId}:`,
-				(e as Error).message,
-			);
-		}
+		const invoiceAgentStub = env.INVOICE_AGENT.get(env.INVOICE_AGENT.idFromName(mailboxId));
+		const invoiceAgentHeaders: Record<string, string> = { "Content-Type": "application/json" };
+		if (env.INTERNAL_SECRET) invoiceAgentHeaders[INTERNAL_SYSTEM_HEADER] = env.INTERNAL_SECRET;
+		ctx.waitUntil(invoiceAgentStub.fetch(new Request("https://agents/onNewEmail", {
+			method: "POST",
+			headers: invoiceAgentHeaders,
+			body: JSON.stringify({ mailboxId, emailId: messageId }),
+		})));
 	}
 
 	const movedOutOfInbox = !!(action.moveTo && action.moveTo !== Folders.INBOX);
