@@ -9,6 +9,7 @@ import {
 	FunnelIcon,
 	LinkIcon,
 	PlusIcon,
+	ReceiptIcon,
 	RobotIcon,
 	TrashIcon,
 	UsersIcon,
@@ -136,6 +137,10 @@ function dumpRulesForSave(rules: UIRule[]) {
 // The authoritative default prompt lives in workers/agent/index.ts (DEFAULT_SYSTEM_PROMPT).
 const PROMPT_PLACEHOLDER = `You are an email assistant that helps manage this inbox. You read emails, draft replies, and help organize conversations.\n\nWrite like a real person. Short, direct, flowing prose. Plain text only.\n\n(Leave empty to use the full built-in default prompt)`;
 
+// Placeholder for the invoice-agent prompt. Authoritative default lives in
+// workers/invoice-agent/index.ts (DEFAULT_SYSTEM_PROMPT).
+const INVOICE_PROMPT_PLACEHOLDER = `You are the invoice and reimbursement assistant for this mailbox. You search invoices, manage reimbursement bundles, and re-run extraction on specific emails.\n\nNever invent invoice fields. Match the user's language. Display invoice numbers verbatim.\n\n(Leave empty to use the full built-in default prompt)`;
+
 export default function SettingsRoute() {
 	const { mailboxId } = useParams<{ mailboxId: string }>();
 	const toastManager = useKumoToastManager();
@@ -144,6 +149,7 @@ export default function SettingsRoute() {
 
 	const [displayName, setDisplayName] = useState("");
 	const [agentPrompt, setAgentPrompt] = useState("");
+	const [invoicePrompt, setInvoicePrompt] = useState("");
 	const [autoDraft, setAutoDraft] = useState(true);
 	const [agentModel, setAgentModel] = useState<string>(DEFAULT_MODEL);
 	const [rules, setRules] = useState<UIRule[]>([]);
@@ -153,6 +159,7 @@ export default function SettingsRoute() {
 		if (mailbox) {
 			setDisplayName(mailbox.settings?.fromName || mailbox.name || "");
 			setAgentPrompt(mailbox.settings?.agentSystemPrompt || "");
+			setInvoicePrompt(mailbox.settings?.invoiceAgentSystemPrompt || "");
 			setAutoDraft((mailbox.settings as Record<string, unknown> | undefined)?.autoDraft !== false);
 			const rawModel = (mailbox.settings as Record<string, unknown> | undefined)?.agentModel;
 			setAgentModel(
@@ -171,6 +178,7 @@ export default function SettingsRoute() {
 			...mailbox.settings,
 			fromName: displayName,
 			agentSystemPrompt: agentPrompt.trim() || undefined,
+			invoiceAgentSystemPrompt: invoicePrompt.trim() || undefined,
 			autoDraft,
 			agentModel,
 			rules: dumpRulesForSave(rules),
@@ -199,6 +207,10 @@ export default function SettingsRoute() {
 		setAgentPrompt("");
 	};
 
+	const handleResetInvoicePrompt = () => {
+		setInvoicePrompt("");
+	};
+
 	if (!mailbox) {
 		return (
 			<div className="flex justify-center py-20">
@@ -208,6 +220,7 @@ export default function SettingsRoute() {
 	}
 
 	const isCustomPrompt = agentPrompt.trim().length > 0;
+	const isCustomInvoicePrompt = invoicePrompt.trim().length > 0;
 
 	return (
 		<div className="max-w-2xl px-4 py-4 md:px-8 md:py-6 h-full overflow-y-auto">
@@ -310,6 +323,51 @@ export default function SettingsRoute() {
 					<p className="text-xs text-kumo-subtle mt-2">
 						The prompt is sent as the system message to the AI model.
 						It controls the agent's personality, writing style, and behavior rules.
+					</p>
+				</div>
+
+				{/* Invoice Agent System Prompt */}
+				<div className="rounded-lg border border-kumo-line bg-kumo-base p-5">
+					<div className="flex items-center justify-between mb-4">
+						<div className="flex items-center gap-2">
+							<ReceiptIcon size={16} weight="duotone" className="text-kumo-subtle" />
+							<span className="text-sm font-medium text-kumo-default">
+								Invoice Agent Prompt
+							</span>
+							{isCustomInvoicePrompt ? (
+								<Badge variant="primary">Custom</Badge>
+							) : (
+								<Badge variant="secondary">Default</Badge>
+							)}
+						</div>
+						{isCustomInvoicePrompt && (
+							<Button
+								variant="ghost"
+								size="xs"
+								icon={<ArrowCounterClockwiseIcon size={14} />}
+								onClick={handleResetInvoicePrompt}
+							>
+								Reset to default
+							</Button>
+						)}
+					</div>
+					<p className="text-xs text-kumo-subtle mb-3">
+						System prompt for the Invoice Agent chat (separate from the email
+						agent). The agent has invoice / bundle tools wired in — list,
+						search, create / update / delete bundles, manage membership, and
+						re-run extraction. Leave empty to use the built-in default prompt.
+					</p>
+					<textarea
+						value={invoicePrompt}
+						onChange={(e) => setInvoicePrompt(e.target.value)}
+						placeholder={INVOICE_PROMPT_PLACEHOLDER}
+						rows={10}
+						className="w-full resize-y rounded-lg border border-kumo-line bg-kumo-recessed px-3 py-2 text-xs text-kumo-default placeholder:text-kumo-subtle focus:outline-none focus:ring-1 focus:ring-kumo-ring font-mono leading-relaxed"
+					/>
+					<p className="text-xs text-kumo-subtle mt-2">
+						Stored as <code>invoiceAgentSystemPrompt</code> on the mailbox
+						settings blob. The InvoiceAgent reads it via
+						<code> getAgentConfig</code> on every chat turn.
 					</p>
 				</div>
 

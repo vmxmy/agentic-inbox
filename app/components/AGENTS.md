@@ -21,6 +21,7 @@ Top-level React components composing the inbox UI: layout (header, sidebar, spli
 | `RichTextEditor.tsx` | TipTap editor wrapper — toolbar, link/image extensions, paste handling. **Sole TipTap consumer** |
 | `AgentSidebar.tsx` | Right-edge trigger that lazy-loads `AgentPanel` on demand (avoids loading the AI SDK on first paint) |
 | `AgentPanel.tsx` | Chat surface for the `EmailAgent` Durable Object — streaming markdown, tool-call visualisation, system-prompt input |
+| `InvoicePanel.tsx` | Chat surface for the `InvoiceAgent` Durable Object — same shape as `AgentPanel` but wired to `useAgent({ agent: "InvoiceAgent" })`, with invoice / bundle tool labels and no draft handling. Lazy-loaded from `AgentSidebar`'s "Invoice" tab |
 | `MCPPanel.tsx` | Settings panel showing the `/mcp` endpoint URL with copy buttons (consumed by the Settings route) |
 
 ## Subdirectories
