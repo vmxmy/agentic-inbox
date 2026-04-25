@@ -9,7 +9,9 @@ Shared building blocks for the per-agent chat panels (`AgentPanel` for `EmailAge
 
 | File | Description |
 |------|-------------|
-| `MessageBubble.tsx` | Generic chat bubble — user / assistant layout, streaming Markdown via `react-markdown` + `remark-gfm`, tool-call badges via a per-agent `toolLabels: Record<string, { label, icon }>` map, and an optional `renderActions(message)` slot for draft-style action buttons. Also exports `getToolNameFromPart` (AI SDK v6 part-shape parser) so panels can reuse the same logic for per-message helpers like `hasDraftReplyTool`. |
+| `MessageBubble.tsx` | Generic chat bubble — user / assistant layout, streaming Markdown via `react-markdown` + `remark-gfm`, tool-call badges via a per-agent `toolLabels: Record<string, { label, icon }>` map, and an optional `renderActions(message)` slot for draft-style action buttons. Also exports `getToolNameFromPart` (AI SDK v6 part-shape parser) so panels can reuse the same logic for per-message helpers. |
+| `agents.tsx` | Agent registry — `AgentDef` shape (id, bindingName, label, fullName, description, icon, toolLabels, suggestedPrompts, optional `renderActions`) and the `AGENTS` array (currently `email` + `invoice`). Single source of truth; `UnifiedAgentPanel` and `MentionAutocomplete` both consume from here. Includes `DEFAULT_AGENT_ID` and the sessionStorage key for the "last-used agent" memory. |
+| `MentionAutocomplete.tsx` | Composer with `@`-mention dropdown + agent chip. Detects `@` at word boundaries, opens an anchored picker filtered by the typed query, ↑/↓/Enter/Tab keyboard navigation, click selection, ESC dismiss. On selection: strips the `@xyz` from the textarea and sets the chip prop. Backspace at cursor 0 clears the chip. Owned by parent (`UnifiedAgentPanel`) so chip state can reset after send. |
 
 ## For AI Agents
 

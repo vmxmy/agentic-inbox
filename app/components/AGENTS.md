@@ -19,9 +19,8 @@ Top-level React components composing the inbox UI: layout (header, sidebar, spli
 | `ComposeEmail.tsx` | Modal compose dialog (legacy / mobile path) — wraps `RichTextEditor` |
 | `ComposePanel.tsx` | Side-panel compose surface used by the desktop split view |
 | `RichTextEditor.tsx` | TipTap editor wrapper — toolbar, link/image extensions, paste handling. **Sole TipTap consumer** |
-| `AgentSidebar.tsx` | Right-edge trigger that lazy-loads `AgentPanel` on demand (avoids loading the AI SDK on first paint) |
-| `AgentPanel.tsx` | Chat surface for the `EmailAgent` Durable Object — streaming markdown, tool-call visualisation, system-prompt input |
-| `InvoicePanel.tsx` | Chat surface for the `InvoiceAgent` Durable Object — same shape as `AgentPanel` but wired to `useAgent({ agent: "InvoiceAgent" })`, with invoice / bundle tool labels and no draft handling. Lazy-loaded from `AgentSidebar`'s "Invoice" tab |
+| `AgentSidebar.tsx` | Right-edge tabbed sidebar — two tabs (Chat, MCP). Lazy-loads `UnifiedAgentPanel` on first activation; chat history survives tab switches |
+| `UnifiedAgentPanel.tsx` | Single chat surface routing to multiple agents via `@`-mention. Holds two `useAgent` connections (EmailAgent + InvoiceAgent) simultaneously, merges their messages into one timeline, and routes outgoing messages by chip / last-used / default. Replaces the previous `AgentPanel` + `InvoicePanel` tab pair |
 | `MCPPanel.tsx` | Settings panel showing the `/mcp` endpoint URL with copy buttons (consumed by the Settings route) |
 
 ## Subdirectories
