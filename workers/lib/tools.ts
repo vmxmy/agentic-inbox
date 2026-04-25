@@ -775,6 +775,105 @@ function base64ToBytes(b64: string): Uint8Array {
 
 const MAX_MANUAL_UPLOAD_BYTES = 10 * 1024 * 1024;
 
+// ── Reimbursement bundles ─────────────────────────────────────────
+
+interface BundleStub {
+	createBundle: (a: { name: string; note?: string | null }) => Promise<unknown>;
+	listBundles: () => Promise<unknown>;
+	getBundle: (
+		id: string,
+	) => Promise<
+		| {
+				bundle: import("./invoice-bundle-zip").BundleHeaderForZip;
+				invoices: import("./invoice-bundle-zip").InvoiceForZip[];
+		  }
+		| null
+	>;
+	addInvoiceToBundle: (
+		bundleId: string,
+		invoiceId: string,
+	) => Promise<{ ok: boolean; error?: string }>;
+}
+
+export async function toolCreateBundle(
+	env: Env,
+	mailboxId: string,
+	args: { name: string; note?: string | null },
+) {
+	const stub = getMailboxStub(env, mailboxId) as unknown as BundleStub;
+	const bundle = await stub.createBundle({
+		name: args.name,
+		note: args.note ?? null,
+	});
+	return bundle;
+}
+
+export async function toolListBundles(env: Env, mailboxId: string) {
+	const stub = getMailboxStub(env, mailboxId) as unknown as BundleStub;
+	const bundles = await stub.listBundles();
+	return { bundles };
+}
+
+export async function toolAddToBundle(
+	env: Env,
+	mailboxId: string,
+	args: { bundleId: string; invoiceId: string },
+) {
+	const stub = getMailboxStub(env, mailboxId) as unknown as BundleStub;
+	const result = await stub.addInvoiceToBundle(args.bundleId, args.invoiceId);
+	if (!result.ok) {
+		return { error: result.error ?? "failed to add invoice" };
+	}
+	return { ok: true, bundleId: args.bundleId, invoiceId: args.invoiceId };
+}
+
+/**
+ * Build the bundle ZIP and return the bytes inline as base64. MCP clients
+ * (Claude, Cursor, etc.) generally cannot stream binary, so the synchronous
+ * base64 hand-back keeps the tool usable from a chat session. For browser
+ * downloads use the HTTP `.zip` endpoint instead.
+ */
+export async function toolDownloadBundle(
+	env: Env,
+	mailboxId: string,
+	bundleId: string,
+): Promise<
+	| { filename: string; mimetype: string; size: number; content_base64: string }
+	| { error: string }
+> {
+	const stub = getMailboxStub(env, mailboxId) as unknown as BundleStub;
+	const result = await stub.getBundle(bundleId);
+	if (!result) return { error: "Bundle not found" };
+	const { streamBundleZip, bundleZipFilename } = await import(
+		"./invoice-bundle-zip"
+	);
+	const bytes = await streamBundleZip({
+		env,
+		mailboxId,
+		bundle: result.bundle,
+		invoices: result.invoices,
+	});
+	return {
+		filename: bundleZipFilename(result.bundle),
+		mimetype: "application/zip",
+		size: bytes.byteLength,
+		content_base64: bytesToBase64(bytes),
+	};
+}
+
+/** Encode raw bytes to base64 using a chunked path so we never blow the call stack. */
+function bytesToBase64(bytes: Uint8Array): string {
+	let binary = "";
+	const chunk = 0x8000;
+	for (let i = 0; i < bytes.length; i += chunk) {
+		binary += String.fromCharCode.apply(
+			null,
+			Array.from(bytes.subarray(i, i + chunk)),
+		);
+	}
+	return btoa(binary);
+}
+
 export async function toolUploadInvoiceFile(
 	env: Env,
 	mailboxId: string,

@@ -25,6 +25,10 @@ import {
 	toolReprocessInvoicesForEmail,
 	toolExtractInvoiceFromPdf,
 	toolUploadInvoiceFile,
+	toolCreateBundle,
+	toolListBundles,
+	toolAddToBundle,
+	toolDownloadBundle,
 } from "../lib/tools";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
 import {
@@ -996,6 +1000,78 @@ export class EmailMCP extends McpAgent<Env> {
 				if (denied) return denied;
 				const result = await toolExtractInvoiceFromPdf(env, mailboxId, attachmentId);
 				return mcpResult(result as unknown as Record<string, unknown>);
+			},
+		);
+
+		// ── create_bundle ──────────────────────────────────────────
+		this.server.tool(
+			"create_bundle",
+			"Create a new reimbursement bundle (报销单). A bundle is a named collection of invoices intended for accounting submission. Returns the new bundle id.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				name: z.string().min(1).describe("Display name (e.g. '2026-04 出差报销')"),
+				note: z.string().optional().describe("Optional free-text note"),
+			},
+			async ({ mailboxId, name, note }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolCreateBundle(env, mailboxId, {
+					name,
+					note: note ?? null,
+				});
+				return mcpText(result);
+			},
+		);
+
+		// ── list_bundles ───────────────────────────────────────────
+		this.server.tool(
+			"list_bundles",
+			"List all reimbursement bundles for a mailbox, with invoice count and total amount per bundle. Sorted by created_at DESC.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+			},
+			async ({ mailboxId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolListBundles(env, mailboxId);
+				return mcpText(result);
+			},
+		);
+
+		// ── add_to_bundle ──────────────────────────────────────────
+		this.server.tool(
+			"add_to_bundle",
+			"Add an invoice to a reimbursement bundle. Refuses voided invoices and red-credit (negative-correction) invoices — those have no place in a reimbursement packet. Idempotent: re-adding an already-present invoice is a no-op.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				bundleId: z.string().describe("The bundle id"),
+				invoiceId: z.string().describe("The invoice id"),
+			},
+			async ({ mailboxId, bundleId, invoiceId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolAddToBundle(env, mailboxId, {
+					bundleId,
+					invoiceId,
+				});
+				return mcpResult(result);
+			},
+		);
+
+		// ── download_bundle ────────────────────────────────────────
+		this.server.tool(
+			"download_bundle",
+			"Pack a bundle into a ZIP (manifest.csv + every invoice's authoritative original file from R2) and return the bytes inline as base64. For browser downloads use the HTTP endpoint instead — this tool exists so chat clients can hand the packet to the user without a separate fetch.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				bundleId: z.string().describe("The bundle id"),
+			},
+			async ({ mailboxId, bundleId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolDownloadBundle(env, mailboxId, bundleId);
+				if ("error" in result) return mcpError(result.error);
+				return mcpText(result);
 			},
 		);
 
