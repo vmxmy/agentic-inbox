@@ -705,6 +705,7 @@ export class EmailMCP extends McpAgent<Env> {
 					autoDraft: config.autoDraft,
 					model: config.model,
 					customSystemPrompt: config.customSystemPrompt,
+					invoiceAgentSystemPrompt: config.invoiceAgentSystemPrompt,
 					rules: config.rules,
 					allowedModels: ALLOWED_AGENT_MODELS,
 				});
@@ -714,14 +715,15 @@ export class EmailMCP extends McpAgent<Env> {
 		// ── update_agent_config ────────────────────────────────────
 		this.server.tool(
 			"update_agent_config",
-			`Patch the per-mailbox agent config. Omitted fields stay unchanged. Pass customSystemPrompt as null to clear it. Allowed models: ${ALLOWED_AGENT_MODELS.join(", ")}.`,
+			`Patch the per-mailbox agent config. Omitted fields stay unchanged. Pass customSystemPrompt / invoiceAgentSystemPrompt as null to clear them. Allowed models: ${ALLOWED_AGENT_MODELS.join(", ")}.`,
 			{
 				mailboxId: z.string().describe("The mailbox email address"),
 				autoDraft: z.boolean().optional().describe("Whether inbound email triggers an automatic draft"),
 				agentModel: z.string().optional().describe("Model id — must be one of the allowed models"),
-				agentSystemPrompt: z.string().nullable().optional().describe("Custom system prompt override. Null clears it."),
+				agentSystemPrompt: z.string().nullable().optional().describe("Custom system prompt for the email agent. Null clears it."),
+				invoiceAgentSystemPrompt: z.string().nullable().optional().describe("Custom system prompt for the invoice agent chat. Null clears it."),
 			},
-			async ({ mailboxId, autoDraft, agentModel, agentSystemPrompt }) => {
+			async ({ mailboxId, autoDraft, agentModel, agentSystemPrompt, invoiceAgentSystemPrompt }) => {
 				const denied = await verifyMailbox(mailboxId);
 				if (denied) return denied;
 				try {
@@ -729,11 +731,13 @@ export class EmailMCP extends McpAgent<Env> {
 						autoDraft,
 						agentModel,
 						agentSystemPrompt,
+						invoiceAgentSystemPrompt,
 					});
 					return mcpText({
 						autoDraft: config.autoDraft,
 						model: config.model,
 						customSystemPrompt: config.customSystemPrompt,
+						invoiceAgentSystemPrompt: config.invoiceAgentSystemPrompt,
 					});
 				} catch (e) {
 					return mcpError((e as Error).message);
