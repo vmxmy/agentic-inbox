@@ -59,6 +59,8 @@ export default function ComposeEmail() {
 								value={to}
 								onChange={(e) => setTo(e.target.value)}
 								required
+								inputMode="email"
+								autoComplete="email"
 							/>
 						</div>
 						{!showCcBcc && (
@@ -79,6 +81,8 @@ export default function ComposeEmail() {
 							value={cc}
 							onChange={(e) => setCc(e.target.value)}
 							placeholder="Separate multiple addresses with commas"
+							inputMode="email"
+							autoComplete="email"
 						/>
 					)}
 					{showCcBcc && (
@@ -89,6 +93,8 @@ export default function ComposeEmail() {
 							value={bcc}
 							onChange={(e) => setBcc(e.target.value)}
 							placeholder="Separate multiple addresses with commas"
+							inputMode="email"
+							autoComplete="email"
 						/>
 					)}
 					<Input
@@ -99,6 +105,7 @@ export default function ComposeEmail() {
 						value={subject}
 						onChange={(e) => setSubject(e.target.value)}
 						required
+						autoComplete="off"
 					/>
 					<div>
 						<Text size="sm" DANGEROUS_className="font-medium mb-1.5 block">

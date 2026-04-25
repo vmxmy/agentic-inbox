@@ -84,6 +84,9 @@ export default function Header() {
 						value={searchQuery}
 						onChange={(e) => setSearchQuery(e.target.value)}
 						onKeyDown={handleKeyDown}
+						inputMode="search"
+						enterKeyHint="search"
+						autoComplete="off"
 					/>
 					{searchQuery && (
 						<button
