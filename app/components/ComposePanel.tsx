@@ -64,8 +64,8 @@ export default function ComposePanel() {
 					{error && <Banner variant="error" text={error} />}
 
 					<div className="space-y-3">
-						<div className="flex items-center gap-2">
-							<label className="text-sm font-medium text-kumo-subtle w-14 shrink-0">
+						<div className="flex flex-col gap-1 md:flex-row md:items-center md:gap-2">
+							<label className="text-xs md:text-sm font-medium text-kumo-subtle md:w-14 md:shrink-0">
 								To
 							</label>
 							<div className="flex-1 flex items-center gap-2 min-w-0">
@@ -90,8 +90,8 @@ export default function ComposePanel() {
 						</div>
 
 						{showCcBcc && (
-							<div className="flex items-center gap-2">
-								<label className="text-sm font-medium text-kumo-subtle w-14 shrink-0">
+							<div className="flex flex-col gap-1 md:flex-row md:items-center md:gap-2">
+								<label className="text-xs md:text-sm font-medium text-kumo-subtle md:w-14 md:shrink-0">
 									CC
 								</label>
 								<div className="flex-1">
@@ -107,8 +107,8 @@ export default function ComposePanel() {
 						)}
 
 						{showCcBcc && (
-							<div className="flex items-center gap-2">
-								<label className="text-sm font-medium text-kumo-subtle w-14 shrink-0">
+							<div className="flex flex-col gap-1 md:flex-row md:items-center md:gap-2">
+								<label className="text-xs md:text-sm font-medium text-kumo-subtle md:w-14 md:shrink-0">
 									BCC
 								</label>
 								<div className="flex-1">
@@ -123,8 +123,8 @@ export default function ComposePanel() {
 							</div>
 						)}
 
-						<div className="flex items-center gap-2">
-							<label className="text-sm font-medium text-kumo-subtle w-14 shrink-0">
+						<div className="flex flex-col gap-1 md:flex-row md:items-center md:gap-2">
+							<label className="text-xs md:text-sm font-medium text-kumo-subtle md:w-14 md:shrink-0">
 								Subject
 							</label>
 							<div className="flex-1">
@@ -150,7 +150,7 @@ export default function ComposePanel() {
 
 				{/* Footer actions */}
 				<div className="mt-auto px-4 py-3 border-t border-kumo-line bg-kumo-fill/30 shrink-0 md:px-6">
-					<div className="flex items-center justify-between">
+					<div className="flex items-center justify-between gap-2 flex-wrap">
 						<Button type="button" variant="ghost" size="sm" onClick={closeCompose} disabled={isSending}>
 							Discard
 						</Button>
