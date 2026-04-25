@@ -103,7 +103,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
 export function HydrateFallback() {
 	return (
-		<div className="flex items-center justify-center h-screen">
+		<div className="flex items-center justify-center h-screen h-[100dvh]">
 			<Loader size="lg" />
 		</div>
 	);
@@ -146,7 +146,7 @@ export function ErrorBoundary({ error }: { error: unknown }) {
 	}
 
 	return (
-		<div className="flex items-center justify-center min-h-screen p-8">
+		<div className="flex items-center justify-center min-h-screen min-h-[100dvh] p-8">
 			<Empty
 				icon={<WarningIcon size={48} className="text-kumo-inactive" />}
 				title={status === 404 ? "404 — Page not found" : title}

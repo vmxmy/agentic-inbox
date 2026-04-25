@@ -237,6 +237,7 @@ export default function SettingsRoute() {
 							label="Display Name"
 							value={displayName}
 							onChange={(e) => setDisplayName(e.target.value)}
+							autoComplete="name"
 						/>
 						<Input label="Email" type="email" value={mailbox.email} disabled />
 					</div>
@@ -658,6 +659,10 @@ function MembersCard({ mailboxId }: { mailboxId: string }) {
 								value={addEmail}
 								onChange={(e) => setAddEmail(e.target.value)}
 								onKeyDown={(e) => { if (e.key === "Enter") handleAdd(); }}
+								type="email"
+								inputMode="email"
+								autoComplete="email"
+								enterKeyHint="done"
 							/>
 						</div>
 						<Button

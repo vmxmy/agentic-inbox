@@ -76,6 +76,8 @@ export default function ComposePanel() {
 									value={to}
 									onChange={(e) => setTo(e.target.value)}
 									required
+									inputMode="email"
+									autoComplete="email"
 								/>
 								{!showCcBcc && (
 									<button
@@ -101,6 +103,8 @@ export default function ComposePanel() {
 										value={cc}
 										onChange={(e) => setCc(e.target.value)}
 										placeholder="Separate multiple addresses with commas"
+										inputMode="email"
+										autoComplete="email"
 									/>
 								</div>
 							</div>
@@ -118,6 +122,8 @@ export default function ComposePanel() {
 										value={bcc}
 										onChange={(e) => setBcc(e.target.value)}
 										placeholder="Separate multiple addresses with commas"
+										inputMode="email"
+										autoComplete="email"
 									/>
 								</div>
 							</div>
@@ -135,6 +141,7 @@ export default function ComposePanel() {
 									value={subject}
 									onChange={(e) => setSubject(e.target.value)}
 									required
+									autoComplete="off"
 								/>
 							</div>
 						</div>
