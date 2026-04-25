@@ -34,6 +34,11 @@ export interface AgentConfig {
 	 *  entries are filtered out silently — tighter than an error, but still
 	 *  observable because they won't show up in get_mailbox_settings. */
 	invoiceSourceDomains: readonly string[];
+	/** Custom system prompt for the InvoiceAgent chat surface. Null falls back
+	 *  to the built-in DEFAULT_SYSTEM_PROMPT defined in
+	 *  `workers/invoice-agent/index.ts`. Stored as `invoiceAgentSystemPrompt`
+	 *  on the settings blob (parallel to `agentSystemPrompt` for EmailAgent). */
+	invoiceAgentSystemPrompt: string | null;
 }
 
 function coerceModel(raw: unknown): AgentModel {
@@ -73,6 +78,10 @@ export async function getAgentConfig(env: Env, mailboxId: string): Promise<Agent
 					: null,
 			rules: parseRulesLoose(settings),
 			invoiceSourceDomains: coerceInvoiceSourceDomains(settings.invoiceSourceDomains),
+			invoiceAgentSystemPrompt:
+				typeof settings.invoiceAgentSystemPrompt === "string" && settings.invoiceAgentSystemPrompt.trim()
+					? settings.invoiceAgentSystemPrompt
+					: null,
 		};
 	} catch {
 		return defaults();
@@ -86,6 +95,7 @@ function defaults(): AgentConfig {
 		customSystemPrompt: null,
 		rules: [],
 		invoiceSourceDomains: [],
+		invoiceAgentSystemPrompt: null,
 	};
 }
 
@@ -111,6 +121,8 @@ export interface AgentConfigUpdate {
 	agentModel?: string;
 	/** Pass `null` to clear the custom prompt and fall back to the default. */
 	agentSystemPrompt?: string | null;
+	/** Pass `null` to clear the InvoiceAgent prompt and fall back to its default. */
+	invoiceAgentSystemPrompt?: string | null;
 }
 
 function settingsKey(mailboxId: string): string {
@@ -158,6 +170,10 @@ export async function updateAgentConfig(
 	if (update.agentSystemPrompt !== undefined) {
 		if (update.agentSystemPrompt === null) delete settings.agentSystemPrompt;
 		else settings.agentSystemPrompt = update.agentSystemPrompt;
+	}
+	if (update.invoiceAgentSystemPrompt !== undefined) {
+		if (update.invoiceAgentSystemPrompt === null) delete settings.invoiceAgentSystemPrompt;
+		else settings.invoiceAgentSystemPrompt = update.invoiceAgentSystemPrompt;
 	}
 	await writeSettings(env, mailboxId, settings);
 	return getAgentConfig(env, mailboxId);

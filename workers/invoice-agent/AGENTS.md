@@ -10,16 +10,15 @@ The `InvoiceAgent` Durable Object — per-mailbox DO that owns the invoice domai
 
 ## Status
 
-PR1 (skeleton + binding) and PR2 (tool wrappers) are landed. PR3 — switching `receiveEmail` to `ctx.waitUntil(INVOICE_AGENT.fetch("/onNewEmail"))` and wiring `handleNewEmail` to `toolProcessEmailInvoices` — is also landed: invoice extraction now runs asynchronously in this DO, isolated from `receiveEmail`. The pipeline (`workers/lib/invoice-pipeline.ts`) and the canonical entrypoint (`MailboxDO.reprocessInvoicesForEmail`) are unchanged — extraction logic stays byte-identical, only the trigger timing changed.
+PR1 (skeleton), PR2 (tool wrappers), PR3 (async dispatch from `receiveEmail`), and PR4 (chat surface) are landed. The DO now serves both the auto-extraction trigger (`POST /onNewEmail` from `receiveEmail`) and an `AIChatAgent` chat surface at `/agents/invoice-agent/<mailboxId>` with the full 10-tool surface from `workers/lib/invoice-tools.ts`.
 
-`onChatMessage` still returns 501 — PR4 will wire the full tool surface.
+System-prompt override: `mailboxes/<id>.json:invoiceAgentSystemPrompt` (settable via the MCP `update_agent_config` tool). Falls back to `DEFAULT_SYSTEM_PROMPT` defined inline in `index.ts`.
 
-Follow-up PRs:
+Follow-up:
 
 | PR | Scope |
 |----|-------|
-| PR4 | Implement `onChatMessage` with the full tool set (extraction + invoice queries + bundle ops) from `workers/lib/invoice-tools.ts`. Add `INVOICE_DEFAULT_SYSTEM_PROMPT`. Decide where the per-mailbox prompt override lives (likely `mailboxes/<id>.json:invoiceAgentSystemPrompt`). |
-| PR5 | Front-end `InvoicePanel` (clone of `AgentPanel` pointing at `/agents/invoice-agent/<mailboxId>`) on the invoices/bundles routes. |
+| PR5 | Front-end `InvoicePanel` (clone of `AgentPanel` pointing at `/agents/invoice-agent/<mailboxId>`) on the invoices / bundles routes. Also surface `invoiceAgentSystemPrompt` in the Settings UI. |
 
 ## Key Files
 
