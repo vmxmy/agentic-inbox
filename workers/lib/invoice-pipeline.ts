@@ -25,6 +25,7 @@ import {
 	type ChildRegistrar,
 	type ExtractionUnit,
 } from "./invoice-source-extractors";
+import { validateParsedShape } from "./invoice-ocr";
 
 /**
  * Minimal surface the pipeline needs from a MailboxDO. Both the worker-side
@@ -216,10 +217,13 @@ export async function processEmailForInvoices(
 			});
 			return;
 		}
+		const shapeCheck = validateParsedShape(extracted.parsed);
+		const needsReview = !shapeCheck.ok;
 		const invoiceId = await stub.saveInvoice(
 			emailId,
 			extracted.authoritativeAttachmentId,
 			extracted.parsed,
+			{ needsReview },
 		);
 		seenInvoiceNumbers.add(invoiceNumber);
 		saved.push({

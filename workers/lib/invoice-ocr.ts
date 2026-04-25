@@ -273,6 +273,20 @@ export function validateParsedShape(parsed: ParsedInvoice): ParsedShapeCheck {
 			problems.push(`invoice_number:suspicious-length-${len}-of-8`);
 		}
 	}
+	const excl = parsed.amount_excl_tax;
+	const tax = parsed.tax_amount;
+	const incl = parsed.amount_incl_tax;
+	if (
+		excl !== null &&
+		tax !== null &&
+		incl !== null &&
+		Number.isFinite(excl) &&
+		Number.isFinite(tax) &&
+		Number.isFinite(incl) &&
+		Math.abs(excl + tax - incl) > 0.02
+	) {
+		problems.push("amount_consistency:mismatch");
+	}
 	return { ok: problems.length === 0, problems };
 }
 
