@@ -20,6 +20,7 @@ export default function MailboxRoute() {
 		isSidebarOpen,
 		closeSidebar,
 		isAgentPanelOpen,
+		toggleAgentPanel,
 		closePanel,
 		closeComposeModal,
 	} = useUIStore();
@@ -69,11 +70,26 @@ export default function MailboxRoute() {
 				</main>
 			</div>
 
-			{/* Agent + MCP sidebar -- togglable on desktop */}
+			{/* Agent + MCP sidebar
+			    - lg+ : in-flow 380px column, sits beside the main content
+			    - <lg : full-screen drawer (capped at 420px) over the content
+			           with a backdrop click-to-close.
+			    Previously this was `hidden lg:flex` which excluded all tablet
+			    users (md/lg breakpoints) from the AI assistant entirely. */}
 			{isAgentPanelOpen && (
-				<div className="hidden lg:flex w-[380px] shrink-0 border-l border-kumo-line flex-col bg-kumo-base overflow-hidden">
-					<AgentSidebar />
-				</div>
+				<>
+					<div
+						className="fixed inset-0 z-30 bg-black/30 lg:hidden"
+						onClick={toggleAgentPanel}
+						onKeyDown={(e) => e.key === "Escape" && toggleAgentPanel()}
+						role="button"
+						tabIndex={-1}
+						aria-label="Close agent panel"
+					/>
+					<div className="fixed inset-y-0 right-0 z-40 w-full max-w-[420px] flex flex-col border-l border-kumo-line bg-kumo-base overflow-hidden lg:relative lg:z-0 lg:max-w-none lg:w-[380px] lg:shrink-0">
+						<AgentSidebar />
+					</div>
+				</>
 			)}
 
 			<ComposeEmail />
