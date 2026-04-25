@@ -924,6 +924,7 @@ export class EmailMCP extends McpAgent<Env> {
 				maxAmount: z.number().optional().describe("Upper bound on amount_incl_tax"),
 				page: z.number().int().positive().optional().describe("1-indexed page number (default 1)"),
 				limit: z.number().int().positive().max(200).optional().describe("Page size (default 50, max 200)"),
+				itemContains: z.string().optional().describe("Filter by invoice line-item name (LIKE %X%) — finds invoices containing items whose name matches."),
 			},
 			async ({ mailboxId, ...filters }) => {
 				const denied = await verifyMailbox(mailboxId);

@@ -24,6 +24,7 @@ export default function InvoicesRoute() {
 	const [reviewOnly, setReviewOnly] = useState(false);
 	const [sellerContains, setSellerContains] = useState("");
 	const [buyerContains, setBuyerContains] = useState("");
+	const [itemContains, setItemContains] = useState("");
 	const [dateFrom, setDateFrom] = useState("");
 	const [dateTo, setDateTo] = useState("");
 	const [minAmount, setMinAmount] = useState("");
@@ -39,8 +40,9 @@ export default function InvoicesRoute() {
 			dateTo: dateTo || undefined,
 			minAmount: minAmount ? Number(minAmount) : undefined,
 			maxAmount: maxAmount ? Number(maxAmount) : undefined,
+			itemContains: itemContains.trim() || undefined,
 		}),
-		[page, sellerContains, buyerContains, dateFrom, dateTo, minAmount, maxAmount],
+		[page, sellerContains, buyerContains, dateFrom, dateTo, minAmount, maxAmount, itemContains],
 	);
 
 	const { data, isLoading, isFetching } = useInvoices(mailboxId, filters);
@@ -63,6 +65,7 @@ export default function InvoicesRoute() {
 		setDateTo("");
 		setMinAmount("");
 		setMaxAmount("");
+		setItemContains("");
 		setReviewOnly(false);
 		setPage(1);
 	};
@@ -128,7 +131,7 @@ export default function InvoicesRoute() {
 					</div>
 				</div>
 
-				<div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-6">
+				<div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-7">
 					<Input
 						placeholder="销方名称 like…"
 						value={sellerContains}
@@ -178,6 +181,14 @@ export default function InvoicesRoute() {
 						value={maxAmount}
 						onChange={(e) => {
 							setMaxAmount(e.target.value);
+							setPage(1);
+						}}
+					/>
+					<Input
+						placeholder="货物/服务名 like…"
+						value={itemContains}
+						onChange={(e) => {
+							setItemContains(e.target.value);
 							setPage(1);
 						}}
 					/>

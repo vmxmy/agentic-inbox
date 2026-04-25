@@ -4,7 +4,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { drizzle } from "drizzle-orm/durable-sqlite";
-import { eq, and, or, asc, desc, sql, gte, lte, like } from "drizzle-orm";
+import { eq, and, or, asc, desc, sql, gte, lte, like, inArray } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import * as schema from "../db/schema";
 import { Folders } from "../../shared/folders";
@@ -27,6 +27,7 @@ export interface InvoiceFilters {
 	invoiceNumber?: string;
 	minAmount?: number;
 	maxAmount?: number;
+	itemContains?: string;
 	page?: number;
 	limit?: number;
 }
@@ -1000,6 +1001,16 @@ export class MailboxDO extends DurableObject<Env> {
 		}
 		if (filters.maxAmount !== undefined) {
 			conditions.push(lte(schema.invoices.amount_incl_tax, filters.maxAmount));
+		}
+		if (filters.itemContains) {
+			conditions.push(
+				inArray(
+					schema.invoices.id,
+					this.db.select({ id: schema.invoiceItems.invoice_id })
+						.from(schema.invoiceItems)
+						.where(like(schema.invoiceItems.item_name, `%${filters.itemContains}%`)),
+				),
+			);
 		}
 		const where = conditions.length ? and(...conditions) : undefined;
 

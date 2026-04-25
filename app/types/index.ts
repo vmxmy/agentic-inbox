@@ -121,6 +121,7 @@ export interface InvoiceFilters {
 	invoiceNumber?: string;
 	minAmount?: number;
 	maxAmount?: number;
+	itemContains?: string;
 	page?: number;
 	limit?: number;
 }

@@ -480,6 +480,7 @@ app.get("/api/v1/mailboxes/:mailboxId/invoices", async (c: AppContext) => {
 		invoiceNumber: c.req.query("invoiceNumber") || undefined,
 		minAmount: c.req.query("minAmount") ? Number(c.req.query("minAmount")) : undefined,
 		maxAmount: c.req.query("maxAmount") ? Number(c.req.query("maxAmount")) : undefined,
+		itemContains: c.req.query("itemContains") || undefined,
 		page: intQuery(c, "page"),
 		limit: intQuery(c, "limit"),
 	};
@@ -502,6 +503,7 @@ app.get("/api/v1/mailboxes/:mailboxId/invoices.csv", async (c: AppContext) => {
 		invoiceNumber: c.req.query("invoiceNumber") || undefined,
 		minAmount: c.req.query("minAmount") ? Number(c.req.query("minAmount")) : undefined,
 		maxAmount: c.req.query("maxAmount") ? Number(c.req.query("maxAmount")) : undefined,
+		itemContains: c.req.query("itemContains") || undefined,
 	};
 
 	const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
