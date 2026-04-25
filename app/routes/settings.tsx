@@ -670,7 +670,7 @@ function MembersCard({ mailboxId }: { mailboxId: string }) {
 					</div>
 
 					<div className="border-t border-kumo-line pt-3">
-						<div className="flex items-center justify-between">
+						<div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between">
 							<span className="text-xs text-kumo-subtle">
 								Or share a 7-day invite link (recipient must pass Access)
 							</span>
@@ -680,22 +680,26 @@ function MembersCard({ mailboxId }: { mailboxId: string }) {
 								icon={<LinkIcon size={14} />}
 								onClick={handleInvite}
 								loading={createInvite.isPending}
+								className="self-start sm:self-auto"
 							>
 								Generate invite link
 							</Button>
 						</div>
 						{inviteUrl && (
-							<div className="mt-2 flex items-center gap-2">
-								<Input
-									value={inviteUrl}
-									readOnly
-									onFocus={(e) => e.currentTarget.select()}
-								/>
+							<div className="mt-2 flex flex-col items-stretch gap-2 sm:flex-row sm:items-center">
+								<div className="flex-1 min-w-0">
+									<Input
+										value={inviteUrl}
+										readOnly
+										onFocus={(e) => e.currentTarget.select()}
+									/>
+								</div>
 								<Button
 									variant="secondary"
 									size="sm"
 									icon={<CopyIcon size={14} />}
 									onClick={handleCopy}
+									className="shrink-0 self-end sm:self-auto"
 								>
 									Copy
 								</Button>

@@ -66,7 +66,8 @@ export default function EmailIframe({ body, autoSize }: EmailIframeProps) {
 			FORCE_BODY: true,
 		});
 
-		const padding = autoSize ? "0" : "24px";
+		const padding = autoSize ? "0" : "12px";
+		const desktopPadding = autoSize ? "0" : "24px";
 
 		// Height-reporting script: sends body.scrollHeight to the parent.
 		// Runs inside the opaque-origin sandbox so it has zero access to
@@ -108,7 +109,10 @@ body {
 	margin: 0;
 	word-wrap: break-word;
 	overflow-wrap: break-word;
-	${autoSize ? "overflow: hidden;" : ""}
+	${autoSize ? "overflow: hidden;" : "overflow-x: auto; -webkit-overflow-scrolling: touch;"}
+}
+@media (min-width: 640px) {
+	body { padding: ${desktopPadding}; }
 }
 [style*="position: fixed"], [style*="position:fixed"], [style*="position: absolute"], [style*="position:absolute"] {
 	position: relative !important;
