@@ -22,6 +22,8 @@ import { useParams } from "react-router";
 import { AGENTS, type AgentId } from "~/lib/agent-registry";
 import { queryKeys } from "~/queries/keys";
 import { useWhoami } from "~/queries/identity";
+import { useCapabilities } from "~/queries/capabilities";
+import CapabilityActionEditor from "~/components/CapabilityActionEditor";
 import { useMailbox, useUpdateMailbox } from "~/queries/mailboxes";
 import {
 	useAddMember,
@@ -49,6 +51,10 @@ const MODEL_OPTIONS: { value: string; label: string }[] = [
 const DEFAULT_MODEL = MODEL_OPTIONS[0].value;
 
 // ── Rule types (mirror workers/lib/rules.ts) ──
+interface UIRuleAction {
+	capabilityId: string;
+	params: Record<string, unknown>;
+}
 interface UIRule {
 	name: string;
 	enabled: boolean;
@@ -63,6 +69,8 @@ interface UIRule {
 	markRead: boolean;
 	extractAttachmentText: boolean;
 	promptOverride: string;
+	/** Capability invocations beyond the 5 legacy field actions above. */
+	actions: UIRuleAction[];
 }
 const BLANK_RULE: UIRule = {
 	name: "",
@@ -78,6 +86,7 @@ const BLANK_RULE: UIRule = {
 	markRead: false,
 	extractAttachmentText: false,
 	promptOverride: "",
+	actions: [],
 };
 const MOVE_OPTIONS = [
 	{ value: "",        label: "(keep in inbox)" },
@@ -113,6 +122,19 @@ function loadRulesFromSettings(settings: Record<string, unknown> | undefined): U
 			markRead: act.markRead === true,
 			extractAttachmentText: act.extractAttachmentText === true,
 			promptOverride: typeof act.promptOverride === "string" ? act.promptOverride : "",
+			actions: Array.isArray(act.actions)
+				? (act.actions as unknown[]).flatMap((a) => {
+					if (!a || typeof a !== "object") return [];
+					const raw = a as { capabilityId?: unknown; params?: unknown };
+					if (typeof raw.capabilityId !== "string") return [];
+					return [{
+						capabilityId: raw.capabilityId,
+						params: (raw.params && typeof raw.params === "object"
+							? (raw.params as Record<string, unknown>)
+							: {}),
+					}];
+				})
+				: [],
 		};
 	});
 }
@@ -135,6 +157,8 @@ function dumpRulesForSave(rules: UIRule[]) {
 			if (r.markRead) act.markRead = true;
 			if (r.extractAttachmentText) act.extractAttachmentText = true;
 			if (r.promptOverride.trim()) act.promptOverride = r.promptOverride.trim();
+			const cleanActions = r.actions.filter((a) => a.capabilityId.trim().length > 0);
+			if (cleanActions.length) act.actions = cleanActions;
 			// Drop rules with no conditions or no actions — they're no-ops / footguns.
 			if (Object.keys(cond).length === 0) return null;
 			if (Object.keys(act).length === 0) return null;
@@ -172,6 +196,9 @@ export default function SettingsRoute() {
 	const [agentModel, setAgentModel] = useState<string>(DEFAULT_MODEL);
 	const [rules, setRules] = useState<UIRule[]>([]);
 	const [isSaving, setIsSaving] = useState(false);
+	/** null = "use server defaults" (no allowlist); array = explicit subset. */
+	const [emailReplyEnabledSkills, setEmailReplyEnabledSkills] =
+		useState<string[] | null>(null);
 
 	useEffect(() => {
 		if (mailbox) {
@@ -186,6 +213,11 @@ export default function SettingsRoute() {
 					: DEFAULT_MODEL,
 			);
 			setRules(loadRulesFromSettings(mailbox.settings as Record<string, unknown> | undefined));
+			const rawSkills = (mailbox.settings as Record<string, unknown> | undefined)
+				?.emailReplyEnabledSkills;
+			setEmailReplyEnabledSkills(
+				Array.isArray(rawSkills) ? (rawSkills.filter((s) => typeof s === "string") as string[]) : null,
+			);
 		}
 	}, [mailbox]);
 
@@ -200,6 +232,7 @@ export default function SettingsRoute() {
 			autoDraft,
 			agentModel,
 			rules: dumpRulesForSave(rules),
+			emailReplyEnabledSkills: emailReplyEnabledSkills ?? undefined,
 		};
 		try {
 			await updateMailboxMutation.mutateAsync({ mailboxId, settings });
@@ -408,28 +441,37 @@ export default function SettingsRoute() {
 								</p>
 							</div>
 
-							{/* Available actions (read-only) */}
-							<div>
-								<div className="flex items-center gap-2 mb-2">
-									<span className="text-xs font-medium text-kumo-default">Available actions</span>
-									<Badge variant="secondary">{activeAgent.tools.length}</Badge>
+							{/* Skills — capabilities the agent is allowed to invoke */}
+							{activeAgent.id === "email-reply" && (
+								<EmailAgentSkillsPicker
+									mailboxId={mailboxId}
+									enabledSkills={emailReplyEnabledSkills}
+									onChange={setEmailReplyEnabledSkills}
+									allowedToolNames={activeAgent.tools.map((t) => t.name)}
+								/>
+							)}
+							{activeAgent.id !== "email-reply" && (
+								<div>
+									<div className="flex items-center gap-2 mb-2">
+										<span className="text-xs font-medium text-kumo-default">Available actions</span>
+										<Badge variant="secondary">{activeAgent.tools.length}</Badge>
+									</div>
+									<div className="flex flex-wrap gap-1.5">
+										{activeAgent.tools.map((t) => (
+											<span
+												key={t.name}
+												title={t.description}
+												className="inline-flex items-center px-2 py-0.5 rounded border border-kumo-line bg-kumo-recessed text-[11px] font-mono text-kumo-default cursor-help"
+											>
+												{t.name}
+											</span>
+										))}
+									</div>
+									<p className="text-xs text-kumo-subtle mt-2">
+										Per-skill toggles for this agent ship with its capability migration in Phase 2.
+									</p>
 								</div>
-								<div className="flex flex-wrap gap-1.5">
-									{activeAgent.tools.map((t) => (
-										<span
-											key={t.name}
-											title={t.description}
-											className="inline-flex items-center px-2 py-0.5 rounded border border-kumo-line bg-kumo-recessed text-[11px] font-mono text-kumo-default cursor-help"
-										>
-											{t.name}
-										</span>
-									))}
-								</div>
-								<p className="text-xs text-kumo-subtle mt-2">
-									Read-only — these are the tools this agent can call. Per-action
-									toggles will land when the schema supports them.
-								</p>
-							</div>
+							)}
 						</div>
 					</div>
 				)}
@@ -582,6 +624,11 @@ export default function SettingsRoute() {
 														className="w-full resize-y rounded border border-kumo-line bg-kumo-base px-2 py-1 text-xs text-kumo-default placeholder:text-kumo-subtle focus:outline-none focus:ring-1 focus:ring-kumo-ring"
 													/>
 												</div>
+												<RuleCapabilityActions
+													mailboxId={mailboxId}
+													actions={r.actions}
+													onChange={(next) => updateRule(idx, { actions: next })}
+												/>
 											</div>
 										</div>
 									</div>
@@ -793,6 +840,196 @@ function MembersCard({ mailboxId }: { mailboxId: string }) {
 // Lets a logged-in user rotate their password. Users created via magic-link
 // have no password hash on file; for them this card sets the initial password
 // (no current-password prompt) and switches the title to "Set password".
+
+// ── RuleCapabilityActions ──────────────────────────────────────────
+//
+// Editable list of capability invocations attached to a rule's `then.actions`
+// list. Sits below the legacy "Skip auto-draft / Mark as read / Move to /
+// Prompt addon" controls — those still emit their respective Capability
+// invocations on the backend via the legacy translator, so the user only
+// reaches for this section when they need something the legacy fields don't
+// cover (webhook, future capabilities).
+
+function RuleCapabilityActions({
+	mailboxId,
+	actions,
+	onChange,
+}: {
+	mailboxId: string | undefined;
+	actions: UIRuleAction[];
+	onChange: (next: UIRuleAction[]) => void;
+}) {
+	const { data, isLoading } = useCapabilities(mailboxId, { surface: "rule-action" });
+	const allCaps = data?.capabilities ?? [];
+	const selectableCaps = allCaps.filter((c) => c.id !== "core:skip-draft");
+
+	const addAction = () => {
+		const first = selectableCaps[0];
+		if (!first) return;
+		onChange([...actions, { capabilityId: first.id, params: {} }]);
+	};
+	const removeAction = (idx: number) => {
+		onChange(actions.filter((_, i) => i !== idx));
+	};
+	const updateAction = (idx: number, patch: Partial<UIRuleAction>) => {
+		onChange(actions.map((a, i) => (i === idx ? { ...a, ...patch } : a)));
+	};
+
+	return (
+		<div className="border-t border-kumo-line pt-3 mt-2">
+			<div className="flex items-center justify-between mb-2">
+				<label className="block text-[10px] uppercase tracking-wide text-kumo-subtle">
+					More actions <span className="lowercase normal-case text-kumo-subtle">(webhook etc.)</span>
+				</label>
+				<button
+					type="button"
+					onClick={addAction}
+					disabled={isLoading || selectableCaps.length === 0}
+					className="text-[11px] text-kumo-link hover:underline disabled:opacity-50"
+				>
+					+ Add action
+				</button>
+			</div>
+			{actions.length === 0 ? (
+				<p className="text-[11px] text-kumo-subtle italic">
+					{isLoading ? "Loading capabilities…" : "No additional actions."}
+				</p>
+			) : (
+				<div className="space-y-2">
+					{actions.map((a, i) => {
+						const cap = allCaps.find((c) => c.id === a.capabilityId);
+						return (
+							<div key={i} className="rounded border border-kumo-line bg-kumo-recessed p-2 space-y-2">
+								<div className="flex items-center gap-2">
+									<select
+										value={a.capabilityId}
+										onChange={(e) => updateAction(i, { capabilityId: e.target.value, params: {} })}
+										className="flex-1 bg-kumo-base border border-kumo-line rounded px-2 py-1 text-xs text-kumo-default"
+									>
+										{selectableCaps.map((c) => (
+											<option key={c.id} value={c.id}>
+												{c.displayName} ({c.id})
+											</option>
+										))}
+										{!selectableCaps.find((c) => c.id === a.capabilityId) && (
+											<option value={a.capabilityId}>{a.capabilityId} (unknown)</option>
+										)}
+									</select>
+									<button
+										type="button"
+										onClick={() => removeAction(i)}
+										className="text-[11px] text-red-400 hover:underline"
+									>
+										Remove
+									</button>
+								</div>
+								{cap && (
+									<CapabilityActionEditor
+										capability={cap}
+										value={a.params}
+										onChange={(next) => updateAction(i, { params: next })}
+									/>
+								)}
+							</div>
+						);
+					})}
+				</div>
+			)}
+		</div>
+	);
+}
+
+// ── EmailAgentSkillsPicker ─────────────────────────────────────────
+//
+// Renders a checkbox per agent-tool capability the EmailAgent is allowed to
+// use, bound to the mailbox's `emailReplyEnabledSkills` setting. Default
+// (null) = all enabled — preserves pre-Capability behaviour for mailboxes
+// that haven't opted into per-skill toggles. Toggling any checkbox
+// "materialises" the explicit allowlist; clicking "Reset to default" returns
+// to null.
+
+function EmailAgentSkillsPicker({
+	mailboxId,
+	enabledSkills,
+	onChange,
+	allowedToolNames,
+}: {
+	mailboxId: string | undefined;
+	enabledSkills: string[] | null;
+	onChange: (next: string[] | null) => void;
+	allowedToolNames: string[];
+}) {
+	const { data, isLoading } = useCapabilities(mailboxId, { surface: "agent-tool" });
+	const allowedNameSet = new Set(allowedToolNames);
+	const candidates = (data?.capabilities ?? []).filter((cap) => {
+		const local = cap.id.includes(":") ? cap.id.slice(cap.id.indexOf(":") + 1) : cap.id;
+		const toolName = local.replaceAll("-", "_");
+		return allowedNameSet.has(toolName);
+	});
+
+	const isUsingDefault = enabledSkills === null;
+	const enabledSet = isUsingDefault
+		? new Set(candidates.map((c) => c.id))
+		: new Set(enabledSkills);
+
+	const toggle = (id: string, checked: boolean) => {
+		// Materialise explicit list on first toggle.
+		const base = isUsingDefault ? candidates.map((c) => c.id) : [...(enabledSkills ?? [])];
+		const next = checked
+			? base.includes(id) ? base : [...base, id]
+			: base.filter((x) => x !== id);
+		onChange(next);
+	};
+
+	return (
+		<div>
+			<div className="flex items-center justify-between mb-2">
+				<div className="flex items-center gap-2">
+					<span className="text-xs font-medium text-kumo-default">Skills</span>
+					<Badge variant="secondary">{enabledSet.size}/{candidates.length}</Badge>
+				</div>
+				{!isUsingDefault && (
+					<button
+						type="button"
+						onClick={() => onChange(null)}
+						className="text-[11px] text-kumo-subtle hover:text-kumo-default hover:underline"
+					>
+						Reset to default
+					</button>
+				)}
+			</div>
+			{isLoading ? (
+				<div className="flex justify-center py-3"><Loader size="sm" /></div>
+			) : candidates.length === 0 ? (
+				<p className="text-xs text-kumo-subtle italic">No skills available.</p>
+			) : (
+				<div className="space-y-1.5">
+					{candidates.map((cap) => (
+						<label
+							key={cap.id}
+							className="flex items-start gap-2 text-[12px] text-kumo-default cursor-pointer hover:bg-kumo-recessed/50 rounded px-1 py-1"
+						>
+							<input
+								type="checkbox"
+								className="mt-0.5"
+								checked={enabledSet.has(cap.id)}
+								onChange={(e) => toggle(cap.id, e.target.checked)}
+							/>
+							<span>
+								<span className="font-medium">{cap.displayName}</span>
+								<span className="text-kumo-subtle ml-2 font-mono text-[10px]">{cap.id}</span>
+								<span className="block text-[11px] text-kumo-subtle">{cap.description}</span>
+							</span>
+						</label>
+					))}
+				</div>
+			)}
+			<p className="text-xs text-kumo-subtle mt-2">
+				Uncheck to deny the agent that capability. Default is everything enabled.
+			</p>
+		</div>
+	);
+}
 
 function ChangePasswordCard() {
 	const toastManager = useKumoToastManager();

@@ -50,6 +50,15 @@ export const RuleActionSchema = z.object({
 	 *  the structured fields (header + line items) to the mailbox database.
 	 *  Runs BEFORE the auto-draft early-return, so it works alongside skipDraft. */
 	extractInvoice: z.boolean().optional(),
+	/** Capability invocations evaluated sequentially after the email is stored.
+	 *  See workers/lib/capabilities/* for the registry; the legacy fields above
+	 *  are translated into this list on read by `normalizeRuleAction`. */
+	actions: z.array(
+		z.object({
+			capabilityId: z.string(),
+			params: z.unknown(),
+		}),
+	).optional(),
 }).strict();
 
 export const RuleSchema = z.object({

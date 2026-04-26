@@ -45,6 +45,12 @@ import {
 import { getAgentConfig } from "./lib/agent-config";
 import { evaluateRules } from "./lib/rules";
 import { extensionOf, extractAttachmentsInline } from "./lib/attachment-extract";
+import {
+	list as listCapabilities,
+	invoke as invokeCapability,
+	normalizeRuleAction,
+	serializeInputSchema,
+} from "./lib/capabilities";
 
 type AppContext = Context<MailboxContext>;
 
@@ -260,6 +266,33 @@ app.get("/api/v1/mailboxes/:mailboxId", async (c) => {
 	const obj = await c.env.BUCKET.get(`mailboxes/${mailboxId}.json`);
 	if (!obj) return c.json({ error: "Not found" }, 404);
 	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings: await obj.json() });
+});
+
+// Capability registry — discovery endpoint for the Rule editor and the
+// Agent skills picker. Per-mailbox path is forward-compatible with Phase-2
+// per-mailbox ACL filtering; today it returns the global registry list
+// unfiltered (filtered only by surface query param if supplied).
+app.get("/api/v1/mailboxes/:mailboxId/capabilities", async (c) => {
+	const mailboxId = c.req.param("mailboxId")!;
+	let user;
+	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
+	try { await assertMailboxAccess(c.env, mailboxId, user); } catch (e) { return handleAuthz(c, e); }
+	const surfaceParam = c.req.query("surface");
+	const filter: { surface: "rule-action" | "agent-tool" | "mcp-tool" } | undefined =
+		surfaceParam === "rule-action" ||
+		surfaceParam === "agent-tool" ||
+		surfaceParam === "mcp-tool"
+			? { surface: surfaceParam }
+			: undefined;
+	const capabilities = listCapabilities(filter).map((cap) => ({
+		id: cap.id,
+		displayName: cap.displayName,
+		description: cap.description,
+		surfaces: cap.surfaces,
+		scopes: cap.scopes,
+		inputSchema: serializeInputSchema(cap.inputSchema),
+	}));
+	return c.json({ capabilities });
 });
 
 app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
@@ -993,17 +1026,27 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 		console.log(`Rule matched for ${messageId}: ${matchedName ?? "(unnamed)"} → ${JSON.stringify(action)}`);
 	}
 
-	// Apply side-effect actions in parallel before deciding whether to draft.
-	const sideEffects: Promise<unknown>[] = [];
-	if (action.markRead) {
-		sideEffects.push(stub.updateEmail(messageId, { read: true }).catch((e: Error) =>
-			console.error("Rule markRead failed:", e.message)));
+	// Translate the (possibly-legacy) RuleAction blob into a canonical
+	// `{ actions, flow }` shape. Legacy fields are converted into Capability
+	// invocations on read; the flow envelope still drives auto-draft / move
+	// suppression. Sequential execution (downgrade from previous parallel
+	// `Promise.allSettled`) — predictable order is worth the ~2ms regression.
+	const normalized = normalizeRuleAction(action);
+	for (const a of normalized.actions) {
+		const result = await invokeCapability(
+			{
+				env,
+				mailboxId,
+				emailId: messageId,
+				triggeredBy: "rule",
+			},
+			a.capabilityId,
+			a.params,
+		);
+		if (!result.ok) {
+			console.error(`Rule capability ${a.capabilityId} failed: ${result.error}`);
+		}
 	}
-	if (action.moveTo && action.moveTo !== Folders.INBOX) {
-		sideEffects.push(stub.moveEmail(messageId, action.moveTo).catch((e: Error) =>
-			console.error("Rule moveTo failed:", e.message)));
-	}
-	if (sideEffects.length) await Promise.allSettled(sideEffects);
 
 	// Structured invoice extraction. Runs BEFORE the auto-draft early return
 	// so it works alongside skipDraft (which is the common config for invoices).
@@ -1011,7 +1054,10 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 	// reads the email back from MailboxDO and runs the deterministic pipeline
 	// (workers/lib/invoice-tools.ts:toolProcessEmailInvoices →
 	//  MailboxDO.reprocessInvoicesForEmail → workers/lib/invoice-pipeline.ts).
-	if (action.extractInvoice) {
+	// Phase-1 note: the matching `core:extract-invoice` capability is a marker
+	// only; the actual InvoiceAgent dispatch stays here until Phase 2 makes
+	// extracted text addressable from the capability ctx.
+	if (normalized.flow.extractInvoice) {
 		const invoiceAgentStub = env.INVOICE_AGENT.get(env.INVOICE_AGENT.idFromName(mailboxId));
 		const invoiceAgentHeaders: Record<string, string> = { "Content-Type": "application/json" };
 		if (env.INTERNAL_SECRET) invoiceAgentHeaders[INTERNAL_SYSTEM_HEADER] = env.INTERNAL_SECRET;
@@ -1022,14 +1068,14 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 		})));
 	}
 
-	const movedOutOfInbox = !!(action.moveTo && action.moveTo !== Folders.INBOX);
-	const shouldDraft = config.autoDraft && !action.skipDraft && !movedOutOfInbox;
+	const movedOutOfInbox = !!(normalized.flow.moveTo && normalized.flow.moveTo !== Folders.INBOX);
+	const shouldDraft = config.autoDraft && !normalized.flow.skipDraft && !movedOutOfInbox;
 	if (!shouldDraft) return;
 
 	// Run attachment extraction (XML inline; PDF → deferred OCR follow-up).
 	let extractedBlock = "";
 	let deferredPdfs: string[] = [];
-	if (action.extractAttachmentText && parsedEmail.attachments?.length) {
+	if (normalized.flow.extractAttachmentText && parsedEmail.attachments?.length) {
 		const { text, skippedPdf } = extractAttachmentsInline(
 			parsedEmail.attachments.map((a) => ({
 				filename: a.filename || "untitled",
@@ -1045,7 +1091,7 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 	}
 
 	const promptOverrideMerged = [
-		action.promptOverride?.trim(),
+		normalized.flow.promptOverride?.trim(),
 		extractedBlock
 			? `## Extracted attachments\n${extractedBlock}\n\nUse these fields when drafting the reply (e.g. confirm invoice number, amount, date).`
 			: "",

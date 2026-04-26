@@ -39,6 +39,13 @@ export interface AgentConfig {
 	 *  `workers/invoice-agent/index.ts`. Stored as `invoiceAgentSystemPrompt`
 	 *  on the settings blob (parallel to `agentSystemPrompt` for EmailAgent). */
 	invoiceAgentSystemPrompt: string | null;
+	/** Capability ids the EmailAgent is permitted to invoke as tools. `null`
+	 *  means "use the agent's default allowlist" — preserves pre-Capability
+	 *  behaviour for mailboxes that haven't opted into per-skill toggles. */
+	emailReplyEnabledSkills: readonly string[] | null;
+	/** Reserved for the Phase-2 invoice-tool migration. Read but not yet
+	 *  consumed by InvoiceAgent. */
+	invoiceEnabledSkills: readonly string[] | null;
 }
 
 function coerceModel(raw: unknown): AgentModel {
@@ -58,6 +65,25 @@ function coerceInvoiceSourceDomains(raw: unknown): readonly string[] {
 		if (seen.has(lower)) continue;
 		seen.add(lower);
 		out.push(lower);
+	}
+	return out;
+}
+
+/**
+ * Coerce a settings field into a Capability id allowlist. Returns `null`
+ * (meaning "default allowlist") if the field is absent or not an array.
+ * Filters non-string entries silently and dedupes; an empty array survives
+ * as `[]` (the user explicitly disabled all skills).
+ */
+function coerceSkills(raw: unknown): readonly string[] | null {
+	if (!Array.isArray(raw)) return null;
+	const seen = new Set<string>();
+	const out: string[] = [];
+	for (const entry of raw) {
+		if (typeof entry !== "string") continue;
+		if (seen.has(entry)) continue;
+		seen.add(entry);
+		out.push(entry);
 	}
 	return out;
 }
@@ -82,6 +108,8 @@ export async function getAgentConfig(env: Env, mailboxId: string): Promise<Agent
 				typeof settings.invoiceAgentSystemPrompt === "string" && settings.invoiceAgentSystemPrompt.trim()
 					? settings.invoiceAgentSystemPrompt
 					: null,
+			emailReplyEnabledSkills: coerceSkills(settings.emailReplyEnabledSkills),
+			invoiceEnabledSkills: coerceSkills(settings.invoiceEnabledSkills),
 		};
 	} catch {
 		return defaults();
@@ -96,6 +124,8 @@ function defaults(): AgentConfig {
 		rules: [],
 		invoiceSourceDomains: [],
 		invoiceAgentSystemPrompt: null,
+		emailReplyEnabledSkills: null,
+		invoiceEnabledSkills: null,
 	};
 }
 
@@ -123,6 +153,11 @@ export interface AgentConfigUpdate {
 	agentSystemPrompt?: string | null;
 	/** Pass `null` to clear the InvoiceAgent prompt and fall back to its default. */
 	invoiceAgentSystemPrompt?: string | null;
+	/** Pass `null` to clear the allowlist and fall back to the agent's default
+	 *  set of skills; pass `[]` to disable all skills. */
+	emailReplyEnabledSkills?: readonly string[] | null;
+	/** Reserved — read by getAgentConfig but not yet consumed by InvoiceAgent. */
+	invoiceEnabledSkills?: readonly string[] | null;
 }
 
 function settingsKey(mailboxId: string): string {
@@ -174,6 +209,14 @@ export async function updateAgentConfig(
 	if (update.invoiceAgentSystemPrompt !== undefined) {
 		if (update.invoiceAgentSystemPrompt === null) delete settings.invoiceAgentSystemPrompt;
 		else settings.invoiceAgentSystemPrompt = update.invoiceAgentSystemPrompt;
+	}
+	if (update.emailReplyEnabledSkills !== undefined) {
+		if (update.emailReplyEnabledSkills === null) delete settings.emailReplyEnabledSkills;
+		else settings.emailReplyEnabledSkills = [...update.emailReplyEnabledSkills];
+	}
+	if (update.invoiceEnabledSkills !== undefined) {
+		if (update.invoiceEnabledSkills === null) delete settings.invoiceEnabledSkills;
+		else settings.invoiceEnabledSkills = [...update.invoiceEnabledSkills];
 	}
 	await writeSettings(env, mailboxId, settings);
 	return getAgentConfig(env, mailboxId);

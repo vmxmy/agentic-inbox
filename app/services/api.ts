@@ -191,6 +191,26 @@ const api = {
 		}>("/api/v1/api-keys", { name, expiresAt }),
 	revokeApiKey: (id: string) => del<void>(`/api/v1/api-keys/${id}`),
 
+	// Capabilities (rule actions / agent skills / mcp tools, all backed by
+	// the same workers/lib/capabilities registry)
+	listCapabilities: (
+		mailboxId: string,
+		filter?: { surface?: "rule-action" | "agent-tool" | "mcp-tool" },
+	) =>
+		get<{
+			capabilities: Array<{
+				id: string;
+				displayName: string;
+				description: string;
+				surfaces: ReadonlyArray<"rule-action" | "agent-tool" | "mcp-tool">;
+				scopes: readonly string[];
+				inputSchema: unknown;
+			}>;
+		}>(
+			`/api/v1/mailboxes/${mailboxId}/capabilities`,
+			filter?.surface ? { params: { surface: filter.surface } } : undefined,
+		),
+
 	// Mailboxes
 	listMailboxes: () => get<Mailbox[]>("/api/v1/mailboxes"),
 	createMailbox: (email: string, name: string, settings?: unknown) =>
