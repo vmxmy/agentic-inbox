@@ -12,6 +12,7 @@
  *   GET    /verify-email         ?token=… → marks verified, redirects /
  *   POST   /password/forgot      email → mails reset link
  *   POST   /password/reset       token + new password
+ *   POST   /password/change      current + new password (cookie session only)
  */
 import { Hono } from "hono";
 import { z } from "zod";
@@ -21,10 +22,12 @@ import {
 	buildSessionCookie,
 	buildClearSessionCookie,
 	deleteSession,
+	findSession,
 	readSessionCookie,
 } from "../lib/session";
 import {
 	createUser,
+	findUserById,
 	findUserByEmail,
 	markEmailVerified,
 	setPasswordHash,
@@ -37,6 +40,8 @@ import {
 	type TokenPurpose,
 } from "../lib/email-tokens";
 import { sendEmail } from "../email-sender";
+import { magicLinkEmail, passwordResetEmail } from "../lib/email-templates";
+import { enforceRateLimits, RateLimitError } from "../lib/rate-limit";
 
 type AuthEnv = { Bindings: Env };
 
@@ -52,6 +57,10 @@ const EmailOnly = z.object({ email: z.string().email() });
 const ResetSchema = z.object({
 	token: z.string().min(10),
 	password: z.string().min(8).max(200),
+});
+const ChangePasswordSchema = z.object({
+	currentPassword: z.string().min(1).max(200).optional(),
+	newPassword: z.string().min(8).max(200),
 });
 
 function publicOrigin(c: import("hono").Context<AuthEnv>): string {
@@ -70,10 +79,11 @@ async function deliverEmail(
 	c: import("hono").Context<AuthEnv>,
 	to: string,
 	subject: string,
-	body: string,
+	text: string,
+	html?: string,
 ): Promise<void> {
 	if (import.meta.env.DEV || !c.env.EMAIL) {
-		console.log(`[auth-email] DEV mode — not sending. to=${to} subject=${subject}\n${body}`);
+		console.log(`[auth-email] DEV mode — not sending. to=${to} subject=${subject}\n${text}`);
 		return;
 	}
 	try {
@@ -81,7 +91,8 @@ async function deliverEmail(
 			to,
 			from: fromAddress(c),
 			subject,
-			text: body,
+			text,
+			...(html ? { html } : {}),
 		});
 	} catch (e) {
 		console.error("Failed to send auth email:", (e as Error).message);
@@ -173,19 +184,39 @@ authApp.post("/logout", async (c) => {
 authApp.post("/magic-link/request", async (c) => {
 	const parsed = EmailOnly.safeParse(await c.req.json().catch(() => ({})));
 	if (!parsed.success) return c.json({ error: "Email required" }, 400);
-	const user = await findUserByEmail(c.env, parsed.data.email);
+	const email = parsed.data.email.trim().toLowerCase();
+	const ip = c.req.header("cf-connecting-ip") ?? "unknown";
+
+	try {
+		await enforceRateLimits(c.env, [
+			{ key: `magic:email:${email}:1m`, windowMs: 60_000, limit: 1 },
+			{ key: `magic:email:${email}:1h`, windowMs: 60 * 60_000, limit: 5 },
+			{ key: `magic:ip:${ip}:1h`, windowMs: 60 * 60_000, limit: 20 },
+		]);
+	} catch (e) {
+		if (e instanceof RateLimitError) {
+			c.header("Retry-After", String(e.retryAfterSeconds));
+			return c.json(
+				{
+					error: `Too many sign-in link requests. Try again in ${e.retryAfterSeconds} seconds.`,
+					retryAfter: e.retryAfterSeconds,
+				},
+				429,
+			);
+		}
+		throw e;
+	}
+
+	const user = await findUserByEmail(c.env, email);
 	// Always reply identically to avoid account-enumeration via magic-link.
 	if (!user) {
 		return ok(c, "If that account exists, a sign-in link is on its way.");
 	}
+	const ttlMinutes = 15;
 	const { rawToken } = await issueToken(c.env, user.id, "magic");
 	const link = `${publicOrigin(c)}/magic?token=${rawToken}`;
-	await deliverEmail(
-		c,
-		user.email,
-		"Your Agentic Inbox sign-in link",
-		`Click the link below to sign in. It expires in 15 minutes.\n\n${link}`,
-	);
+	const tmpl = magicLinkEmail({ link, ttlMinutes });
+	await deliverEmail(c, user.email, tmpl.subject, tmpl.text, tmpl.html);
 	return ok(c, "If that account exists, a sign-in link is on its way.");
 });
 
@@ -232,16 +263,36 @@ authApp.get("/verify-email", async (c) => {
 authApp.post("/password/forgot", async (c) => {
 	const parsed = EmailOnly.safeParse(await c.req.json().catch(() => ({})));
 	if (!parsed.success) return c.json({ error: "Email required" }, 400);
-	const user = await findUserByEmail(c.env, parsed.data.email);
+	const email = parsed.data.email.trim().toLowerCase();
+	const ip = c.req.header("cf-connecting-ip") ?? "unknown";
+
+	try {
+		await enforceRateLimits(c.env, [
+			{ key: `pwreset:email:${email}:1m`, windowMs: 60_000, limit: 1 },
+			{ key: `pwreset:email:${email}:1h`, windowMs: 60 * 60_000, limit: 5 },
+			{ key: `pwreset:ip:${ip}:1h`, windowMs: 60 * 60_000, limit: 20 },
+		]);
+	} catch (e) {
+		if (e instanceof RateLimitError) {
+			c.header("Retry-After", String(e.retryAfterSeconds));
+			return c.json(
+				{
+					error: `Too many password reset requests. Try again in ${e.retryAfterSeconds} seconds.`,
+					retryAfter: e.retryAfterSeconds,
+				},
+				429,
+			);
+		}
+		throw e;
+	}
+
+	const user = await findUserByEmail(c.env, email);
 	if (user) {
+		const ttlMinutes = 60;
 		const { rawToken } = await issueToken(c.env, user.id, "reset");
 		const link = `${publicOrigin(c)}/reset-password?token=${rawToken}`;
-		await deliverEmail(
-			c,
-			user.email,
-			"Reset your Agentic Inbox password",
-			`We received a request to reset your password. Click the link below to set a new one (expires in 1 hour):\n\n${link}\n\nIf you didn't request this, ignore this email.`,
-		);
+		const tmpl = passwordResetEmail({ link, ttlMinutes });
+		await deliverEmail(c, user.email, tmpl.subject, tmpl.text, tmpl.html);
 	}
 	return ok(c, "If that account exists, a reset link has been sent.");
 });
@@ -259,5 +310,40 @@ authApp.post("/password/reset", async (c) => {
 	const passwordHash = await hashPassword(parsed.data.password);
 	await setPasswordHash(c.env, consumed.userId, passwordHash);
 	await markEmailVerified(c.env, consumed.userId);
+	return c.json({ ok: true });
+});
+
+// ── Change password (requires logged-in cookie session) ───────────
+//
+// Deliberately requires a cookie session, not just any authenticated caller:
+// Bearer API keys are intentionally rejected so a leaked key cannot lock the
+// real owner out of the account by silently rotating their password.
+
+authApp.post("/password/change", async (c) => {
+	const sid = readSessionCookie(c);
+	if (!sid) return c.json({ error: "Not authenticated" }, 401);
+	const session = await findSession(c.env, sid).catch(() => null);
+	if (!session) return c.json({ error: "Not authenticated" }, 401);
+	const user = await findUserById(c.env, session.userId);
+	if (!user) return c.json({ error: "Not authenticated" }, 401);
+
+	const parsed = ChangePasswordSchema.safeParse(await c.req.json().catch(() => ({})));
+	if (!parsed.success) {
+		return c.json({ error: "New password must be at least 8 characters" }, 400);
+	}
+	const { currentPassword, newPassword } = parsed.data;
+
+	if (user.passwordHash) {
+		if (!currentPassword) {
+			return c.json({ error: "Current password is required" }, 400);
+		}
+		const matches = await verifyPassword(currentPassword, user.passwordHash);
+		if (!matches) {
+			return c.json({ error: "Current password is incorrect" }, 400);
+		}
+	}
+
+	const newHash = await hashPassword(newPassword);
+	await setPasswordHash(c.env, user.id, newHash);
 	return c.json({ ok: true });
 });

@@ -7,6 +7,11 @@ import { ReceiptIcon, WarningIcon } from "@phosphor-icons/react";
 import { Link } from "react-router";
 import type { Invoice } from "~/types";
 
+const WARNING_BADGE_CLASS_NAME =
+	"border border-kumo-warning/30 bg-kumo-warning/10 text-kumo-warning";
+const INFO_BADGE_CLASS_NAME =
+	"border border-kumo-info/30 bg-kumo-info/10 text-kumo-info";
+
 interface CompactProps {
 	mailboxId: string;
 	invoices: Invoice[];
@@ -44,7 +49,10 @@ export function InvoiceBadgeCompact({
 					if (stopPropagation) e.stopPropagation();
 				}}
 			>
-				<Badge variant={anyNeedsReview ? "warning" : "info"}>
+				<Badge
+					variant="outline"
+					className={anyNeedsReview ? WARNING_BADGE_CLASS_NAME : INFO_BADGE_CLASS_NAME}
+				>
 					<ReceiptIcon size={11} weight="regular" />
 					{label}
 					{anyNeedsReview ? <WarningIcon size={10} weight="fill" /> : null}
@@ -83,16 +91,16 @@ export function InvoiceBadgeCard({ mailboxId, invoices }: DetailCardProps) {
 								{inv.invoice_number}
 							</span>
 							{inv.source_kind === "pdf-ocr" ? (
-								<Badge variant="warning">PDF OCR</Badge>
+								<Badge variant="outline" className={WARNING_BADGE_CLASS_NAME}>PDF OCR</Badge>
 							) : null}
 							{inv.is_voided ? (
-								<Badge variant="neutral">已红冲</Badge>
+								<Badge variant="secondary">已红冲</Badge>
 							) : null}
 							{inv.original_invoice_number ? (
-								<Badge variant="error">红字</Badge>
+								<Badge variant="destructive">红字</Badge>
 							) : null}
 							{inv.needs_review ? (
-								<Badge variant="warning">
+								<Badge variant="outline" className={WARNING_BADGE_CLASS_NAME}>
 									<WarningIcon size={10} weight="fill" />
 									待复核
 								</Badge>

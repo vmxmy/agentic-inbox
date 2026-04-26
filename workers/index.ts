@@ -117,16 +117,23 @@ app.get("/api/v1/config", (c) => {
 	return c.json({ domains, emailAddresses });
 });
 
-app.get("/api/v1/whoami", (c) => {
+app.get("/api/v1/whoami", async (c) => {
 	let user;
 	try { user = c.get("user") ?? getUserFromRequest(c); }
 	catch (e) { if (e instanceof AuthzError) return c.json({ error: e.message }, e.status); throw e; }
+	const isSystem = user.system ?? false;
+	let hasPassword = false;
+	if (!isSystem) {
+		const record = await findUserById(c.env, user.id);
+		hasPassword = !!record?.passwordHash;
+	}
 	return c.json({
 		id: user.id,
 		email: user.email,
 		isAdmin: isAdmin(c.env, user),
 		role: user.role,
-		system: user.system ?? false,
+		system: isSystem,
+		hasPassword,
 	});
 });
 
@@ -188,12 +195,16 @@ app.get("/api/v1/mailboxes", async (c) => {
 	return c.json(visible.map((m) => ({ ...m, name: m.id })));
 });
 
-app.post("/api/v1/mailboxes", async (c) => {
-	let user;
-	try { user = c.get("user") ?? getUserFromRequest(c); }
-	catch (e) { if (e instanceof AuthzError) return c.json({ error: e.message }, e.status); throw e; }
-
-	const { name, settings, email: rawEmail } = CreateMailboxBody.parse(await c.req.json());
+async function createMailboxForOwner(
+	c: AppContext,
+	body: unknown,
+	ownerEmail: string | undefined,
+) {
+	const parsed = CreateMailboxBody.safeParse(body);
+	if (!parsed.success) {
+		return c.json({ error: "email and name are required" }, 400);
+	}
+	const { name, settings, email: rawEmail } = parsed.data;
 	const email = rawEmail.toLowerCase();
 	const allowedAddresses = (c.env.EMAIL_ADDRESSES ?? []) as string[];
 	if (allowedAddresses.length > 0 && !allowedAddresses.map((a) => a.toLowerCase()).includes(email)) {
@@ -209,13 +220,25 @@ app.post("/api/v1/mailboxes", async (c) => {
 	const finalSettings = {
 		...defaultSettings,
 		...cleanSettings,
-		owner: user.system ? undefined : user.email,
+		owner: ownerEmail ? normalizeEmail(ownerEmail) : undefined,
 		members: [] as string[],
 	};
 	await c.env.BUCKET.put(key, JSON.stringify(finalSettings));
 	const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(email));
 	await stub.getFolders();
 	return c.json({ id: email, email, name, settings: finalSettings }, 201);
+}
+
+app.post("/api/v1/mailboxes", async (c) => {
+	let user;
+	try { user = c.get("user") ?? getUserFromRequest(c); }
+	catch (e) { if (e instanceof AuthzError) return c.json({ error: e.message }, e.status); throw e; }
+
+	return createMailboxForOwner(
+		c,
+		await c.req.json().catch(() => ({})),
+		user.system ? undefined : user.email,
+	);
 });
 
 // Helpers for routes that sit at /api/v1/mailboxes/:mailboxId (no sub-path,
@@ -377,6 +400,19 @@ app.post("/api/v1/admin/users/:id/role", async (c) => {
 	}
 	await setRole(c.env, targetId, body.role);
 	return c.json({ ok: true });
+});
+
+app.post("/api/v1/admin/users/:id/mailboxes", async (c) => {
+	let user;
+	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
+	if (!isAdmin(c.env, user)) return c.json({ error: "Admin access required" }, 403);
+	const target = await findUserById(c.env, c.req.param("id")!);
+	if (!target) return c.json({ error: "User not found" }, 404);
+	return createMailboxForOwner(
+		c,
+		await c.req.json().catch(() => ({})),
+		target.email,
+	);
 });
 
 app.get("/api/v1/admin/mailboxes", async (c) => {

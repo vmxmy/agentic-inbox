@@ -18,6 +18,9 @@ import { formatBytes, getAttachmentUrl } from "~/lib/utils";
 import { useDeleteInvoice, useInvoice } from "~/queries/invoices";
 import type { Attachment } from "~/types";
 
+const WARNING_BADGE_CLASS_NAME =
+	"border border-kumo-warning/30 bg-kumo-warning/10 text-kumo-warning";
+
 function amt(n: number | null | undefined): string {
 	if (n === null || n === undefined) return "—";
 	return n.toFixed(2);
@@ -32,11 +35,14 @@ function ReviewBadges({
 }) {
 	return (
 		<div className="flex items-center gap-2">
-			<Badge variant={sourceKind === "pdf-ocr" ? "warning" : "neutral"}>
+			<Badge
+				variant={sourceKind === "pdf-ocr" ? "outline" : "secondary"}
+				className={sourceKind === "pdf-ocr" ? WARNING_BADGE_CLASS_NAME : undefined}
+			>
 				源：{sourceKind === "pdf-ocr" ? "PDF OCR" : "XML"}
 			</Badge>
 			{needsReview ? (
-				<Badge variant="warning">
+				<Badge variant="outline" className={WARNING_BADGE_CLASS_NAME}>
 					<WarningIcon size={12} weight="fill" />
 					待复核
 				</Badge>
@@ -140,7 +146,7 @@ function AttachmentRow({
 			<span className="text-kumo-subtle shrink-0">
 				{formatBytes(attachment.size)}
 			</span>
-			<Badge variant="neutral">{originLabel}</Badge>
+			<Badge variant="secondary">{originLabel}</Badge>
 			{isAuthoritative ? <Badge variant="success">权威源</Badge> : null}
 			<a
 				href={url}

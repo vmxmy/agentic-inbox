@@ -9,15 +9,17 @@ import {
 	FunnelIcon,
 	KeyIcon,
 	LinkIcon,
+	LockKeyIcon,
 	PlusIcon,
-	ReceiptIcon,
 	RobotIcon,
 	TrashIcon,
+	UserIcon,
 	UsersIcon,
 } from "@phosphor-icons/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { useParams } from "react-router";
+import { AGENTS, type AgentId } from "~/lib/agent-registry";
 import { queryKeys } from "~/queries/keys";
 import { useWhoami } from "~/queries/identity";
 import { useMailbox, useUpdateMailbox } from "~/queries/mailboxes";
@@ -28,6 +30,15 @@ import {
 	useRemoveMember,
 } from "~/queries/members";
 import api, { ApiError } from "~/services/api";
+
+type SettingsTab = "account" | "agents" | "rules" | "members";
+
+const SETTINGS_TABS: { id: SettingsTab; label: string; icon: typeof RobotIcon }[] = [
+	{ id: "account", label: "Account", icon: UserIcon },
+	{ id: "agents",  label: "Agents",  icon: RobotIcon },
+	{ id: "rules",   label: "Rules",   icon: FunnelIcon },
+	{ id: "members", label: "Members", icon: UsersIcon },
+];
 
 // ── Models (keep in sync with workers/lib/agent-config.ts ALLOWED_AGENT_MODELS) ──
 const MODEL_OPTIONS: { value: string; label: string }[] = [
@@ -151,6 +162,9 @@ export default function SettingsRoute() {
 	const { data: mailbox } = useMailbox(mailboxId);
 	const updateMailboxMutation = useUpdateMailbox();
 
+	const [activeTab, setActiveTab] = useState<SettingsTab>("account");
+	const [activeAgentId, setActiveAgentId] = useState<AgentId>(AGENTS[0].id);
+
 	const [displayName, setDisplayName] = useState("");
 	const [agentPrompt, setAgentPrompt] = useState("");
 	const [invoicePrompt, setInvoicePrompt] = useState("");
@@ -207,14 +221,6 @@ export default function SettingsRoute() {
 	const removeRule = (idx: number) =>
 		setRules((prev) => prev.filter((_, i) => i !== idx));
 
-	const handleResetPrompt = () => {
-		setAgentPrompt("");
-	};
-
-	const handleResetInvoicePrompt = () => {
-		setInvoicePrompt("");
-	};
-
 	if (!mailbox) {
 		return (
 			<div className="flex justify-center py-20">
@@ -223,326 +229,379 @@ export default function SettingsRoute() {
 		);
 	}
 
-	const isCustomPrompt = agentPrompt.trim().length > 0;
-	const isCustomInvoicePrompt = invoicePrompt.trim().length > 0;
+	const activeAgent = AGENTS.find((a) => a.id === activeAgentId) ?? AGENTS[0];
+	const ActiveAgentIcon = activeAgent.icon;
+	const activePromptValue =
+		activeAgent.promptField === "agentSystemPrompt" ? agentPrompt : invoicePrompt;
+	const setActivePrompt =
+		activeAgent.promptField === "agentSystemPrompt" ? setAgentPrompt : setInvoicePrompt;
+	const isActivePromptCustom = activePromptValue.trim().length > 0;
+	const activePromptPlaceholder =
+		activeAgent.promptField === "agentSystemPrompt" ? PROMPT_PLACEHOLDER : INVOICE_PROMPT_PLACEHOLDER;
 
 	return (
 		<div className="max-w-2xl px-4 py-4 md:px-8 md:py-6 h-full overflow-y-auto">
 			<h1 className="text-lg font-semibold text-kumo-default mb-6">Settings</h1>
 
-			<div className="space-y-6">
-				{/* Account */}
-				<div className="rounded-lg border border-kumo-line bg-kumo-base p-5">
-					<div className="text-sm font-medium text-kumo-default mb-4">
-						Account
-					</div>
-					<div className="space-y-3">
-						<Input
-							label="Display Name"
-							value={displayName}
-							onChange={(e) => setDisplayName(e.target.value)}
-							autoComplete="name"
-						/>
-						<Input label="Email" type="email" value={mailbox.email} disabled />
-					</div>
-				</div>
-
-				{/* Agent Behavior: auto-draft toggle + model selector */}
-				<div className="rounded-lg border border-kumo-line bg-kumo-base p-5">
-					<div className="flex items-center gap-2 mb-4">
-						<RobotIcon size={16} weight="duotone" className="text-kumo-subtle" />
-						<span className="text-sm font-medium text-kumo-default">Agent Behavior</span>
-					</div>
-
-					<label className="flex items-start gap-3 cursor-pointer py-2">
-						<input
-							type="checkbox"
-							className="mt-1 h-4 w-4 accent-kumo-primary cursor-pointer"
-							checked={autoDraft}
-							onChange={(e) => setAutoDraft(e.target.checked)}
-						/>
-						<span className="text-xs text-kumo-default">
-							<span className="block font-medium mb-0.5">Auto-draft on new emails</span>
-							<span className="text-kumo-subtle">
-								When on, every inbound email triggers the agent to draft a reply
-								into Drafts (you still review & send). When off, the agent only
-								responds in the side panel when you ask.
-							</span>
-						</span>
-					</label>
-
-					<div className="mt-4">
-						<label className="block text-xs font-medium text-kumo-default mb-1.5">Model</label>
-						<select
-							value={agentModel}
-							onChange={(e) => setAgentModel(e.target.value)}
-							className="w-full rounded-lg border border-kumo-line bg-kumo-recessed px-3 py-2 text-xs text-kumo-default focus:outline-none focus:ring-1 focus:ring-kumo-ring"
+			{/* Tab bar */}
+			<div
+				role="tablist"
+				aria-label="Settings sections"
+				className="flex items-center gap-1 border-b border-kumo-line mb-6 -mx-4 px-4 md:-mx-8 md:px-8 overflow-x-auto"
+			>
+				{SETTINGS_TABS.map((t) => {
+					const Icon = t.icon;
+					const active = activeTab === t.id;
+					return (
+						<button
+							key={t.id}
+							type="button"
+							role="tab"
+							aria-selected={active}
+							onClick={() => setActiveTab(t.id)}
+							className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium whitespace-nowrap border-b-2 -mb-px transition-colors ${
+								active
+									? "text-kumo-default border-kumo-primary"
+									: "text-kumo-subtle hover:text-kumo-default border-transparent"
+							}`}
 						>
-							{MODEL_OPTIONS.map((m) => (
-								<option key={m.value} value={m.value}>{m.label}</option>
-							))}
-						</select>
-						<p className="text-xs text-kumo-subtle mt-1.5">
-							All models run on Cloudflare Workers AI (pay-per-neuron). Tool
-							calling support varies; swap if drafts look off.
-						</p>
-					</div>
-				</div>
+							<Icon size={14} weight={active ? "duotone" : "regular"} />
+							{t.label}
+						</button>
+					);
+				})}
+			</div>
 
-				{/* Agent System Prompt */}
-				<div className="rounded-lg border border-kumo-line bg-kumo-base p-5">
-					<div className="flex items-center justify-between mb-4">
-						<div className="flex items-center gap-2">
-							<RobotIcon size={16} weight="duotone" className="text-kumo-subtle" />
-							<span className="text-sm font-medium text-kumo-default">
-								AI Agent Prompt
-							</span>
-							{isCustomPrompt ? (
-								<Badge variant="primary">Custom</Badge>
-							) : (
-								<Badge variant="secondary">Default</Badge>
-							)}
+			<div className="space-y-6">
+				{/* ── Account tab ── */}
+				{activeTab === "account" && (
+					<>
+						<div className="rounded-lg border border-kumo-line bg-kumo-base p-5">
+							<div className="text-sm font-medium text-kumo-default mb-4">Account</div>
+							<div className="space-y-3">
+								<Input
+									label="Display Name"
+									value={displayName}
+									onChange={(e) => setDisplayName(e.target.value)}
+									autoComplete="name"
+								/>
+								<Input label="Email" type="email" value={mailbox.email} disabled />
+							</div>
 						</div>
-						{isCustomPrompt && (
-							<Button
-								variant="ghost"
-								size="xs"
-								icon={<ArrowCounterClockwiseIcon size={14} />}
-								onClick={handleResetPrompt}
-							>
-								Reset to default
-							</Button>
-						)}
-					</div>
-					<p className="text-xs text-kumo-subtle mb-3">
-						Customize how the AI agent behaves for this mailbox.
-						Leave empty to use the built-in default prompt.
-					</p>
-					<textarea
-						value={agentPrompt}
-						onChange={(e) => setAgentPrompt(e.target.value)}
-						placeholder={PROMPT_PLACEHOLDER}
-						rows={12}
-						className="w-full resize-y rounded-lg border border-kumo-line bg-kumo-recessed px-3 py-2 text-xs text-kumo-default placeholder:text-kumo-subtle focus:outline-none focus:ring-1 focus:ring-kumo-ring font-mono leading-relaxed"
-					/>
-					<p className="text-xs text-kumo-subtle mt-2">
-						The prompt is sent as the system message to the AI model.
-						It controls the agent's personality, writing style, and behavior rules.
-					</p>
-				</div>
+						<ChangePasswordCard />
+						<ApiKeysCard />
+					</>
+				)}
 
-				{/* Invoice Agent System Prompt */}
-				<div className="rounded-lg border border-kumo-line bg-kumo-base p-5">
-					<div className="flex items-center justify-between mb-4">
-						<div className="flex items-center gap-2">
-							<ReceiptIcon size={16} weight="duotone" className="text-kumo-subtle" />
-							<span className="text-sm font-medium text-kumo-default">
-								Invoice Agent Prompt
-							</span>
-							{isCustomInvoicePrompt ? (
-								<Badge variant="primary">Custom</Badge>
-							) : (
-								<Badge variant="secondary">Default</Badge>
-							)}
+				{/* ── Agents tab ── */}
+				{activeTab === "agents" && (
+					<div className="space-y-4">
+						{/* Agent chip selector */}
+						<div
+							role="tablist"
+							aria-label="Agents"
+							className="flex items-center gap-2 overflow-x-auto pb-1"
+						>
+							{AGENTS.map((a) => {
+								const Icon = a.icon;
+								const active = activeAgentId === a.id;
+								return (
+									<button
+										key={a.id}
+										type="button"
+										role="tab"
+										aria-selected={active}
+										onClick={() => setActiveAgentId(a.id)}
+										className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-[11px] font-medium whitespace-nowrap transition-colors ${
+											active
+												? "bg-kumo-recessed border-kumo-primary text-kumo-default"
+												: "bg-kumo-base border-kumo-line text-kumo-subtle hover:text-kumo-default"
+										}`}
+									>
+										<Icon size={13} weight="duotone" />
+										{a.name}
+									</button>
+								);
+							})}
 						</div>
-						{isCustomInvoicePrompt && (
-							<Button
-								variant="ghost"
-								size="xs"
-								icon={<ArrowCounterClockwiseIcon size={14} />}
-								onClick={handleResetInvoicePrompt}
-							>
-								Reset to default
-							</Button>
-						)}
-					</div>
-					<p className="text-xs text-kumo-subtle mb-3">
-						System prompt for the Invoice Agent chat (separate from the email
-						agent). The agent has invoice / bundle tools wired in — list,
-						search, create / update / delete bundles, manage membership, and
-						re-run extraction. Leave empty to use the built-in default prompt.
-					</p>
-					<textarea
-						value={invoicePrompt}
-						onChange={(e) => setInvoicePrompt(e.target.value)}
-						placeholder={INVOICE_PROMPT_PLACEHOLDER}
-						rows={10}
-						className="w-full resize-y rounded-lg border border-kumo-line bg-kumo-recessed px-3 py-2 text-xs text-kumo-default placeholder:text-kumo-subtle focus:outline-none focus:ring-1 focus:ring-kumo-ring font-mono leading-relaxed"
-					/>
-					<p className="text-xs text-kumo-subtle mt-2">
-						Stored as <code>invoiceAgentSystemPrompt</code> on the mailbox
-						settings blob. The InvoiceAgent reads it via
-						<code> getAgentConfig</code> on every chat turn.
-					</p>
-				</div>
 
-				{/* Processing Rules */}
-				<div className="rounded-lg border border-kumo-line bg-kumo-base p-5">
-					<div className="flex items-center justify-between mb-3">
-						<div className="flex items-center gap-2">
-							<FunnelIcon size={16} weight="duotone" className="text-kumo-subtle" />
-							<span className="text-sm font-medium text-kumo-default">Processing Rules</span>
-							<Badge variant="secondary">{rules.length}</Badge>
-						</div>
-						<Button variant="ghost" size="xs" icon={<PlusIcon size={14} />} onClick={addRule}>
-							Add rule
-						</Button>
-					</div>
-					<p className="text-xs text-kumo-subtle mb-3">
-						Evaluated top-to-bottom on every incoming email. The first rule whose
-						conditions ALL match applies its actions. Rules run BEFORE the agent
-						auto-draft, so <code>skipDraft</code> / <code>moveTo</code> can short-circuit it.
-					</p>
-
-					{rules.length === 0 && (
-						<div className="text-xs italic text-kumo-subtle px-2 py-4 text-center">
-							No rules. Every inbound email goes through the default auto-draft pipeline.
-						</div>
-					)}
-
-					<div className="space-y-3">
-						{rules.map((r, idx) => (
-							<div key={idx} className="rounded border border-kumo-line bg-kumo-recessed p-3">
-								<div className="flex items-center justify-between mb-2">
-									<div className="flex items-center gap-2">
-										<label className="flex items-center gap-1.5 cursor-pointer">
-											<input
-												type="checkbox"
-												className="h-3.5 w-3.5 accent-kumo-primary"
-												checked={r.enabled}
-												onChange={(e) => updateRule(idx, { enabled: e.target.checked })}
-											/>
-											<span className="text-xs text-kumo-subtle">enabled</span>
-										</label>
-										<Input
-											placeholder="Rule name (optional)"
-											value={r.name}
-											onChange={(e) => updateRule(idx, { name: e.target.value })}
-										/>
-									</div>
-									<Button
-										variant="ghost"
-										size="xs"
-										icon={<TrashIcon size={13} />}
-										aria-label="Remove rule"
-										onClick={() => removeRule(idx)}
-									/>
-								</div>
-
-								<div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">
-									<div>
-										<label className="block text-[10px] uppercase tracking-wide text-kumo-subtle mb-1">When …</label>
-										<div className="space-y-1.5">
-											<Input
-												placeholder='from (exact email, e.g. "alice@x.com")'
-												value={r.from}
-												onChange={(e) => updateRule(idx, { from: e.target.value })}
-											/>
-											<Input
-												placeholder='fromDomain (e.g. "acme.com")'
-												value={r.fromDomain}
-												onChange={(e) => updateRule(idx, { fromDomain: e.target.value })}
-											/>
-											<Input
-												placeholder='to (exact recipient)'
-												value={r.to}
-												onChange={(e) => updateRule(idx, { to: e.target.value })}
-											/>
-											<Input
-												placeholder='subjectContains (comma-separated)'
-												value={r.subjectContains}
-												onChange={(e) => updateRule(idx, { subjectContains: e.target.value })}
-											/>
-											<Input
-												placeholder='bodyContains (comma-separated)'
-												value={r.bodyContains}
-												onChange={(e) => updateRule(idx, { bodyContains: e.target.value })}
-											/>
-											<Input
-												placeholder='hasAttachmentExt (comma-separated, e.g. "xml, pdf")'
-												value={r.hasAttachmentExt}
-												onChange={(e) => updateRule(idx, { hasAttachmentExt: e.target.value })}
-											/>
-										</div>
-									</div>
-
-									<div>
-										<label className="block text-[10px] uppercase tracking-wide text-kumo-subtle mb-1">Then …</label>
-										<div className="space-y-1.5">
-											<label className="flex items-center gap-2 text-xs text-kumo-default">
-												<input
-													type="checkbox"
-													className="h-3.5 w-3.5 accent-kumo-primary"
-													checked={r.skipDraft}
-													onChange={(e) => updateRule(idx, { skipDraft: e.target.checked })}
-												/>
-												Skip auto-draft
-											</label>
-											<label className="flex items-center gap-2 text-xs text-kumo-default">
-												<input
-													type="checkbox"
-													className="h-3.5 w-3.5 accent-kumo-primary"
-													checked={r.markRead}
-													onChange={(e) => updateRule(idx, { markRead: e.target.checked })}
-												/>
-												Mark as read
-											</label>
-											<label className="flex items-start gap-2 text-xs text-kumo-default">
-												<input
-													type="checkbox"
-													className="mt-0.5 h-3.5 w-3.5 accent-kumo-primary"
-													checked={r.extractAttachmentText}
-													onChange={(e) => updateRule(idx, { extractAttachmentText: e.target.checked })}
-												/>
-												<span>
-													<span className="block">Extract attachment text</span>
-													<span className="block text-[10px] text-kumo-subtle">
-														XML parsed inline (incl. 全电发票). PDF OCR — coming next.
-													</span>
-												</span>
-											</label>
-											<div>
-												<label className="block text-[10px] text-kumo-subtle mb-0.5">Move to folder</label>
-												<select
-													value={r.moveTo}
-													onChange={(e) => updateRule(idx, { moveTo: e.target.value })}
-													className="w-full rounded border border-kumo-line bg-kumo-base px-2 py-1 text-xs text-kumo-default"
-												>
-													{MOVE_OPTIONS.map((o) => (
-														<option key={o.value} value={o.value}>{o.label}</option>
-													))}
-												</select>
-											</div>
-											<div>
-												<label className="block text-[10px] text-kumo-subtle mb-0.5">Prompt addon (prepended to system prompt for this email)</label>
-												<textarea
-													rows={3}
-													value={r.promptOverride}
-													onChange={(e) => updateRule(idx, { promptOverride: e.target.value })}
-													placeholder='e.g. "This is a VIP sender — reply warmly, CC me-backup@x.com"'
-													className="w-full resize-y rounded border border-kumo-line bg-kumo-base px-2 py-1 text-xs text-kumo-default placeholder:text-kumo-subtle focus:outline-none focus:ring-1 focus:ring-kumo-ring"
-												/>
-											</div>
-										</div>
-									</div>
+						{/* Selected agent detail */}
+						<div className="rounded-lg border border-kumo-line bg-kumo-base p-5 space-y-5">
+							<div className="flex items-start gap-2">
+								<ActiveAgentIcon size={18} weight="duotone" className="text-kumo-subtle mt-0.5" />
+								<div className="flex-1 min-w-0">
+									<div className="text-sm font-medium text-kumo-default">{activeAgent.name}</div>
+									<div className="text-xs text-kumo-subtle">{activeAgent.description}</div>
 								</div>
 							</div>
-						))}
+
+							{activeAgent.hasAutoDraft && (
+								<label className="flex items-start gap-3 cursor-pointer">
+									<input
+										type="checkbox"
+										className="mt-1 h-4 w-4 accent-kumo-primary cursor-pointer"
+										checked={autoDraft}
+										onChange={(e) => setAutoDraft(e.target.checked)}
+									/>
+									<span className="text-xs text-kumo-default">
+										<span className="block font-medium mb-0.5">Auto-draft on new emails</span>
+										<span className="text-kumo-subtle">
+											When on, every inbound email triggers the agent to draft a reply
+											into Drafts (you still review &amp; send). When off, the agent only
+											responds in the side panel when you ask.
+										</span>
+									</span>
+								</label>
+							)}
+
+							{activeAgent.hasModelOverride && (
+								<div>
+									<label className="block text-xs font-medium text-kumo-default mb-1.5">Model</label>
+									<select
+										value={agentModel}
+										onChange={(e) => setAgentModel(e.target.value)}
+										className="w-full rounded-lg border border-kumo-line bg-kumo-recessed px-3 py-2 text-xs text-kumo-default focus:outline-none focus:ring-1 focus:ring-kumo-ring"
+									>
+										{MODEL_OPTIONS.map((m) => (
+											<option key={m.value} value={m.value}>{m.label}</option>
+										))}
+									</select>
+									<p className="text-xs text-kumo-subtle mt-1.5">
+										All models run on Cloudflare Workers AI (pay-per-neuron). Tool
+										calling support varies; swap if drafts look off.
+									</p>
+								</div>
+							)}
+
+							{/* System prompt */}
+							<div>
+								<div className="flex items-center justify-between mb-2">
+									<div className="flex items-center gap-2">
+										<span className="text-xs font-medium text-kumo-default">System prompt</span>
+										{isActivePromptCustom ? (
+											<Badge variant="primary">Custom</Badge>
+										) : (
+											<Badge variant="secondary">Default</Badge>
+										)}
+									</div>
+									{isActivePromptCustom && (
+										<Button
+											variant="ghost"
+											size="xs"
+											icon={<ArrowCounterClockwiseIcon size={14} />}
+											onClick={() => setActivePrompt("")}
+										>
+											Reset to default
+										</Button>
+									)}
+								</div>
+								<textarea
+									value={activePromptValue}
+									onChange={(e) => setActivePrompt(e.target.value)}
+									placeholder={activePromptPlaceholder}
+									rows={activeAgent.id === "invoice" ? 10 : 12}
+									className="w-full resize-y rounded-lg border border-kumo-line bg-kumo-recessed px-3 py-2 text-xs text-kumo-default placeholder:text-kumo-subtle focus:outline-none focus:ring-1 focus:ring-kumo-ring font-mono leading-relaxed"
+								/>
+								<p className="text-xs text-kumo-subtle mt-2">
+									Leave empty to use the built-in default prompt. Sent as the
+									system message to the model on every turn.
+								</p>
+							</div>
+
+							{/* Available actions (read-only) */}
+							<div>
+								<div className="flex items-center gap-2 mb-2">
+									<span className="text-xs font-medium text-kumo-default">Available actions</span>
+									<Badge variant="secondary">{activeAgent.tools.length}</Badge>
+								</div>
+								<div className="flex flex-wrap gap-1.5">
+									{activeAgent.tools.map((t) => (
+										<span
+											key={t.name}
+											title={t.description}
+											className="inline-flex items-center px-2 py-0.5 rounded border border-kumo-line bg-kumo-recessed text-[11px] font-mono text-kumo-default cursor-help"
+										>
+											{t.name}
+										</span>
+									))}
+								</div>
+								<p className="text-xs text-kumo-subtle mt-2">
+									Read-only — these are the tools this agent can call. Per-action
+									toggles will land when the schema supports them.
+								</p>
+							</div>
+						</div>
 					</div>
-				</div>
+				)}
 
-				{/* Save */}
-				<div className="flex justify-end">
-					<Button variant="primary" onClick={handleSave} loading={isSaving}>
-						Save Changes
-					</Button>
-				</div>
+				{/* ── Rules tab ── */}
+				{activeTab === "rules" && (
+					<div className="rounded-lg border border-kumo-line bg-kumo-base p-5">
+						<div className="flex items-center justify-between mb-3">
+							<div className="flex items-center gap-2">
+								<FunnelIcon size={16} weight="duotone" className="text-kumo-subtle" />
+								<span className="text-sm font-medium text-kumo-default">Processing Rules</span>
+								<Badge variant="secondary">{rules.length}</Badge>
+							</div>
+							<Button variant="ghost" size="xs" icon={<PlusIcon size={14} />} onClick={addRule}>
+								Add rule
+							</Button>
+						</div>
+						<p className="text-xs text-kumo-subtle mb-3">
+							Evaluated top-to-bottom on every incoming email. The first rule whose
+							conditions ALL match applies its actions. Rules run BEFORE the agent
+							auto-draft, so <code>skipDraft</code> / <code>moveTo</code> can short-circuit it.
+						</p>
 
-				{/* Members & Invites */}
-				{mailboxId && <MembersCard mailboxId={mailboxId} />}
+						{rules.length === 0 && (
+							<div className="text-xs italic text-kumo-subtle px-2 py-4 text-center">
+								No rules. Every inbound email goes through the default auto-draft pipeline.
+							</div>
+						)}
 
-				{/* API Keys (per-user, not per-mailbox) */}
-				<ApiKeysCard />
+						<div className="space-y-3">
+							{rules.map((r, idx) => (
+								<div key={idx} className="rounded border border-kumo-line bg-kumo-recessed p-3">
+									<div className="flex items-center justify-between mb-2">
+										<div className="flex items-center gap-2">
+											<label className="flex items-center gap-1.5 cursor-pointer">
+												<input
+													type="checkbox"
+													className="h-3.5 w-3.5 accent-kumo-primary"
+													checked={r.enabled}
+													onChange={(e) => updateRule(idx, { enabled: e.target.checked })}
+												/>
+												<span className="text-xs text-kumo-subtle">enabled</span>
+											</label>
+											<Input
+												placeholder="Rule name (optional)"
+												value={r.name}
+												onChange={(e) => updateRule(idx, { name: e.target.value })}
+											/>
+										</div>
+										<Button
+											variant="ghost"
+											size="xs"
+											icon={<TrashIcon size={13} />}
+											aria-label="Remove rule"
+											onClick={() => removeRule(idx)}
+										/>
+									</div>
+
+									<div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">
+										<div>
+											<label className="block text-[10px] uppercase tracking-wide text-kumo-subtle mb-1">When …</label>
+											<div className="space-y-1.5">
+												<Input
+													placeholder='from (exact email, e.g. "alice@x.com")'
+													value={r.from}
+													onChange={(e) => updateRule(idx, { from: e.target.value })}
+												/>
+												<Input
+													placeholder='fromDomain (e.g. "acme.com")'
+													value={r.fromDomain}
+													onChange={(e) => updateRule(idx, { fromDomain: e.target.value })}
+												/>
+												<Input
+													placeholder='to (exact recipient)'
+													value={r.to}
+													onChange={(e) => updateRule(idx, { to: e.target.value })}
+												/>
+												<Input
+													placeholder='subjectContains (comma-separated)'
+													value={r.subjectContains}
+													onChange={(e) => updateRule(idx, { subjectContains: e.target.value })}
+												/>
+												<Input
+													placeholder='bodyContains (comma-separated)'
+													value={r.bodyContains}
+													onChange={(e) => updateRule(idx, { bodyContains: e.target.value })}
+												/>
+												<Input
+													placeholder='hasAttachmentExt (comma-separated, e.g. "xml, pdf")'
+													value={r.hasAttachmentExt}
+													onChange={(e) => updateRule(idx, { hasAttachmentExt: e.target.value })}
+												/>
+											</div>
+										</div>
+
+										<div>
+											<label className="block text-[10px] uppercase tracking-wide text-kumo-subtle mb-1">Then …</label>
+											<div className="space-y-1.5">
+												<label className="flex items-center gap-2 text-xs text-kumo-default">
+													<input
+														type="checkbox"
+														className="h-3.5 w-3.5 accent-kumo-primary"
+														checked={r.skipDraft}
+														onChange={(e) => updateRule(idx, { skipDraft: e.target.checked })}
+													/>
+													Skip auto-draft
+												</label>
+												<label className="flex items-center gap-2 text-xs text-kumo-default">
+													<input
+														type="checkbox"
+														className="h-3.5 w-3.5 accent-kumo-primary"
+														checked={r.markRead}
+														onChange={(e) => updateRule(idx, { markRead: e.target.checked })}
+													/>
+													Mark as read
+												</label>
+												<label className="flex items-start gap-2 text-xs text-kumo-default">
+													<input
+														type="checkbox"
+														className="mt-0.5 h-3.5 w-3.5 accent-kumo-primary"
+														checked={r.extractAttachmentText}
+														onChange={(e) => updateRule(idx, { extractAttachmentText: e.target.checked })}
+													/>
+													<span>
+														<span className="block">Extract attachment text</span>
+														<span className="block text-[10px] text-kumo-subtle">
+															XML parsed inline (incl. 全电发票). PDF OCR — coming next.
+														</span>
+													</span>
+												</label>
+												<div>
+													<label className="block text-[10px] text-kumo-subtle mb-0.5">Move to folder</label>
+													<select
+														value={r.moveTo}
+														onChange={(e) => updateRule(idx, { moveTo: e.target.value })}
+														className="w-full rounded border border-kumo-line bg-kumo-base px-2 py-1 text-xs text-kumo-default"
+													>
+														{MOVE_OPTIONS.map((o) => (
+															<option key={o.value} value={o.value}>{o.label}</option>
+														))}
+													</select>
+												</div>
+												<div>
+													<label className="block text-[10px] text-kumo-subtle mb-0.5">Prompt addon (prepended to system prompt for this email)</label>
+													<textarea
+														rows={3}
+														value={r.promptOverride}
+														onChange={(e) => updateRule(idx, { promptOverride: e.target.value })}
+														placeholder='e.g. "This is a VIP sender — reply warmly, CC me-backup@x.com"'
+														className="w-full resize-y rounded border border-kumo-line bg-kumo-base px-2 py-1 text-xs text-kumo-default placeholder:text-kumo-subtle focus:outline-none focus:ring-1 focus:ring-kumo-ring"
+													/>
+												</div>
+											</div>
+										</div>
+									</div>
+								</div>
+							))}
+						</div>
+					</div>
+				)}
+
+				{/* ── Members tab ── */}
+				{activeTab === "members" && mailboxId && <MembersCard mailboxId={mailboxId} />}
+
+				{/* Save (covers Account / Agents / Rules — Members has its own actions) */}
+				{activeTab !== "members" && (
+					<div className="flex justify-end">
+						<Button variant="primary" onClick={handleSave} loading={isSaving}>
+							Save Changes
+						</Button>
+					</div>
+				)}
 			</div>
 		</div>
 	);
@@ -725,6 +784,115 @@ function MembersCard({ mailboxId }: { mailboxId: string }) {
 					</div>
 				</>
 			)}
+		</div>
+	);
+}
+
+// ── ChangePasswordCard ─────────────────────────────────────────────
+//
+// Lets a logged-in user rotate their password. Users created via magic-link
+// have no password hash on file; for them this card sets the initial password
+// (no current-password prompt) and switches the title to "Set password".
+
+function ChangePasswordCard() {
+	const toastManager = useKumoToastManager();
+	const qc = useQueryClient();
+	const { data: whoami } = useWhoami();
+	const hasPassword = whoami?.hasPassword ?? false;
+
+	const [currentPassword, setCurrentPassword] = useState("");
+	const [newPassword, setNewPassword] = useState("");
+	const [confirmPassword, setConfirmPassword] = useState("");
+
+	const change = useMutation({
+		mutationFn: () =>
+			api.changePassword(hasPassword ? currentPassword : null, newPassword),
+		onSuccess: () => {
+			qc.invalidateQueries({ queryKey: queryKeys.whoami });
+			setCurrentPassword("");
+			setNewPassword("");
+			setConfirmPassword("");
+			toastManager.add({ title: hasPassword ? "Password updated" : "Password set" });
+		},
+		onError: (e) => {
+			toastManager.add({
+				title: e instanceof ApiError ? e.message : "Failed to update password",
+				variant: "error",
+			});
+		},
+	});
+
+	const handleSubmit = () => {
+		if (newPassword.length < 8) {
+			toastManager.add({
+				title: "New password must be at least 8 characters",
+				variant: "error",
+			});
+			return;
+		}
+		if (newPassword !== confirmPassword) {
+			toastManager.add({ title: "New passwords don't match", variant: "error" });
+			return;
+		}
+		if (hasPassword && !currentPassword) {
+			toastManager.add({ title: "Enter your current password", variant: "error" });
+			return;
+		}
+		change.mutate();
+	};
+
+	const submitDisabled =
+		!newPassword || !confirmPassword || (hasPassword && !currentPassword);
+
+	return (
+		<div className="bg-kumo-base border border-kumo-line rounded-lg p-4 space-y-4">
+			<div className="flex items-center gap-2">
+				<LockKeyIcon size={16} />
+				<span className="text-sm font-medium text-kumo-default">
+					{hasPassword ? "Change password" : "Set password"}
+				</span>
+			</div>
+			{!hasPassword && (
+				<p className="text-xs text-kumo-subtle">
+					Your account doesn't have a password yet — you've only used magic-link
+					sign-in. Set one to enable password sign-in too.
+				</p>
+			)}
+			<div className="space-y-3">
+				{hasPassword && (
+					<Input
+						label="Current password"
+						type="password"
+						autoComplete="current-password"
+						value={currentPassword}
+						onChange={(e) => setCurrentPassword(e.target.value)}
+					/>
+				)}
+				<Input
+					label="New password"
+					type="password"
+					autoComplete="new-password"
+					value={newPassword}
+					onChange={(e) => setNewPassword(e.target.value)}
+				/>
+				<Input
+					label="Confirm new password"
+					type="password"
+					autoComplete="new-password"
+					value={confirmPassword}
+					onChange={(e) => setConfirmPassword(e.target.value)}
+				/>
+			</div>
+			<div className="flex justify-end">
+				<Button
+					variant="primary"
+					onClick={handleSubmit}
+					loading={change.isPending}
+					disabled={submitDisabled}
+				>
+					{hasPassword ? "Update password" : "Set password"}
+				</Button>
+			</div>
 		</div>
 	);
 }

@@ -139,6 +139,7 @@ const api = {
 			isAdmin: boolean;
 			role: "user" | "admin";
 			system: boolean;
+			hasPassword: boolean;
 		}>("/api/v1/whoami"),
 
 	// Auth
@@ -158,6 +159,11 @@ const api = {
 		post<{ ok: true; message: string }>("/api/v1/auth/password/forgot", { email }),
 	resetPassword: (token: string, password: string) =>
 		post<{ ok: true }>("/api/v1/auth/password/reset", { token, password }),
+	changePassword: (currentPassword: string | null, newPassword: string) =>
+		post<{ ok: true }>("/api/v1/auth/password/change", {
+			...(currentPassword ? { currentPassword } : {}),
+			newPassword,
+		}),
 
 	// API keys (Bearer tokens for MCP / programmatic clients)
 	listApiKeys: () =>
@@ -229,6 +235,8 @@ const api = {
 			memberCount: number;
 			inboxCount: number | null;
 		}>>("/api/v1/admin/mailboxes"),
+	adminCreateMailboxForUser: (userId: string, email: string, name: string, settings?: unknown) =>
+		post<Mailbox>(`/api/v1/admin/users/${userId}/mailboxes`, { email, name, settings }),
 
 	// Emails
 	listEmails: (mailboxId: string, params: Record<string, string>, opts?: { signal?: AbortSignal }) =>

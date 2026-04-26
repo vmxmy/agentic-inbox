@@ -23,6 +23,8 @@ import api from "~/services/api";
 import type { InvoiceFilters } from "~/types";
 
 const PAGE_SIZE = 25;
+const WARNING_BADGE_CLASS_NAME =
+	"border border-kumo-warning/30 bg-kumo-warning/10 text-kumo-warning";
 
 function formatAmount(n: number | null | undefined): string {
 	if (n === null || n === undefined) return "—";
@@ -430,11 +432,14 @@ export default function InvoicesRoute() {
 									</td>
 									<td className="px-3 py-2">
 										<div className="flex items-center gap-1">
-											<Badge variant={inv.source_kind === "pdf-ocr" ? "warning" : "neutral"}>
+											<Badge
+												variant={inv.source_kind === "pdf-ocr" ? "outline" : "secondary"}
+												className={inv.source_kind === "pdf-ocr" ? WARNING_BADGE_CLASS_NAME : undefined}
+											>
 												{inv.source_kind === "pdf-ocr" ? "PDF OCR" : "XML"}
 											</Badge>
 											{inv.needs_review ? (
-												<Badge variant="warning">
+												<Badge variant="outline" className={WARNING_BADGE_CLASS_NAME}>
 													<WarningIcon size={12} weight="fill" />
 													待复核
 												</Badge>
