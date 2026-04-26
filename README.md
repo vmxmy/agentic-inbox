@@ -23,17 +23,29 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 
      [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/cloudflare/agentic-inbox)
 
-2. **Configure Cloudflare Access** -- Enable [one-click Cloudflare Access](https://developers.cloudflare.com/changelog/post/2025-10-03-one-click-access-for-workers/) on your Worker under Settings > Domains & Routes. The modal will show your `POLICY_AUD` and `TEAM_DOMAIN` values. `TEAM_DOMAIN` can be either your Access team URL or the full `.../cdn-cgi/access/certs` URL. **You must set these as secrets for your Worker.**
-3. **Set up Email Routing** -- In the Cloudflare dashboard, go to your domain > Email Routing and create a catch-all rule that forwards to this Worker
-4. **Enable Email Service** -- The worker needs the `send_email` binding to send outbound emails. See [Email Service docs](https://developers.cloudflare.com/email-routing/email-workers/send-email-workers/)
-5. **Create a mailbox** -- Visit your deployed app and create a mailbox for any address on your domain (e.g. `hello@example.com`)
+2. **Bootstrap an admin** -- Set the `ADMINS` Worker var (comma-separated emails) in `wrangler.jsonc`. The first user to register with one of those emails is automatically promoted to admin and can provision mailboxes for everyone else.
+3. **Set up Email Routing** -- In the Cloudflare dashboard, go to your domain > Email Routing and create a catch-all rule that forwards to this Worker.
+4. **Enable Email Service** -- The worker needs the `send_email` binding to send outbound emails. See [Email Service docs](https://developers.cloudflare.com/email-routing/email-workers/send-email-workers/).
+5. **Register and create mailboxes** -- Visit your deployed app, register the admin account (the magic-link or password flow both work), then either create your own mailbox (when `EMAIL_ADDRESSES` is empty) or use the admin panel to provision mailboxes on behalf of teammates (when `EMAIL_ADDRESSES` is configured for shared/fixed addresses like `support@`, `finance@`).
+6. _(Optional, legacy)_ **Cloudflare Access fallback** -- If your deployment was configured with [one-click Cloudflare Access](https://developers.cloudflare.com/changelog/post/2025-10-03-one-click-access-for-workers/) before native auth landed, set `POLICY_AUD` and `TEAM_DOMAIN` as Worker secrets. Access JWTs will be accepted alongside cookie sessions, so existing Access-only users keep working.
+
+### Auth model
+
+Identity is a D1-backed cookie session minted by `/api/v1/auth/login`, `/api/v1/auth/magic-link/consume`, or `/api/v1/auth/register` after email verification. Bearer API keys (issued from Settings → API Keys) authenticate programmatic callers including MCP clients. Cloudflare Access JWTs are accepted as a fallback when `POLICY_AUD`/`TEAM_DOMAIN` are set.
+
+Authorization is layered:
+
+* **Admin** (`users.role = 'admin'`): manages users, promotes other admins, provisions mailboxes for any user. Bootstrapped from the `ADMINS` env var on first registration.
+* **Mailbox owner**: manages mailbox membership, invites, and integration-level config (e.g. webhook rule actions). One owner per mailbox.
+* **Mailbox member**: read/write on mailbox content and ordinary workflows. Members can edit non-webhook rules but cannot grant themselves owner.
+* **System**: internal worker-to-worker calls only (carries `x-internal-system: <INTERNAL_SECRET>`).
+
+When `EMAIL_ADDRESSES` is configured (fixed-mailbox mode used for shared inboxes like `finance@`), self-serve mailbox creation is disabled — admins must provision and assign owners explicitly. Ownerless legacy mailboxes are not auto-claimed; admins assign owners via the admin panel.
 
 ### Troubleshooting Access
 
-1. If you see `Invalid or expired Access token`, that usually means `POLICY_AUD` or `TEAM_DOMAIN` secrets are incorrect.
-   * Resolution: [turn Access off and back on for the Worker to get the Access modal again](https://developers.cloudflare.com/changelog/post/2025-10-03-one-click-access-for-workers/), then reset your Worker secrets to the latest `POLICY_AUD` and `TEAM_DOMAIN` values shown there.
-2. If you see `Cloudflare Access must be configured in production`, this application is intentionally enforcing Cloudflare Access so your inbox is not exposed to anyone on the internet.
-   * Resolution: enable Access using [one-click Cloudflare Access for Workers](https://developers.cloudflare.com/changelog/post/2025-10-03-one-click-access-for-workers/), then set the `POLICY_AUD` and `TEAM_DOMAIN` Worker secrets from the modal values.
+1. If you see `Invalid or expired Access token`, that usually means `POLICY_AUD` or `TEAM_DOMAIN` secrets are incorrect (only relevant when running in Access-fallback mode).
+   * Resolution: [turn Access off and back on for the Worker to get the Access modal again](https://developers.cloudflare.com/changelog/post/2025-10-03-one-click-access-for-workers/), then reset your Worker secrets to the latest `POLICY_AUD` and `TEAM_DOMAIN` values shown there. Or remove both secrets to rely on native auth alone.
 
 ## Features
 
@@ -48,7 +60,7 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 - **Frontend:** React 19, React Router v7, Tailwind CSS, Zustand, TipTap, `@cloudflare/kumo`
 - **Backend:** Hono, Cloudflare Workers, Durable Objects (SQLite), R2, Email Routing
 - **AI Agent:** Cloudflare Agents SDK (`AIChatAgent`), AI SDK v6, Workers AI (`@cf/moonshotai/kimi-k2.5`), `react-markdown` + `remark-gfm`
-- **Auth:** Cloudflare Access JWT validation (required outside local development)
+- **Auth:** Native cookie sessions (D1 + scrypt) with magic-link and password flows; per-user Bearer API keys for programmatic / MCP access; Cloudflare Access JWTs accepted as fallback when `POLICY_AUD`/`TEAM_DOMAIN` are set
 
 ## Getting Started
 
@@ -74,9 +86,9 @@ npm run deploy
 - [Email Routing](https://developers.cloudflare.com/email-routing/) enabled for receiving
 - [Email Service](https://developers.cloudflare.com/email-service/) enabled for sending
 - [Workers AI](https://developers.cloudflare.com/workers-ai/) enabled (for the agent)
-- [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) configured for deployed/shared environments (required in production)
+- _(Optional, legacy)_ [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) — only needed if you want Access JWTs to be accepted alongside native sessions. Set `POLICY_AUD` and `TEAM_DOMAIN` Worker secrets when used.
 
-Any user who passes the shared Cloudflare Access policy can access all mailboxes in this app by design. This includes the MCP server at `/mcp` -- external AI tools (Claude Code, Cursor, etc.) connected via MCP can operate on any mailbox by passing a `mailboxId` parameter. There is no per-mailbox authorization; the Cloudflare Access policy is the single trust boundary.
+Authorization is per-mailbox. Each mailbox has an owner and an optional members list — only those callers (plus instance admins) can read/write its emails. The MCP server at `/mcp` honors the same ACL: an external AI tool authenticates with a per-user Bearer API key issued from Settings → API Keys and can only operate on mailboxes that user has access to.
 
 ## Architecture
 

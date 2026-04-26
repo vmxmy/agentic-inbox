@@ -22,6 +22,7 @@ import {
 	buildSessionCookie,
 	buildClearSessionCookie,
 	deleteSession,
+	deleteSessionsForUser,
 	findSession,
 	readSessionCookie,
 } from "../lib/session";
@@ -54,6 +55,10 @@ const EmailPasswordSchema = z.object({
 });
 
 const EmailOnly = z.object({ email: z.string().email() });
+const MagicLinkRequestSchema = z.object({
+	email: z.string().email(),
+	next: z.string().max(2048).optional(),
+});
 const ResetSchema = z.object({
 	token: z.string().min(10),
 	password: z.string().min(8).max(200),
@@ -62,6 +67,31 @@ const ChangePasswordSchema = z.object({
 	currentPassword: z.string().min(1).max(200).optional(),
 	newPassword: z.string().min(8).max(200),
 });
+
+/**
+ * Reduce an arbitrary `next` string from the client into a safe internal path.
+ * Returns null if it is not safe to use as a navigation target. The result is
+ * intended to be embedded as a query-string value, so we deliberately reject
+ * absolute URLs, protocol-relative URLs, and anything other than a single
+ * `/something` path. Belt-and-braces against open-redirect abuse via the
+ * magic-link email round-trip.
+ */
+export function sanitizeInternalNext(raw: unknown): string | null {
+	if (typeof raw !== "string") return null;
+	const trimmed = raw.trim();
+	if (trimmed.length === 0 || trimmed.length > 2048) return null;
+	if (!trimmed.startsWith("/")) return null;
+	if (trimmed.startsWith("//")) return null; // protocol-relative
+	if (trimmed.startsWith("/\\")) return null; // backslash trick
+	// Reject anything that smells like a scheme (e.g. javascript:, data:).
+	// A real path may legitimately contain a colon (e.g. "/mailbox/foo:bar"),
+	// but only after the leading slash.
+	const firstSegment = trimmed.split("/")[1] ?? "";
+	if (firstSegment.includes(":") && /^[a-z][a-z0-9+.\-]*:/i.test(firstSegment)) {
+		return null;
+	}
+	return trimmed;
+}
 
 function publicOrigin(c: import("hono").Context<AuthEnv>): string {
 	const fromEnv = c.env.PUBLIC_BASE_URL?.trim();
@@ -146,7 +176,34 @@ authApp.post("/login", async (c) => {
 	if (!parsed.success) {
 		return c.json({ error: "Email and password are required" }, 400);
 	}
-	const { email, password } = parsed.data;
+	const { email: rawEmail, password } = parsed.data;
+	const email = rawEmail.trim().toLowerCase();
+	const ip = c.req.header("cf-connecting-ip") ?? "unknown";
+
+	// Rate-limit before doing the expensive password verify. Window sizes
+	// mirror /password/forgot and /magic-link/request — short window blocks
+	// rapid brute force, hourly window catches slower credential-stuffing,
+	// per-IP window catches one attacker spraying many accounts.
+	try {
+		await enforceRateLimits(c.env, [
+			{ key: `login:email:${email}:1m`, windowMs: 60_000, limit: 5 },
+			{ key: `login:email:${email}:1h`, windowMs: 60 * 60_000, limit: 20 },
+			{ key: `login:ip:${ip}:1h`, windowMs: 60 * 60_000, limit: 60 },
+		]);
+	} catch (e) {
+		if (e instanceof RateLimitError) {
+			c.header("Retry-After", String(e.retryAfterSeconds));
+			return c.json(
+				{
+					error: `Too many sign-in attempts. Try again in ${e.retryAfterSeconds} seconds.`,
+					retryAfter: e.retryAfterSeconds,
+				},
+				429,
+			);
+		}
+		throw e;
+	}
+
 	const user = await findUserByEmail(c.env, email);
 	if (!user || !user.passwordHash) {
 		return c.json({ error: "Invalid email or password" }, 401);
@@ -182,9 +239,10 @@ authApp.post("/logout", async (c) => {
 // ── Magic link login ──────────────────────────────────────────────
 
 authApp.post("/magic-link/request", async (c) => {
-	const parsed = EmailOnly.safeParse(await c.req.json().catch(() => ({})));
+	const parsed = MagicLinkRequestSchema.safeParse(await c.req.json().catch(() => ({})));
 	if (!parsed.success) return c.json({ error: "Email required" }, 400);
 	const email = parsed.data.email.trim().toLowerCase();
+	const safeNext = sanitizeInternalNext(parsed.data.next);
 	const ip = c.req.header("cf-connecting-ip") ?? "unknown";
 
 	try {
@@ -214,7 +272,12 @@ authApp.post("/magic-link/request", async (c) => {
 	}
 	const ttlMinutes = 15;
 	const { rawToken } = await issueToken(c.env, user.id, "magic");
-	const link = `${publicOrigin(c)}/magic?token=${rawToken}`;
+	// Round-trip the deep-link target through the email so the user lands on
+	// the page they originally requested even when they open the link on a
+	// different device than the one that requested it. sanitizeInternalNext
+	// already restricted this to internal paths.
+	const nextSuffix = safeNext ? `&next=${encodeURIComponent(safeNext)}` : "";
+	const link = `${publicOrigin(c)}/magic?token=${rawToken}${nextSuffix}`;
 	const tmpl = magicLinkEmail({ link, ttlMinutes });
 	await deliverEmail(c, user.email, tmpl.subject, tmpl.text, tmpl.html);
 	return ok(c, "If that account exists, a sign-in link is on its way.");
@@ -310,6 +373,11 @@ authApp.post("/password/reset", async (c) => {
 	const passwordHash = await hashPassword(parsed.data.password);
 	await setPasswordHash(c.env, consumed.userId, passwordHash);
 	await markEmailVerified(c.env, consumed.userId);
+	// Reset is the canonical "I've lost control of this account" recovery, so
+	// every existing session for this user must die — including any session a
+	// stale browser still holds. The user is required to log in again.
+	await deleteSessionsForUser(c.env, consumed.userId);
+	c.header("Set-Cookie", buildClearSessionCookie());
 	return c.json({ ok: true });
 });
 
@@ -345,5 +413,17 @@ authApp.post("/password/change", async (c) => {
 
 	const newHash = await hashPassword(newPassword);
 	await setPasswordHash(c.env, user.id, newHash);
+
+	// Invalidate every session this user has — including the one in this
+	// browser — and immediately mint a fresh one so the current browser stays
+	// signed in. Other devices (or any leaked cookie) lose access on the next
+	// request.
+	await deleteSessionsForUser(c.env, user.id);
+	const fresh = await createSession(c.env, {
+		userId: user.id,
+		userAgent: c.req.header("user-agent") ?? null,
+		ip: c.req.header("cf-connecting-ip") ?? null,
+	});
+	setCookie(c, fresh.id, fresh.expiresAt);
 	return c.json({ ok: true });
 });

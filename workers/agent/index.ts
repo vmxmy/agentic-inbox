@@ -9,7 +9,7 @@ import {
 	convertToModelMessages,
 	stepCountIs,
 } from "ai";
-import { createWorkersAI } from "workers-ai-provider";
+import { getLlmProvider, listLlmModels, pickModel, resolveLlmConfig } from "../lib/llm-models";
 import { z } from "zod";
 import type { EmailFull, EmailMetadata } from "../lib/schemas";
 import { verifyDraft, isPromptInjection } from "../lib/ai";
@@ -172,13 +172,16 @@ export class EmailAgent extends AIChatAgent<any> {
 	async onChatMessage(onFinish: any) {
 		const env = this.env as Env;
 		const mailboxId = this.name;
-		const workersai = createWorkersAI({ binding: env.AI });
 		const config = await getAgentConfig(env, mailboxId);
 		const tools = createEmailTools(env, mailboxId, config.emailReplyEnabledSkills);
 		const systemPrompt = resolveSystemPrompt(config.customSystemPrompt);
+		const cfg = await resolveLlmConfig(env);
+		const provider = getLlmProvider(env, cfg);
+		const catalog = await listLlmModels(env, { cfg });
+		const modelId = pickModel(catalog, config.emailReplyModel ?? config.model, cfg.defaultModel);
 
 		const result = streamText({
-			model: workersai(config.model),
+			model: provider(modelId),
 			system: systemPrompt,
 			messages: await convertToModelMessages(this.messages),
 			tools,
@@ -234,10 +237,13 @@ export class EmailAgent extends AIChatAgent<any> {
 		promptOverride?: string;
 	}) {
 		const env = this.env as Env;
-		const workersai = createWorkersAI({ binding: env.AI });
 		const config = await getAgentConfig(env, emailData.mailboxId);
 		const tools = createEmailTools(env, emailData.mailboxId, config.emailReplyEnabledSkills);
 		const systemPrompt = resolveSystemPrompt(config.customSystemPrompt, emailData.promptOverride);
+		const cfg = await resolveLlmConfig(env);
+		const provider = getLlmProvider(env, cfg);
+		const catalog = await listLlmModels(env, { cfg });
+		const modelId = pickModel(catalog, config.emailReplyModel ?? config.model, cfg.defaultModel);
 
 		// Pre-read the email and thread so the agent has full context
 		// without needing to waste tool calls discovering it
@@ -364,7 +370,7 @@ Based on the email content and thread context above, draft a reply using draft_r
 
 		try {
 			const result = await generateText({
-				model: workersai(config.model),
+				model: provider(modelId),
 				system: systemPrompt,
 				messages: await convertToModelMessages(messages),
 				tools,

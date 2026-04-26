@@ -14,7 +14,7 @@ import {
 } from "@cloudflare/kumo";
 import { EnvelopeIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
 import { useQuery } from "@tanstack/react-query";
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 import { Link as RouterLink } from "react-router";
 import api from "~/services/api";
 import {
@@ -30,7 +30,7 @@ export function meta() {
 
 export default function HomeRoute() {
 	const toastManager = useKumoToastManager();
-	const { data: mailboxes = [], refetch: refetchMailboxes, isFetched: mailboxesFetched } = useMailboxes();
+	const { data: mailboxes = [] } = useMailboxes();
 	const createMailbox = useCreateMailbox();
 	const deleteMailbox = useDeleteMailbox();
 
@@ -63,31 +63,10 @@ export default function HomeRoute() {
 		}
 	}, [domains, selectedDomain]);
 
-	// Auto-create mailboxes from config (run once when both data sources are ready)
-	const autoCreateDone = useRef(false);
-	useEffect(() => {
-		if (autoCreateDone.current) return;
-		if (emailAddresses.length === 0 || !mailboxesFetched) return;
-		const existingEmails = new Set(
-			mailboxes.map((m) => m.email.toLowerCase()),
-		);
-		const toCreate = emailAddresses.filter(
-			(addr) => !existingEmails.has(addr.toLowerCase()),
-		);
-		if (toCreate.length === 0) {
-			autoCreateDone.current = true;
-			return;
-		}
-		autoCreateDone.current = true;
-		let cancelled = false;
-		Promise.all(
-			toCreate.map((addr) => {
-				const localPart = addr.split("@")[0] || addr;
-				return api.createMailbox(addr, localPart).catch(() => {});
-			}),
-		).then(() => { if (!cancelled) refetchMailboxes(); });
-		return () => { cancelled = true; };
-	}, [emailAddresses, mailboxes, refetchMailboxes]);
+	// Mailbox provisioning intentionally lives on the server (admin-driven when
+	// EMAIL_ADDRESSES is configured). The home page no longer auto-creates
+	// mailboxes from config — that previously let whichever browser loaded the
+	// page first become the de-facto owner of every shared mailbox.
 
 	const handleCreate = async (e: FormEvent) => {
 		e.preventDefault();
@@ -129,13 +108,11 @@ export default function HomeRoute() {
 	};
 
 	const isConfigured = emailAddresses.length > 0;
-	const accounts = isConfigured
-		? emailAddresses.map((addr) => ({
-				id: addr,
-				email: addr,
-				name: addr.split("@")[0] || addr,
-			}))
-		: mailboxes;
+	// Always show real mailboxes the user has access to, never synthesized
+	// entries from EMAIL_ADDRESSES. A configured address that is not yet
+	// provisioned for this user simply will not appear here — the user must
+	// ask an admin to add them.
+	const accounts = mailboxes;
 
 	const isLoading = !configData;
 
@@ -223,7 +200,7 @@ export default function HomeRoute() {
 							</h3>
 							<p className="text-sm text-kumo-subtle max-w-sm mb-5">
 								{isConfigured
-									? "Your email routing is configured but no mailboxes have been created yet. They will appear here automatically."
+									? "You don't have access to any mailboxes yet. Ask an admin to provision one for you, or to add you as a member of an existing mailbox."
 									: "Create a mailbox to start sending and receiving emails with your domain."}
 							</p>
 							{!isConfigured && (

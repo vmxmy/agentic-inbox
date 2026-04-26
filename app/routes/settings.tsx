@@ -7,6 +7,7 @@ import {
 	ArrowCounterClockwiseIcon,
 	CopyIcon,
 	FunnelIcon,
+	GearSixIcon,
 	KeyIcon,
 	LinkIcon,
 	LockKeyIcon,
@@ -23,6 +24,7 @@ import { AGENTS, type AgentId } from "~/lib/agent-registry";
 import { queryKeys } from "~/queries/keys";
 import { useWhoami } from "~/queries/identity";
 import { useCapabilities } from "~/queries/capabilities";
+import { useModels } from "~/queries/models";
 import CapabilityActionEditor from "~/components/CapabilityActionEditor";
 import { useMailbox, useUpdateMailbox } from "~/queries/mailboxes";
 import {
@@ -33,28 +35,46 @@ import {
 } from "~/queries/members";
 import api, { ApiError } from "~/services/api";
 
-type SettingsTab = "account" | "agents" | "rules" | "members";
+type SettingsTab = "account" | "agents" | "rules" | "members" | "system";
 
-const SETTINGS_TABS: { id: SettingsTab; label: string; icon: typeof RobotIcon }[] = [
+interface SettingsTabDef {
+	id: SettingsTab;
+	label: string;
+	icon: typeof RobotIcon;
+	/** When true, only admins see this tab. */
+	adminOnly?: boolean;
+}
+
+const SETTINGS_TABS: SettingsTabDef[] = [
 	{ id: "account", label: "Account", icon: UserIcon },
 	{ id: "agents",  label: "Agents",  icon: RobotIcon },
 	{ id: "rules",   label: "Rules",   icon: FunnelIcon },
 	{ id: "members", label: "Members", icon: UsersIcon },
+	{ id: "system",  label: "System",  icon: GearSixIcon, adminOnly: true },
 ];
 
-// ── Models (keep in sync with workers/lib/agent-config.ts ALLOWED_AGENT_MODELS) ──
-const MODEL_OPTIONS: { value: string; label: string }[] = [
-	{ value: "@cf/moonshotai/kimi-k2.5",                  label: "Kimi K2.5 (default, Moonshot AI)" },
-	{ value: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",  label: "Llama 3.3 70B (Meta)" },
-	{ value: "@cf/qwen/qwen2.5-coder-32b-instruct",       label: "Qwen 2.5 Coder 32B" },
-];
-const DEFAULT_MODEL = MODEL_OPTIONS[0].value;
+// Model dropdown is populated dynamically from `GET /api/v1/models`
+// (see `useModels` hook). Empty initial state means "use server default
+// once the catalog loads".
+const DEFAULT_MODEL = "";
 
 // ── Rule types (mirror workers/lib/rules.ts) ──
 interface UIRuleAction {
 	capabilityId: string;
 	params: Record<string, unknown>;
 }
+// Keys of `then` that the UI knows how to render. Any other key the backend
+// supports must round-trip via `_unknownThen` so a Settings save never silently
+// destroys a field the UI doesn't yet have a control for.
+const KNOWN_THEN_KEYS = new Set([
+	"skipDraft",
+	"moveTo",
+	"markRead",
+	"extractAttachmentText",
+	"extractInvoice",
+	"promptOverride",
+	"actions",
+]);
 interface UIRule {
 	name: string;
 	enabled: boolean;
@@ -68,9 +88,14 @@ interface UIRule {
 	moveTo: string;            // "" | inbox | sent | draft | archive | trash | spam
 	markRead: boolean;
 	extractAttachmentText: boolean;
+	extractInvoice: boolean;
 	promptOverride: string;
 	/** Capability invocations beyond the 5 legacy field actions above. */
 	actions: UIRuleAction[];
+	/** Backend-supported `then.*` keys the UI doesn't render. Preserved verbatim
+	 *  so a save round-trip never deletes them — see the Apr 2026 review where
+	 *  `extractInvoice` was lost this way. */
+	_unknownThen: Record<string, unknown>;
 }
 const BLANK_RULE: UIRule = {
 	name: "",
@@ -85,8 +110,10 @@ const BLANK_RULE: UIRule = {
 	moveTo: "",
 	markRead: false,
 	extractAttachmentText: false,
+	extractInvoice: false,
 	promptOverride: "",
 	actions: [],
+	_unknownThen: {},
 };
 const MOVE_OPTIONS = [
 	{ value: "",        label: "(keep in inbox)" },
@@ -108,6 +135,10 @@ function loadRulesFromSettings(settings: Record<string, unknown> | undefined): U
 	return raw.map((r) => {
 		const cond = (r?.if ?? {}) as Record<string, unknown>;
 		const act = (r?.then ?? {}) as Record<string, unknown>;
+		const unknownThen: Record<string, unknown> = {};
+		for (const [key, value] of Object.entries(act)) {
+			if (!KNOWN_THEN_KEYS.has(key)) unknownThen[key] = value;
+		}
 		return {
 			name: typeof r?.name === "string" ? r.name : "",
 			enabled: r?.enabled !== false,
@@ -121,6 +152,7 @@ function loadRulesFromSettings(settings: Record<string, unknown> | undefined): U
 			moveTo: typeof act.moveTo === "string" ? act.moveTo : "",
 			markRead: act.markRead === true,
 			extractAttachmentText: act.extractAttachmentText === true,
+			extractInvoice: act.extractInvoice === true,
 			promptOverride: typeof act.promptOverride === "string" ? act.promptOverride : "",
 			actions: Array.isArray(act.actions)
 				? (act.actions as unknown[]).flatMap((a) => {
@@ -135,6 +167,7 @@ function loadRulesFromSettings(settings: Record<string, unknown> | undefined): U
 					}];
 				})
 				: [],
+			_unknownThen: unknownThen,
 		};
 	});
 }
@@ -151,11 +184,16 @@ function dumpRulesForSave(rules: UIRule[]) {
 			if (bArr.length) cond.bodyContains = bArr;
 			const extArr = csvToArray(r.hasAttachmentExt).map((e) => e.replace(/^\./, "").toLowerCase());
 			if (extArr.length) cond.hasAttachmentExt = extArr;
-			const act: Record<string, unknown> = {};
+			// Spread unknown-then keys first so any explicit UI control wins on
+			// conflict — preserves backend-supported fields the UI does not yet
+			// render (e.g. a future capability flag) without overriding state
+			// the user just edited in the UI.
+			const act: Record<string, unknown> = { ...r._unknownThen };
 			if (r.skipDraft) act.skipDraft = true;
 			if (r.moveTo) act.moveTo = r.moveTo;
 			if (r.markRead) act.markRead = true;
 			if (r.extractAttachmentText) act.extractAttachmentText = true;
+			if (r.extractInvoice) act.extractInvoice = true;
 			if (r.promptOverride.trim()) act.promptOverride = r.promptOverride.trim();
 			const cleanActions = r.actions.filter((a) => a.capabilityId.trim().length > 0);
 			if (cleanActions.length) act.actions = cleanActions;
@@ -185,6 +223,12 @@ export default function SettingsRoute() {
 	const toastManager = useKumoToastManager();
 	const { data: mailbox } = useMailbox(mailboxId);
 	const updateMailboxMutation = useUpdateMailbox();
+	const { data: modelsData, isLoading: modelsLoading } = useModels();
+	const modelOptions = modelsData?.models ?? [];
+	const serverDefaultModel = modelsData?.default ?? null;
+	const { data: whoamiTop } = useWhoami();
+	const isAdminUser = !!whoamiTop?.isAdmin;
+	const visibleTabs = SETTINGS_TABS.filter((t) => !t.adminOnly || isAdminUser);
 
 	const [activeTab, setActiveTab] = useState<SettingsTab>("account");
 	const [activeAgentId, setActiveAgentId] = useState<AgentId>(AGENTS[0].id);
@@ -193,7 +237,9 @@ export default function SettingsRoute() {
 	const [agentPrompt, setAgentPrompt] = useState("");
 	const [invoicePrompt, setInvoicePrompt] = useState("");
 	const [autoDraft, setAutoDraft] = useState(true);
-	const [agentModel, setAgentModel] = useState<string>(DEFAULT_MODEL);
+	// Per-agent model overrides. Empty string = "use server default".
+	const [emailReplyModel, setEmailReplyModel] = useState<string>(DEFAULT_MODEL);
+	const [invoiceModel, setInvoiceModel] = useState<string>(DEFAULT_MODEL);
 	const [rules, setRules] = useState<UIRule[]>([]);
 	const [isSaving, setIsSaving] = useState(false);
 	/** null = "use server defaults" (no allowlist); array = explicit subset. */
@@ -206,12 +252,15 @@ export default function SettingsRoute() {
 			setAgentPrompt(mailbox.settings?.agentSystemPrompt || "");
 			setInvoicePrompt(mailbox.settings?.invoiceAgentSystemPrompt || "");
 			setAutoDraft((mailbox.settings as Record<string, unknown> | undefined)?.autoDraft !== false);
-			const rawModel = (mailbox.settings as Record<string, unknown> | undefined)?.agentModel;
-			setAgentModel(
-				typeof rawModel === "string" && MODEL_OPTIONS.some((m) => m.value === rawModel)
-					? rawModel
-					: DEFAULT_MODEL,
-			);
+			const rawSettings = mailbox.settings as Record<string, unknown> | undefined;
+			const legacyModel = typeof rawSettings?.agentModel === "string" ? rawSettings.agentModel : "";
+			const rawEmailReplyModel = typeof rawSettings?.emailReplyModel === "string"
+				? rawSettings.emailReplyModel : "";
+			const rawInvoiceModel = typeof rawSettings?.invoiceModel === "string"
+				? rawSettings.invoiceModel : "";
+			// Per-agent: explicit field wins, else legacy shared field, else "" (server default).
+			setEmailReplyModel(rawEmailReplyModel || legacyModel || DEFAULT_MODEL);
+			setInvoiceModel(rawInvoiceModel || legacyModel || DEFAULT_MODEL);
 			setRules(loadRulesFromSettings(mailbox.settings as Record<string, unknown> | undefined));
 			const rawSkills = (mailbox.settings as Record<string, unknown> | undefined)
 				?.emailReplyEnabledSkills;
@@ -230,7 +279,15 @@ export default function SettingsRoute() {
 			agentSystemPrompt: agentPrompt.trim() || undefined,
 			invoiceAgentSystemPrompt: invoicePrompt.trim() || undefined,
 			autoDraft,
-			agentModel,
+			// Per-agent overrides. Empty string = "use server default" → drop
+			// the field so the reader falls back to legacy `agentModel`, then
+			// env.LLM_DEFAULT_MODEL.
+			emailReplyModel: emailReplyModel.trim() || undefined,
+			invoiceModel: invoiceModel.trim() || undefined,
+			// Stop writing the legacy shared `agentModel` — the per-agent
+			// fields above replace it. Existing values stay intact in the
+			// blob (we don't delete) so other readers still see them as
+			// fallback if needed.
 			rules: dumpRulesForSave(rules),
 			emailReplyEnabledSkills: emailReplyEnabledSkills ?? undefined,
 		};
@@ -282,7 +339,7 @@ export default function SettingsRoute() {
 				aria-label="Settings sections"
 				className="flex items-center gap-1 border-b border-kumo-line mb-6 -mx-4 px-4 md:-mx-8 md:px-8 overflow-x-auto"
 			>
-				{SETTINGS_TABS.map((t) => {
+				{visibleTabs.map((t) => {
 					const Icon = t.icon;
 					const active = activeTab === t.id;
 					return (
@@ -387,24 +444,44 @@ export default function SettingsRoute() {
 								</label>
 							)}
 
-							{activeAgent.hasModelOverride && (
+							{activeAgent.hasModelOverride && (() => {
+								// Per-agent model bound to the active agent's slot.
+								const activeModel = activeAgent.id === "invoice" ? invoiceModel : emailReplyModel;
+								const setActiveModel = activeAgent.id === "invoice" ? setInvoiceModel : setEmailReplyModel;
+								return (
 								<div>
 									<label className="block text-xs font-medium text-kumo-default mb-1.5">Model</label>
 									<select
-										value={agentModel}
-										onChange={(e) => setAgentModel(e.target.value)}
-										className="w-full rounded-lg border border-kumo-line bg-kumo-recessed px-3 py-2 text-xs text-kumo-default focus:outline-none focus:ring-1 focus:ring-kumo-ring"
+										value={activeModel}
+										onChange={(e) => setActiveModel(e.target.value)}
+										disabled={modelsLoading}
+										className="w-full rounded-lg border border-kumo-line bg-kumo-recessed px-3 py-2 text-xs text-kumo-default focus:outline-none focus:ring-1 focus:ring-kumo-ring disabled:opacity-50"
 									>
-										{MODEL_OPTIONS.map((m) => (
-											<option key={m.value} value={m.value}>{m.label}</option>
+										<option value="">
+											{modelsLoading
+												? "Loading models…"
+												: serverDefaultModel
+													? `(server default: ${serverDefaultModel})`
+													: "(server default)"}
+										</option>
+										{modelOptions.map((m) => (
+											<option key={m.id} value={m.id}>
+												{m.id}{m.owned_by ? ` — ${m.owned_by}` : ""}
+											</option>
 										))}
+										{activeModel && !modelOptions.find((m) => m.id === activeModel) && (
+											<option value={activeModel}>{activeModel} (not in current catalog)</option>
+										)}
 									</select>
 									<p className="text-xs text-kumo-subtle mt-1.5">
-										All models run on Cloudflare Workers AI (pay-per-neuron). Tool
-										calling support varies; swap if drafts look off.
+										Routes through the active LLM provider (Settings → System).
+										Each agent's model is independent — empty falls back to the
+										server default. Tool-calling support varies; swap if drafts
+										or invoice extractions look off.
 									</p>
 								</div>
-							)}
+								);
+							})()}
 
 							{/* System prompt */}
 							<div>
@@ -602,6 +679,22 @@ export default function SettingsRoute() {
 														</span>
 													</span>
 												</label>
+												<label className="flex items-start gap-2 text-xs text-kumo-default">
+													<input
+														type="checkbox"
+														className="mt-0.5 h-3.5 w-3.5 accent-kumo-primary"
+														checked={r.extractInvoice}
+														onChange={(e) => updateRule(idx, { extractInvoice: e.target.checked })}
+													/>
+													<span>
+														<span className="block">Extract invoice</span>
+														<span className="block text-[10px] text-kumo-subtle">
+															Parse Chinese 全电发票 / 增值税发票 XML attachments and persist
+															header + line items to the mailbox database. Runs alongside
+															Skip auto-draft.
+														</span>
+													</span>
+												</label>
 												<div>
 													<label className="block text-[10px] text-kumo-subtle mb-0.5">Move to folder</label>
 													<select
@@ -641,8 +734,11 @@ export default function SettingsRoute() {
 				{/* ── Members tab ── */}
 				{activeTab === "members" && mailboxId && <MembersCard mailboxId={mailboxId} />}
 
-				{/* Save (covers Account / Agents / Rules — Members has its own actions) */}
-				{activeTab !== "members" && (
+				{/* ── System tab (admin-only) ── */}
+				{activeTab === "system" && isAdminUser && <LlmProvidersCard />}
+
+				{/* Save (covers Account / Agents / Rules — Members + System have their own actions) */}
+				{activeTab !== "members" && activeTab !== "system" && (
 					<div className="flex justify-end">
 						<Button variant="primary" onClick={handleSave} loading={isSaving}>
 							Save Changes
@@ -1140,6 +1236,407 @@ function ChangePasswordCard() {
 // can send via `Authorization: Bearer aix_…`. The raw key is shown exactly
 // once, at creation. Revoking is instant (sets revoked_at; verifyApiKey
 // filters on isNull(revoked_at)).
+
+// ── LlmProvidersCard ───────────────────────────────────────────────
+//
+// Admin-only registry of OpenAI-compatible LLM endpoints. Exactly one row may
+// carry isDefault=1 and that's the provider EmailAgent / InvoiceAgent stream
+// against. When the table is empty the worker falls back to the env-var
+// configuration (LLM_BASE_URL / LLM_API_KEY / LLM_DEFAULT_MODEL).
+
+interface LlmProviderPublic {
+	id: string;
+	name: string;
+	baseUrl: string;
+	apiKeyMasked: string;
+	defaultModel: string;
+	enabled: boolean;
+	isDefault: boolean;
+	createdAt: number;
+	updatedAt: number;
+}
+
+function LlmProvidersCard() {
+	const toastManager = useKumoToastManager();
+	const qc = useQueryClient();
+	const { data: providers, isLoading } = useQuery({
+		queryKey: queryKeys.adminLlmProviders,
+		queryFn: () => api.adminListLlmProviders(),
+	});
+
+	const [editing, setEditing] = useState<LlmProviderPublic | null>(null);
+	const [creating, setCreating] = useState(false);
+
+	const refetch = () => {
+		qc.invalidateQueries({ queryKey: queryKeys.adminLlmProviders });
+		// Stale model dropdown caches need to drop too — switching the default
+		// provider changes the catalog seen by the Settings → Agents tab.
+		qc.invalidateQueries({ queryKey: queryKeys.models });
+	};
+
+	const handleDelete = async (p: LlmProviderPublic) => {
+		if (!confirm(`Delete provider "${p.name}"?`)) return;
+		try {
+			await api.adminDeleteLlmProvider(p.id);
+			toastManager.add({ title: `Deleted ${p.name}` });
+			refetch();
+		} catch (e) {
+			toastManager.add({
+				title: e instanceof ApiError ? e.message : "Delete failed",
+				variant: "error",
+			});
+		}
+	};
+
+	const handleSetDefault = async (p: LlmProviderPublic) => {
+		try {
+			await api.adminUpdateLlmProvider(p.id, { makeDefault: true });
+			toastManager.add({ title: `${p.name} is now the default` });
+			refetch();
+		} catch (e) {
+			toastManager.add({
+				title: e instanceof ApiError ? e.message : "Failed",
+				variant: "error",
+			});
+		}
+	};
+
+	const handleTest = async (p: LlmProviderPublic) => {
+		try {
+			const res = await api.adminTestLlmProvider(p.id);
+			toastManager.add({
+				title: res.ok
+					? `${p.name}: ${res.modelCount} models reachable`
+					: `${p.name}: connection failed`,
+				variant: res.ok ? "default" : "error",
+			});
+		} catch (e) {
+			toastManager.add({
+				title: e instanceof ApiError ? e.message : "Test failed",
+				variant: "error",
+			});
+		}
+	};
+
+	return (
+		<div className="bg-kumo-base border border-kumo-line rounded-lg p-4 space-y-4">
+			<div className="flex items-center justify-between">
+				<div className="flex items-center gap-2">
+					<GearSixIcon size={16} />
+					<span className="text-sm font-medium text-kumo-default">LLM providers</span>
+				</div>
+				<Button
+					variant="primary"
+					size="sm"
+					icon={<PlusIcon size={14} />}
+					onClick={() => { setCreating(true); setEditing(null); }}
+				>
+					Add provider
+				</Button>
+			</div>
+			<p className="text-xs text-kumo-subtle">
+				OpenAI-compatible endpoints (LiteLLM, OpenRouter, vendor APIs). Exactly one
+				provider can be marked as default — that's the one EmailAgent / InvoiceAgent
+				route to. When the list is empty the worker falls back to the
+				<code className="px-1 py-0.5 mx-1 rounded bg-kumo-recessed">LLM_BASE_URL</code>
+				env var configuration.
+			</p>
+
+			{(creating || editing) && (
+				<LlmProviderForm
+					initial={editing}
+					onClose={() => { setEditing(null); setCreating(false); }}
+					onSaved={() => { setEditing(null); setCreating(false); refetch(); }}
+				/>
+			)}
+
+			{isLoading ? (
+				<div className="flex justify-center py-4"><Loader size="sm" /></div>
+			) : !providers || providers.length === 0 ? (
+				<p className="text-xs text-kumo-subtle italic">
+					No providers configured. Worker is using <code>LLM_BASE_URL</code> env var.
+				</p>
+			) : (
+				<div className="overflow-x-auto rounded border border-kumo-line">
+					<table className="min-w-full text-xs">
+						<thead className="bg-kumo-recessed text-kumo-subtle uppercase tracking-wide text-[10px]">
+							<tr>
+								<th className="px-3 py-2 text-left">Name</th>
+								<th className="px-3 py-2 text-left">Endpoint</th>
+								<th className="px-3 py-2 text-left">Default model</th>
+								<th className="px-3 py-2 text-left">API key</th>
+								<th className="px-3 py-2 text-left">Status</th>
+								<th className="px-3 py-2" />
+							</tr>
+						</thead>
+						<tbody>
+							{providers.map((p) => (
+								<tr key={p.id} className="border-t border-kumo-line">
+									<td className="px-3 py-2 font-medium text-kumo-default">{p.name}</td>
+									<td className="px-3 py-2 font-mono text-kumo-subtle break-all">{p.baseUrl}</td>
+									<td className="px-3 py-2 font-mono text-kumo-subtle">{p.defaultModel}</td>
+									<td className="px-3 py-2 font-mono text-kumo-subtle">{p.apiKeyMasked}</td>
+									<td className="px-3 py-2">
+										<div className="flex items-center gap-1">
+											{p.isDefault && <Badge variant="success">default</Badge>}
+											{!p.enabled && <Badge variant="secondary">disabled</Badge>}
+										</div>
+									</td>
+									<td className="px-3 py-2 text-right">
+										<div className="flex items-center justify-end gap-1">
+											<Button
+												variant="ghost"
+												size="xs"
+												onClick={() => handleTest(p)}
+												aria-label={`Test ${p.name}`}
+											>
+												Test
+											</Button>
+											{!p.isDefault && (
+												<Button
+													variant="ghost"
+													size="xs"
+													onClick={() => handleSetDefault(p)}
+												>
+													Set default
+												</Button>
+											)}
+											<Button
+												variant="ghost"
+												size="xs"
+												onClick={() => { setEditing(p); setCreating(false); }}
+											>
+												Edit
+											</Button>
+											<Button
+												variant="ghost"
+												size="xs"
+												icon={<TrashIcon size={14} />}
+												onClick={() => handleDelete(p)}
+												aria-label={`Delete ${p.name}`}
+											>
+												Delete
+											</Button>
+										</div>
+									</td>
+								</tr>
+							))}
+						</tbody>
+					</table>
+				</div>
+			)}
+		</div>
+	);
+}
+
+function LlmProviderForm({
+	initial,
+	onClose,
+	onSaved,
+}: {
+	initial: LlmProviderPublic | null;
+	onClose: () => void;
+	onSaved: () => void;
+}) {
+	const toastManager = useKumoToastManager();
+	const isEdit = !!initial;
+	const [name, setName] = useState(initial?.name ?? "");
+	const [baseUrl, setBaseUrl] = useState(initial?.baseUrl ?? "");
+	const [apiKey, setApiKey] = useState("");
+	const [defaultModel, setDefaultModel] = useState(initial?.defaultModel ?? "");
+	const [enabled, setEnabled] = useState(initial?.enabled ?? true);
+	const [makeDefault, setMakeDefault] = useState(initial?.isDefault ?? !isEdit);
+	const [saving, setSaving] = useState(false);
+	const [discoveredModels, setDiscoveredModels] = useState<string[]>(() =>
+		// On open in edit mode, seed with the saved default model so the
+		// dropdown isn't empty before the first /v1/models round-trip lands.
+		initial?.defaultModel ? [initial.defaultModel] : [],
+	);
+	const [discovering, setDiscovering] = useState(false);
+
+	const handleDiscover = async () => {
+		setDiscovering(true);
+		try {
+			let modelIds: string[];
+			if (isEdit && initial && !apiKey.trim()) {
+				// Edit mode without a fresh key entered — use the stored creds via
+				// the per-id test endpoint.
+				const res = await api.adminTestLlmProvider(initial.id);
+				modelIds = res.modelIds;
+			} else {
+				const u = baseUrl.trim();
+				if (!u) {
+					toastManager.add({ title: "Endpoint URL is required first", variant: "error" });
+					return;
+				}
+				if (!apiKey.trim() && !isEdit) {
+					toastManager.add({ title: "API key is required first", variant: "error" });
+					return;
+				}
+				const res = await api.adminDiscoverLlmModels(u, apiKey);
+				modelIds = res.models.map((m) => m.id);
+			}
+			if (modelIds.length === 0) {
+				toastManager.add({ title: "Endpoint reachable but returned no models", variant: "error" });
+				return;
+			}
+			setDiscoveredModels(modelIds);
+			// Auto-pick the existing default if it exists in the catalog,
+			// otherwise leave whatever the user typed.
+			if (defaultModel && !modelIds.includes(defaultModel)) {
+				toastManager.add({
+					title: `Current model "${defaultModel}" is not in the endpoint's catalog`,
+				});
+			}
+			toastManager.add({ title: `Found ${modelIds.length} models` });
+		} catch (e) {
+			toastManager.add({
+				title: e instanceof ApiError ? e.message : "Discover failed",
+				variant: "error",
+			});
+		} finally {
+			setDiscovering(false);
+		}
+	};
+
+	// Auto-discover on open for edit mode (uses stored creds, no extra typing).
+	useEffect(() => {
+		if (!isEdit || !initial) return;
+		void handleDiscover();
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
+
+	const handleSubmit = async () => {
+		const n = name.trim();
+		const u = baseUrl.trim();
+		const m = defaultModel.trim();
+		if (!n || !u || !m) {
+			toastManager.add({ title: "Name, endpoint and default model are required", variant: "error" });
+			return;
+		}
+		if (!isEdit && !apiKey.trim()) {
+			toastManager.add({ title: "API key is required for new providers", variant: "error" });
+			return;
+		}
+		setSaving(true);
+		try {
+			if (isEdit && initial) {
+				await api.adminUpdateLlmProvider(initial.id, {
+					name: n,
+					baseUrl: u,
+					...(apiKey ? { apiKey } : {}),
+					defaultModel: m,
+					enabled,
+					makeDefault,
+				});
+			} else {
+				await api.adminCreateLlmProvider({
+					name: n,
+					baseUrl: u,
+					apiKey: apiKey,
+					defaultModel: m,
+					enabled,
+					makeDefault,
+				});
+			}
+			toastManager.add({ title: isEdit ? `Updated ${n}` : `Added ${n}` });
+			onSaved();
+		} catch (e) {
+			toastManager.add({
+				title: e instanceof ApiError ? e.message : "Save failed",
+				variant: "error",
+			});
+		} finally {
+			setSaving(false);
+		}
+	};
+
+	return (
+		<div className="rounded border border-kumo-line bg-kumo-recessed p-3 space-y-3">
+			<div className="text-sm font-medium text-kumo-default">
+				{isEdit ? `Edit "${initial!.name}"` : "Add LLM provider"}
+			</div>
+			<Input
+				label="Name"
+				placeholder="e.g. LiteLLM main"
+				value={name}
+				onChange={(e) => setName(e.target.value)}
+			/>
+			<Input
+				label="Endpoint base URL"
+				placeholder="https://litellm.example.com"
+				value={baseUrl}
+				onChange={(e) => setBaseUrl(e.target.value)}
+			/>
+			<Input
+				label={isEdit ? "API key (leave blank to keep current)" : "API key"}
+				type="password"
+				placeholder={isEdit ? initial?.apiKeyMasked ?? "" : "sk-..."}
+				value={apiKey}
+				onChange={(e) => setApiKey(e.target.value)}
+				autoComplete="new-password"
+			/>
+			<div>
+				<div className="flex items-end justify-between gap-2 mb-1">
+					<label className="block text-xs text-kumo-subtle">Default model</label>
+					<button
+						type="button"
+						onClick={handleDiscover}
+						disabled={discovering || !baseUrl.trim() || (!isEdit && !apiKey.trim())}
+						className="text-[11px] text-kumo-link hover:underline disabled:opacity-40 disabled:no-underline"
+					>
+						{discovering ? "Discovering…" : "Discover from /v1/models"}
+					</button>
+				</div>
+				{discoveredModels.length > 0 ? (
+					<select
+						value={defaultModel}
+						onChange={(e) => setDefaultModel(e.target.value)}
+						className="w-full bg-kumo-base border border-kumo-line rounded px-2 py-1 text-xs text-kumo-default"
+					>
+						<option value="">(none — pick one)</option>
+						{defaultModel && !discoveredModels.includes(defaultModel) && (
+							<option value={defaultModel}>{defaultModel} (not in catalog)</option>
+						)}
+						{discoveredModels.map((m) => (
+							<option key={m} value={m}>{m}</option>
+						))}
+					</select>
+				) : (
+					<Input
+						placeholder="e.g. glm-5.1 — or fill base URL + key, then click Discover"
+						value={defaultModel}
+						onChange={(e) => setDefaultModel(e.target.value)}
+					/>
+				)}
+			</div>
+			<div className="flex flex-wrap items-center gap-4">
+				<label className="flex items-center gap-2 text-xs text-kumo-default">
+					<input
+						type="checkbox"
+						checked={enabled}
+						onChange={(e) => setEnabled(e.target.checked)}
+					/>
+					Enabled
+				</label>
+				<label className="flex items-center gap-2 text-xs text-kumo-default">
+					<input
+						type="checkbox"
+						checked={makeDefault}
+						onChange={(e) => setMakeDefault(e.target.checked)}
+					/>
+					Set as default
+				</label>
+			</div>
+			<div className="flex justify-end gap-2 pt-1">
+				<Button variant="secondary" size="sm" onClick={onClose}>Cancel</Button>
+				<Button variant="primary" size="sm" onClick={handleSubmit} loading={saving}>
+					{isEdit ? "Save" : "Add provider"}
+				</Button>
+			</div>
+		</div>
+	);
+}
 
 function ApiKeysCard() {
 	const toastManager = useKumoToastManager();

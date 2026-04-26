@@ -10,18 +10,34 @@ import AuthShell from "~/components/AuthShell";
 import { queryKeys } from "~/queries/keys";
 import api, { ApiError } from "~/services/api";
 
+/**
+ * Reduce a client-supplied `next` URL parameter to a safe internal path.
+ * Mirrors workers/routes/auth.ts:sanitizeInternalNext — kept in lockstep so a
+ * value that the server accepts is also one the client will navigate to.
+ */
+function safeNext(raw: string | null): string {
+	if (!raw) return "/";
+	if (raw.length > 2048) return "/";
+	if (!raw.startsWith("/")) return "/";
+	if (raw.startsWith("//") || raw.startsWith("/\\")) return "/";
+	const firstSegment = raw.split("/")[1] ?? "";
+	if (firstSegment.includes(":") && /^[a-z][a-z0-9+.\-]*:/i.test(firstSegment)) return "/";
+	return raw;
+}
+
 export default function MagicRoute() {
 	const [params] = useSearchParams();
 	const navigate = useNavigate();
 	const qc = useQueryClient();
 	const token = params.get("token") ?? "";
+	const next = safeNext(params.get("next"));
 	const [error, setError] = useState<string | null>(null);
 
 	const consume = useMutation({
 		mutationFn: (t: string) => api.consumeMagicLink(t),
 		onSuccess: () => {
 			qc.invalidateQueries({ queryKey: queryKeys.whoami });
-			navigate("/");
+			navigate(next);
 		},
 		onError: (e) => setError(e instanceof ApiError ? e.message : "Sign-in link is invalid or expired"),
 	});

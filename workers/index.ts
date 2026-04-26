@@ -33,10 +33,11 @@ import {
 	listUserMailboxes,
 	normalizeEmail,
 	removeMailboxMember,
+	setMailboxOwner,
 	signInviteToken,
 	verifyInviteToken,
 } from "./lib/auth";
-import { findUserById, listUsers, setRole } from "./lib/users";
+import { findUserByEmail, findUserById, listUsers, setRole } from "./lib/users";
 import {
 	issueApiKey,
 	listApiKeys,
@@ -51,6 +52,15 @@ import {
 	normalizeRuleAction,
 	serializeInputSchema,
 } from "./lib/capabilities";
+import { listLlmModels } from "./lib/llm-models";
+import {
+	createProvider,
+	deleteProvider,
+	getProvider,
+	listProviders,
+	toPublic,
+	updateProvider,
+} from "./lib/llm-providers";
 
 type AppContext = Context<MailboxContext>;
 
@@ -121,6 +131,22 @@ app.get("/api/v1/config", (c) => {
 	const domains = domainsRaw.split(",").map((d) => d.trim()).filter(Boolean);
 	const emailAddresses = c.env.EMAIL_ADDRESSES ?? [];
 	return c.json({ domains, emailAddresses });
+});
+
+// LLM model catalog — populated from `${LLM_BASE_URL}/v1/models` and cached
+// in-process for 5 minutes. Authenticated route so anonymous callers can't
+// poll the upstream endpoint via us. ?force=1 bypasses the cache.
+app.get("/api/v1/models", async (c) => {
+	let user;
+	try { user = c.get("user") ?? getUserFromRequest(c); }
+	catch (e) { if (e instanceof AuthzError) return c.json({ error: e.message }, e.status); throw e; }
+	void user;
+	const force = c.req.query("force") === "1";
+	const models = await listLlmModels(c.env, { force });
+	return c.json({
+		default: c.env.LLM_DEFAULT_MODEL ?? null,
+		models,
+	});
 });
 
 app.get("/api/v1/whoami", async (c) => {
@@ -240,6 +266,19 @@ app.post("/api/v1/mailboxes", async (c) => {
 	try { user = c.get("user") ?? getUserFromRequest(c); }
 	catch (e) { if (e instanceof AuthzError) return c.json({ error: e.message }, e.status); throw e; }
 
+	// When EMAIL_ADDRESSES is configured, the instance is in "fixed mailbox"
+	// mode (e.g. shared finance@/support@ inboxes). Self-serve creation is
+	// disabled in that mode so the first user to log in cannot become owner of
+	// a shared mailbox by accident — admins must provision via
+	// POST /api/v1/admin/users/:id/mailboxes.
+	const allowedAddresses = (c.env.EMAIL_ADDRESSES ?? []) as string[];
+	if (allowedAddresses.length > 0 && !user.system && !isAdmin(c.env, user)) {
+		return c.json({
+			error:
+				"Self-serve mailbox creation is disabled when EMAIL_ADDRESSES is configured. Ask an admin to provision your mailbox.",
+		}, 403);
+	}
+
 	return createMailboxForOwner(
 		c,
 		await c.req.json().catch(() => ({})),
@@ -295,6 +334,32 @@ app.get("/api/v1/mailboxes/:mailboxId/capabilities", async (c) => {
 	return c.json({ capabilities });
 });
 
+/**
+ * Stable fingerprint of every `core:webhook` action embedded in a `rules`
+ * array. Used to detect whether a settings PATCH is trying to add, remove, or
+ * modify a webhook integration — those changes require mailbox-owner authority,
+ * everything else stays member-writable.
+ */
+function webhookActionsFingerprint(rules: unknown): string {
+	if (!Array.isArray(rules)) return "[]";
+	const projected = rules.map((rule) => {
+		if (!rule || typeof rule !== "object") return [];
+		const then = (rule as Record<string, unknown>).then;
+		if (!then || typeof then !== "object") return [];
+		const actions = (then as Record<string, unknown>).actions;
+		if (!Array.isArray(actions)) return [];
+		return actions
+			.filter(
+				(a): a is { capabilityId: string; params?: unknown } =>
+					!!a &&
+					typeof a === "object" &&
+					(a as Record<string, unknown>).capabilityId === "core:webhook",
+			)
+			.map((a) => ({ capabilityId: a.capabilityId, params: a.params ?? null }));
+	});
+	return JSON.stringify(projected);
+}
+
 app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 	const mailboxId = c.req.param("mailboxId")!;
 	let user;
@@ -308,6 +373,19 @@ app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 	// Preserve the existing owner/members from R2.
 	const { owner: _o, members: _m, ...clientClean } = settings;
 	const prev = (await existing.json()) as Record<string, unknown>;
+
+	// Webhook actions are integration-level power (outbound HTTP). Adding,
+	// removing, or modifying any `core:webhook` action requires the mailbox
+	// owner — ordinary members can still edit other rules. We compare a stable
+	// fingerprint instead of just looking for "any webhook present" so an owner
+	// who set up a webhook does not lock members out of editing the rest of the
+	// rules afterwards.
+	const incomingWebhooks = webhookActionsFingerprint(clientClean.rules);
+	const existingWebhooks = webhookActionsFingerprint(prev.rules);
+	if (incomingWebhooks !== existingWebhooks) {
+		try { await assertMailboxOwner(c.env, mailboxId, user); } catch (e) { return handleAuthz(c, e); }
+	}
+
 	const merged: Record<string, unknown> = {
 		...clientClean,
 		owner: prev.owner,
@@ -448,6 +526,26 @@ app.post("/api/v1/admin/users/:id/mailboxes", async (c) => {
 	);
 });
 
+app.post("/api/v1/admin/mailboxes/:mailboxId/owner", async (c) => {
+	let user;
+	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
+	if (!isAdmin(c.env, user)) return c.json({ error: "Admin access required" }, 403);
+	const mailboxId = c.req.param("mailboxId")!;
+	const body = (await c.req.json().catch(() => ({}))) as { email?: unknown };
+	if (typeof body.email !== "string" || !body.email.includes("@")) {
+		return c.json({ error: "email required" }, 400);
+	}
+	const targetEmail = normalizeEmail(body.email);
+	const target = await findUserByEmail(c.env, targetEmail);
+	if (!target) {
+		return c.json({ error: "Target user not found — they must register first" }, 404);
+	}
+	try {
+		const acl = await setMailboxOwner(c.env, mailboxId, targetEmail);
+		return c.json({ id: mailboxId, owner: acl.owner ?? null, members: acl.members });
+	} catch (e) { return handleAuthz(c, e); }
+});
+
 app.get("/api/v1/admin/mailboxes", async (c) => {
 	let user;
 	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
@@ -469,6 +567,107 @@ app.get("/api/v1/admin/mailboxes", async (c) => {
 		};
 	}));
 	return c.json(detailed);
+});
+
+// -- LLM providers (admin) ------------------------------------------
+//
+// Manage the OpenAI-compatible endpoints EmailAgent / InvoiceAgent stream
+// against. Backed by D1 (`llm_providers` table). At most one row may carry
+// `isDefault=1` and that's the provider in effect for inference. When the
+// table is empty the worker falls back to env-var configuration
+// (`LLM_BASE_URL` / `LLM_API_KEY` / `LLM_DEFAULT_MODEL`).
+
+function requireAdmin(c: AppContext): { ok: true; user: ReturnType<typeof resolveUser> } | Response {
+	let user;
+	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
+	if (!isAdmin(c.env, user)) return c.json({ error: "Admin access required" }, 403);
+	return { ok: true, user };
+}
+
+app.get("/api/v1/admin/llm-providers", async (c) => {
+	const guard = requireAdmin(c);
+	if (guard instanceof Response) return guard;
+	const all = await listProviders(c.env);
+	return c.json(all.map(toPublic));
+});
+
+app.post("/api/v1/admin/llm-providers", async (c) => {
+	const guard = requireAdmin(c);
+	if (guard instanceof Response) return guard;
+	const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+	const name = typeof body.name === "string" ? body.name.trim() : "";
+	const baseUrl = typeof body.baseUrl === "string" ? body.baseUrl.trim() : "";
+	const apiKey = typeof body.apiKey === "string" ? body.apiKey : "";
+	const defaultModel = typeof body.defaultModel === "string" ? body.defaultModel.trim() : "";
+	if (!name || !baseUrl || !apiKey || !defaultModel) {
+		return c.json({ error: "name, baseUrl, apiKey, defaultModel are required" }, 400);
+	}
+	const created = await createProvider(c.env, {
+		name,
+		baseUrl,
+		apiKey,
+		defaultModel,
+		enabled: body.enabled !== false,
+		makeDefault: body.makeDefault === true,
+	});
+	return c.json(toPublic(created), 201);
+});
+
+app.put("/api/v1/admin/llm-providers/:id", async (c) => {
+	const guard = requireAdmin(c);
+	if (guard instanceof Response) return guard;
+	const id = c.req.param("id")!;
+	const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+	const patch: Parameters<typeof updateProvider>[2] = {};
+	if (typeof body.name === "string") patch.name = body.name.trim();
+	if (typeof body.baseUrl === "string") patch.baseUrl = body.baseUrl.trim();
+	// `apiKey: ""` is treated as "no change"; non-empty string rotates the key.
+	if (typeof body.apiKey === "string" && body.apiKey) patch.apiKey = body.apiKey;
+	if (typeof body.defaultModel === "string") patch.defaultModel = body.defaultModel.trim();
+	if (typeof body.enabled === "boolean") patch.enabled = body.enabled;
+	if (typeof body.makeDefault === "boolean") patch.makeDefault = body.makeDefault;
+	const updated = await updateProvider(c.env, id, patch);
+	if (!updated) return c.json({ error: "Provider not found" }, 404);
+	return c.json(toPublic(updated));
+});
+
+app.delete("/api/v1/admin/llm-providers/:id", async (c) => {
+	const guard = requireAdmin(c);
+	if (guard instanceof Response) return guard;
+	const ok = await deleteProvider(c.env, c.req.param("id")!);
+	if (!ok) return c.json({ error: "Provider not found" }, 404);
+	return c.body(null, 204);
+});
+
+// "Test connection" — calls the provider's /v1/models with the stored creds
+// and returns whether it succeeded + how many models were visible. Used by
+// the System tab UI to validate a config without saving it.
+app.post("/api/v1/admin/llm-providers/:id/test", async (c) => {
+	const guard = requireAdmin(c);
+	if (guard instanceof Response) return guard;
+	const provider = await getProvider(c.env, c.req.param("id")!);
+	if (!provider) return c.json({ error: "Provider not found" }, 404);
+	const models = await listLlmModels(c.env, {
+		baseUrl: provider.baseUrl,
+		apiKey: provider.apiKey,
+		force: true,
+	});
+	return c.json({ ok: models.length > 0, modelCount: models.length, modelIds: models.slice(0, 50).map((m) => m.id) });
+});
+
+// "Discover models" — same as /test but for a not-yet-saved provider. Lets
+// the System tab UI populate the Default model dropdown from the actual
+// `/v1/models` of whatever endpoint the admin just typed in, before they
+// commit the row.
+app.post("/api/v1/admin/llm-providers/discover", async (c) => {
+	const guard = requireAdmin(c);
+	if (guard instanceof Response) return guard;
+	const body = (await c.req.json().catch(() => ({}))) as { baseUrl?: unknown; apiKey?: unknown };
+	const baseUrl = typeof body.baseUrl === "string" ? body.baseUrl.trim() : "";
+	const apiKey = typeof body.apiKey === "string" ? body.apiKey : "";
+	if (!baseUrl) return c.json({ error: "baseUrl is required" }, 400);
+	const models = await listLlmModels(c.env, { baseUrl, apiKey, force: true });
+	return c.json({ ok: models.length > 0, modelCount: models.length, models });
 });
 
 // -- Emails ---------------------------------------------------------

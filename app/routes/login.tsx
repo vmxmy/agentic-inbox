@@ -38,7 +38,11 @@ export default function LoginRoute() {
 	});
 
 	const magic = useMutation({
-		mutationFn: (target: string) => api.requestMagicLink(target),
+		mutationFn: (target: string) =>
+			// `next` is preserved through the email round-trip so the user lands
+			// on the page they originally requested even if they open the link
+			// on a different device.
+			api.requestMagicLink(target, next !== "/" ? next : undefined),
 		onSuccess: (_data, target) => {
 			setMagicSentTo(target);
 			setResendIn(RESEND_COOLDOWN_SECONDS);
