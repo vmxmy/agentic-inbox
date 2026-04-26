@@ -181,24 +181,34 @@ export const AGENTS_BY_ID: Record<AgentId, AgentDef> = {
 
 export const DEFAULT_AGENT_ID: AgentId = "email";
 
-const SESSION_KEY = "agentic-inbox:lastAgent";
-
-/**
- * Read the last-used agent id from sessionStorage, falling back to the
- * default. Used to pick the routing target when the user sends without
- * an explicit @-mention.
- */
-export function readLastAgent(): AgentId {
-	if (typeof window === "undefined") return DEFAULT_AGENT_ID;
-	const raw = window.sessionStorage.getItem(SESSION_KEY);
-	return raw === "email" || raw === "invoice" ? raw : DEFAULT_AGENT_ID;
-}
-
-export function writeLastAgent(id: AgentId): void {
-	if (typeof window === "undefined") return;
-	window.sessionStorage.setItem(SESSION_KEY, id);
-}
-
 export function isAgentId(s: string): s is AgentId {
 	return s === "email" || s === "invoice";
+}
+
+const SESSION_KEY_PREFIX = "agentic-inbox:lastAgent";
+
+function sessionKey(mailboxId?: string | null): string {
+	return mailboxId
+		? `${SESSION_KEY_PREFIX}:${mailboxId}`
+		: SESSION_KEY_PREFIX;
+}
+
+/**
+ * Read the last-used agent id from sessionStorage for the given mailbox,
+ * falling back to the default. Used to pick the routing target when the
+ * user sends without an explicit @-mention. Mailbox-scoped so switching
+ * mailboxes doesn't carry over the previous mailbox's preference.
+ */
+export function readLastAgent(mailboxId?: string | null): AgentId {
+	if (typeof window === "undefined") return DEFAULT_AGENT_ID;
+	const raw = window.sessionStorage.getItem(sessionKey(mailboxId));
+	return raw && isAgentId(raw) ? raw : DEFAULT_AGENT_ID;
+}
+
+export function writeLastAgent(
+	id: AgentId,
+	mailboxId?: string | null,
+): void {
+	if (typeof window === "undefined") return;
+	window.sessionStorage.setItem(sessionKey(mailboxId), id);
 }

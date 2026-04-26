@@ -38,8 +38,32 @@ function LazyUnifiedAgentPanel() {
 	return <Panel />;
 }
 
+type AgentSidebarTab = "chat" | "mcp";
+
+const TAB_STORAGE_KEY = "agentic-inbox:agentSidebarTab";
+
+function isTab(value: string): value is AgentSidebarTab {
+	return value === "chat" || value === "mcp";
+}
+
+function readInitialTab(): AgentSidebarTab {
+	if (typeof window === "undefined") return "chat";
+	const raw = window.sessionStorage.getItem(TAB_STORAGE_KEY);
+	return raw && isTab(raw) ? raw : "chat";
+}
+
 export default function AgentSidebar() {
-	const [activeTab, setActiveTab] = useState<"chat" | "mcp">("chat");
+	// Lazy initializer is SSR-safe (`readInitialTab` guards `window`) and
+	// preserves the last-active tab across sidebar remounts within the
+	// same session. We persist on change rather than on unmount so quick
+	// remounts (e.g. route transitions) don't lose the value.
+	const [activeTab, setActiveTab] = useState<AgentSidebarTab>(readInitialTab);
+
+	useEffect(() => {
+		if (typeof window !== "undefined") {
+			window.sessionStorage.setItem(TAB_STORAGE_KEY, activeTab);
+		}
+	}, [activeTab]);
 
 	return (
 		<div className="flex flex-col h-full">

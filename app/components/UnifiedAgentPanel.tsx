@@ -17,7 +17,6 @@ import {
 	AGENTS_BY_ID,
 	type AgentDef,
 	type AgentId,
-	DEFAULT_AGENT_ID,
 	readLastAgent,
 	writeLastAgent,
 } from "./agent-chat/agents";
@@ -26,6 +25,27 @@ import {
 	MessageBubble,
 } from "./agent-chat/MessageBubble";
 import MentionAutocomplete from "./agent-chat/MentionAutocomplete";
+
+// ── Typed accessors for fields not surfaced by the AI SDK v6 UIMessage ─
+//
+// AI SDK v6's `UIMessage` union deliberately hides a few runtime fields
+// that the AIChatAgent persist path stamps in (`createdAt`) or that vary
+// between part shapes (`output` / `result`). Centralising the casts here
+// keeps `as unknown as` out of the hot path and makes the assumed shape
+// explicit so a future SDK bump is easy to audit.
+
+type WithCreatedAt = { createdAt?: string | number | Date };
+type ToolPartShape = { result?: unknown; output?: unknown };
+
+function getCreatedAt(msg: UIMessage): number {
+	const stamp = (msg as unknown as WithCreatedAt).createdAt;
+	return stamp ? new Date(stamp).getTime() : 0;
+}
+
+function getToolResult(part: UIMessage["parts"][number]): unknown {
+	const p = part as unknown as ToolPartShape;
+	return p.output ?? p.result;
+}
 
 // ── Email-agent-specific draft action footer ─────────────────────────
 //
@@ -37,6 +57,26 @@ function hasDraftReplyTool(message: UIMessage): boolean {
 	return message.parts.some(
 		(part) => getToolNameFromPart(part) === "draft_reply",
 	);
+}
+
+interface DraftReplyData {
+	to?: string;
+	subject?: string;
+	body?: string;
+	id?: string;
+}
+
+function isDraftReplyData(value: unknown): value is DraftReplyData {
+	return typeof value === "object" && value !== null;
+}
+
+function findDraftReplyData(message: UIMessage): DraftReplyData | null {
+	for (const part of message.parts) {
+		if (getToolNameFromPart(part) !== "draft_reply") continue;
+		const result = getToolResult(part);
+		if (isDraftReplyData(result)) return result;
+	}
+	return null;
 }
 
 function DraftActions({
@@ -148,12 +188,19 @@ function UnifiedChatConnected({
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const [inputValue, setInputValue] = useState("");
 	const [pendingAgent, setPendingAgent] = useState<AgentId | null>(null);
-	const [defaultAgent, setDefaultAgent] = useState<AgentId>(DEFAULT_AGENT_ID);
+	// Lazy initializer reads sessionStorage on first render. `readLastAgent`
+	// itself guards `typeof window === "undefined"` for SSR, so this is safe
+	// and avoids a first-paint mis-routing race vs. an effect-based init.
+	const [defaultAgent, setDefaultAgent] = useState<AgentId>(() =>
+		readLastAgent(mailboxId),
+	);
 	const { startCompose } = useUIStore();
 
+	// If the route changes mailbox underneath us (e.g. user navigates between
+	// mailboxes without unmounting the panel), re-read the per-mailbox preference.
 	useEffect(() => {
-		setDefaultAgent(readLastAgent());
-	}, []);
+		setDefaultAgent(readLastAgent(mailboxId));
+	}, [mailboxId]);
 
 	// Two parallel agent connections — each agent owns its own SQLite chat
 	// history in its DO, and we merge the two message streams into a single
@@ -180,18 +227,19 @@ function UnifiedChatConnected({
 			),
 		];
 		return tagged.sort((a, b) => {
-			// `createdAt` is set by the AIChatAgent persist path (see
-			// workers/agent/index.ts:persistMessages) but the AI-SDK v6
-			// UIMessage type doesn't surface it; cast through any to read
-			// the runtime field. Falls back to 0 if missing — equivalent to
-			// "stay in array order" since stable-ish sort.
-			const at = (a.msg as any).createdAt
-				? new Date((a.msg as any).createdAt).getTime()
-				: 0;
-			const bt = (b.msg as any).createdAt
-				? new Date((b.msg as any).createdAt).getTime()
-				: 0;
-			return at - bt;
+			// Primary key: persist-stamped `createdAt`. Falls back to 0
+			// (see `getCreatedAt`).
+			const dt = getCreatedAt(a.msg) - getCreatedAt(b.msg);
+			if (dt !== 0) return dt;
+			// Secondary keys keep cross-agent ordering deterministic when
+			// timestamps tie or are both missing — otherwise the visual
+			// order would depend on which DO's stream landed first.
+			if (a.agentId !== b.agentId) {
+				return a.agentId < b.agentId ? -1 : 1;
+			}
+			if (a.msg.id < b.msg.id) return -1;
+			if (a.msg.id > b.msg.id) return 1;
+			return 0;
 		});
 	}, [emailChat.messages, invoiceChat.messages]);
 
@@ -205,7 +253,7 @@ function UnifiedChatConnected({
 	const sendToAgent = (agentId: AgentId, text: string) => {
 		if (agentId === "email") emailChat.sendMessage({ text });
 		else invoiceChat.sendMessage({ text });
-		writeLastAgent(agentId);
+		writeLastAgent(agentId, mailboxId);
 		setDefaultAgent(agentId);
 	};
 
@@ -223,7 +271,16 @@ function UnifiedChatConnected({
 	};
 
 	const handleClearAll = () => {
-		if (window.confirm("Clear all chat history (both agents)?")) {
+		// `setMessages([])` resets the local UIMessage[] state. The DO's
+		// SQLite-backed history (see workers/agent/index.ts:persistMessages)
+		// may persist across reloads depending on the AIChatAgent SDK
+		// path — surface that uncertainty in the prompt rather than
+		// promising a destructive backend wipe we can't verify here.
+		if (
+			window.confirm(
+				"Clear chat history for both agents on this device? Server-side history may reappear on reload.",
+			)
+		) {
 			emailChat.setMessages([]);
 			invoiceChat.setMessages([]);
 		}
@@ -233,21 +290,7 @@ function UnifiedChatConnected({
 		if (!hasDraftReplyTool(msg)) return null;
 		// Extract draft data from the draft_reply tool result so the "Edit
 		// & send" button can hand off the right payload to the composer.
-		let draftData: {
-			to?: string;
-			subject?: string;
-			body?: string;
-			id?: string;
-		} | null = null;
-		for (const part of msg.parts) {
-			if (
-				(part as any).toolName === "draft_reply" &&
-				(part as any).result
-			) {
-				draftData = (part as any).result;
-				break;
-			}
-		}
+		const draftData = findDraftReplyData(msg);
 		return (
 			<DraftActions
 				disabled={isAnyStreaming}
@@ -392,6 +435,19 @@ export default function UnifiedAgentPanel() {
 			});
 	}, []);
 
+	// Without a concrete mailbox we must NOT fall back to a shared DO name
+	// (e.g. `"default"`) — that would let chat history and tool calls leak
+	// across users. Render a placeholder until the route resolves.
+	if (!mailboxId) {
+		return (
+			<div className="flex flex-col items-center justify-center h-full gap-2 px-4 text-center">
+				<span className="text-xs text-kumo-subtle">
+					Open a mailbox to chat with agents.
+				</span>
+			</div>
+		);
+	}
+
 	if (loadError) {
 		return (
 			<div className="flex flex-col items-center justify-center h-full gap-2 px-4 text-center">
@@ -411,7 +467,7 @@ export default function UnifiedAgentPanel() {
 
 	return (
 		<UnifiedChatConnected
-			mailboxId={mailboxId ?? "default"}
+			mailboxId={mailboxId}
 			useAgent={hooks.useAgent}
 			useAgentChat={hooks.useAgentChat}
 		/>
