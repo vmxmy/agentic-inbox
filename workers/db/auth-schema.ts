@@ -57,6 +57,28 @@ export const emailTokens = sqliteTable(
 	}),
 );
 
+export const apiKeys = sqliteTable(
+	"api_keys",
+	{
+		id: text("id").primaryKey(),
+		userId: text("user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" }),
+		name: text("name").notNull(),
+		prefix: text("prefix").notNull(),
+		keyHash: text("key_hash").notNull().unique(),
+		lastUsedAt: integer("last_used_at"),
+		expiresAt: integer("expires_at"),
+		revokedAt: integer("revoked_at"),
+		createdAt: integer("created_at").notNull(),
+	},
+	(t) => ({
+		userIdx: index("api_keys_user_idx").on(t.userId),
+		prefixIdx: index("api_keys_prefix_idx").on(t.prefix),
+	}),
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type EmailTokenRow = typeof emailTokens.$inferSelect;
+export type ApiKeyRow = typeof apiKeys.$inferSelect;

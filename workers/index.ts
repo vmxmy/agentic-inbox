@@ -37,6 +37,11 @@ import {
 	verifyInviteToken,
 } from "./lib/auth";
 import { findUserById, listUsers, setRole } from "./lib/users";
+import {
+	issueApiKey,
+	listApiKeys,
+	revokeApiKey,
+} from "./lib/api-keys";
 import { getAgentConfig } from "./lib/agent-config";
 import { evaluateRules } from "./lib/rules";
 import { extensionOf, extractAttachmentsInline } from "./lib/attachment-extract";
@@ -123,6 +128,54 @@ app.get("/api/v1/whoami", (c) => {
 		role: user.role,
 		system: user.system ?? false,
 	});
+});
+
+// -- API keys (programmatic / MCP access) --------------------------
+// All endpoints below require a logged-in user; the middleware in
+// workers/app.ts has already set c.var.user. We deliberately refuse to
+// create / revoke keys when the caller itself authenticated via an API key,
+// so a leaked key can't be used to mint more keys or hide its tracks.
+
+function isApiKeyCaller(c: AppContext): boolean {
+	const authz = c.req.header("authorization") ?? "";
+	return authz.toLowerCase().startsWith("bearer ");
+}
+
+app.get("/api/v1/api-keys", async (c) => {
+	let user;
+	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
+	if (user.system) return c.json({ error: "System callers cannot list keys" }, 403);
+	const keys = await listApiKeys(c.env, user.id);
+	return c.json(keys);
+});
+
+app.post("/api/v1/api-keys", async (c) => {
+	let user;
+	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
+	if (user.system) return c.json({ error: "System callers cannot create keys" }, 403);
+	if (isApiKeyCaller(c)) {
+		return c.json({ error: "API keys cannot be created from a Bearer-token session" }, 403);
+	}
+	const body = (await c.req.json().catch(() => ({}))) as { name?: unknown; expiresAt?: unknown };
+	const name = typeof body.name === "string" ? body.name.trim() : "";
+	if (!name) return c.json({ error: "name is required" }, 400);
+	const expiresAt = typeof body.expiresAt === "number" && body.expiresAt > Date.now()
+		? body.expiresAt
+		: null;
+	const { rawKey, record } = await issueApiKey(c.env, user.id, name, { expiresAt });
+	return c.json({ key: rawKey, record }, 201);
+});
+
+app.delete("/api/v1/api-keys/:id", async (c) => {
+	let user;
+	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
+	if (user.system) return c.json({ error: "System callers cannot revoke keys" }, 403);
+	if (isApiKeyCaller(c)) {
+		return c.json({ error: "API keys cannot be revoked from a Bearer-token session" }, 403);
+	}
+	const ok = await revokeApiKey(c.env, user.id, c.req.param("id")!);
+	if (!ok) return c.json({ error: "Key not found" }, 404);
+	return c.body(null, 204);
 });
 
 // -- Mailboxes ------------------------------------------------------

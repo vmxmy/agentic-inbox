@@ -137,6 +137,32 @@ const api = {
 	resetPassword: (token: string, password: string) =>
 		post<{ ok: true }>("/api/v1/auth/password/reset", { token, password }),
 
+	// API keys (Bearer tokens for MCP / programmatic clients)
+	listApiKeys: () =>
+		get<Array<{
+			id: string;
+			name: string;
+			prefix: string;
+			lastUsedAt: number | null;
+			expiresAt: number | null;
+			revokedAt: number | null;
+			createdAt: number;
+		}>>("/api/v1/api-keys"),
+	createApiKey: (name: string, expiresAt?: number) =>
+		post<{
+			key: string;
+			record: {
+				id: string;
+				name: string;
+				prefix: string;
+				lastUsedAt: number | null;
+				expiresAt: number | null;
+				revokedAt: number | null;
+				createdAt: number;
+			};
+		}>("/api/v1/api-keys", { name, expiresAt }),
+	revokeApiKey: (id: string) => del<void>(`/api/v1/api-keys/${id}`),
+
 	// Mailboxes
 	listMailboxes: () => get<Mailbox[]>("/api/v1/mailboxes"),
 	createMailbox: (email: string, name: string, settings?: unknown) =>

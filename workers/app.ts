@@ -24,6 +24,7 @@ import {
 	readSessionCookie,
 } from "./lib/session";
 import { ensureUser, findUserById } from "./lib/users";
+import { touchApiKey, verifyApiKey } from "./lib/api-keys";
 import type { Env } from "./types";
 
 type AppEnv = { Bindings: Env; Variables: { user: AuthUser } };
@@ -84,12 +85,13 @@ function isPublicPath(pathname: string): boolean {
 // Order of resolution:
 //   1. Internal system header (worker-to-worker calls).
 //   2. Dev override header (DEV mode only).
-//   3. Cookie session in D1.
-//   4. Cloudflare Access JWT fallback (only if POLICY_AUD/TEAM_DOMAIN set):
+//   3. Bearer API key (Authorization header) — for MCP / programmatic clients.
+//   4. Cookie session in D1 — for browsers.
+//   5. Cloudflare Access JWT fallback (only if POLICY_AUD/TEAM_DOMAIN set):
 //      verify the JWT, ensure a user record exists, mint a fresh cookie
 //      session so subsequent requests skip JWT verification.
-//   5. Public path → continue without user.
-//   6. Otherwise → 401.
+//   6. Public path → continue without user.
+//   7. Otherwise → 401.
 app.use("*", async (c, next) => {
 	const url = new URL(c.req.url);
 
@@ -114,7 +116,24 @@ app.use("*", async (c, next) => {
 		return next();
 	}
 
-	// (3) Cookie session.
+	// (3) Bearer API key.
+	const authz = c.req.header("authorization");
+	if (authz && authz.toLowerCase().startsWith("bearer ")) {
+		const raw = authz.slice(7).trim();
+		if (raw) {
+			const hit = await verifyApiKey(c.env, raw).catch(() => null);
+			if (hit) {
+				const user = await findUserById(c.env, hit.userId);
+				if (user) {
+					c.executionCtx.waitUntil(touchApiKey(c.env, hit.id));
+					c.set("user", { id: user.id, email: user.email, role: user.role });
+					return next();
+				}
+			}
+		}
+	}
+
+	// (4) Cookie session.
 	const sid = readSessionCookie(c);
 	if (sid) {
 		const session = await findSession(c.env, sid).catch(() => null);
@@ -127,7 +146,7 @@ app.use("*", async (c, next) => {
 		}
 	}
 
-	// (4) Cloudflare Access JWT fallback (legacy compatibility).
+	// (5) Cloudflare Access JWT fallback (legacy compatibility).
 	const accessToken = c.req.header("cf-access-jwt-assertion");
 	if (accessToken && c.env.POLICY_AUD && c.env.TEAM_DOMAIN) {
 		try {
@@ -155,10 +174,10 @@ app.use("*", async (c, next) => {
 		}
 	}
 
-	// (5) Public path → allow through with no user.
+	// (6) Public path → allow through with no user.
 	if (isPublicPath(url.pathname)) return next();
 
-	// (6) Anything else: 401 with a redirect hint for browsers.
+	// (7) Anything else: 401 with a redirect hint for browsers.
 	const acceptsHtml = (c.req.header("accept") ?? "").includes("text/html");
 	if (acceptsHtml) {
 		const next_url = url.pathname + url.search;
