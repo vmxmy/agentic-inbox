@@ -3,11 +3,14 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import { Badge, Button, Input, Tooltip } from "@cloudflare/kumo";
-import { GearSixIcon, ListIcon, MagnifyingGlassIcon, RobotIcon, ShieldIcon, XIcon } from "@phosphor-icons/react";
+import { GearSixIcon, ListIcon, MagnifyingGlassIcon, RobotIcon, ShieldIcon, SignOutIcon, XIcon } from "@phosphor-icons/react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { type KeyboardEvent, useEffect, useState } from "react";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 import { useUIStore } from "~/hooks/useUIStore";
 import { useWhoami } from "~/queries/identity";
+import { queryKeys } from "~/queries/keys";
+import api from "~/services/api";
 
 export default function Header() {
 	const [searchQuery, setSearchQuery] = useState("");
@@ -56,6 +59,14 @@ export default function Header() {
 
 	const isSettingsActive = location.pathname.includes("/settings");
 	const { data: whoami } = useWhoami();
+	const qc = useQueryClient();
+	const logout = useMutation({
+		mutationFn: () => api.logout(),
+		onSettled: () => {
+			qc.clear();
+			navigate("/login");
+		},
+	});
 
 	return (
 		<header className="flex items-center gap-2 px-3 py-2.5 bg-kumo-base border-b border-kumo-line sticky top-0 z-10 md:px-5 md:gap-4">
@@ -126,7 +137,7 @@ export default function Header() {
 			<div className="flex items-center gap-1 ml-auto shrink-0">
 				{whoami?.email && (
 					<Tooltip
-						content={`Signed in via Cloudflare Access as ${whoami.email}${whoami.isAdmin ? " (admin)" : ""}`}
+						content={`Signed in as ${whoami.email}${whoami.isAdmin ? " (admin)" : ""}`}
 						side="bottom"
 						asChild
 					>
@@ -139,6 +150,18 @@ export default function Header() {
 								</Badge>
 							)}
 						</div>
+					</Tooltip>
+				)}
+				{whoami?.email && (
+					<Tooltip content="Sign out" side="bottom" asChild>
+						<Button
+							variant="ghost"
+							shape="square"
+							icon={<SignOutIcon size={20} />}
+							onClick={() => logout.mutate()}
+							aria-label="Sign out"
+							disabled={logout.isPending}
+						/>
 					</Tooltip>
 				)}
 				{whoami?.isAdmin && (

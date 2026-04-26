@@ -111,7 +111,31 @@ const api = {
 
 	// Identity
 	whoami: () =>
-		get<{ email: string; isAdmin: boolean; system: boolean }>("/api/v1/whoami"),
+		get<{
+			id: string;
+			email: string;
+			isAdmin: boolean;
+			role: "user" | "admin";
+			system: boolean;
+		}>("/api/v1/whoami"),
+
+	// Auth
+	register: (email: string, password: string, displayName?: string) =>
+		post<{ ok: true; message: string }>("/api/v1/auth/register", { email, password, displayName }),
+	login: (email: string, password: string) =>
+		post<{ ok: true; user: { id: string; email: string; role: string; displayName: string | null } }>(
+			"/api/v1/auth/login",
+			{ email, password },
+		),
+	logout: () => post<{ ok: true }>("/api/v1/auth/logout"),
+	requestMagicLink: (email: string) =>
+		post<{ ok: true; message: string }>("/api/v1/auth/magic-link/request", { email }),
+	consumeMagicLink: (token: string) =>
+		get<{ ok: true }>(`/api/v1/auth/magic-link/consume?token=${encodeURIComponent(token)}`),
+	forgotPassword: (email: string) =>
+		post<{ ok: true; message: string }>("/api/v1/auth/password/forgot", { email }),
+	resetPassword: (token: string, password: string) =>
+		post<{ ok: true }>("/api/v1/auth/password/reset", { token, password }),
 
 	// Mailboxes
 	listMailboxes: () => get<Mailbox[]>("/api/v1/mailboxes"),

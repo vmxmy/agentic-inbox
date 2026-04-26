@@ -3,25 +3,32 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 /**
- * Per-mailbox authorization layer.
+ * Per-mailbox authorization layer + identity types.
  *
- * Cloudflare Access gates the whole Worker; this module adds a second layer so
- * that each mailbox has one owner + optional members, and only those Access
- * identities can read/write it. Ownership lives inside the existing R2 mailbox
- * settings blob to avoid adding a second storage backend.
+ * Identity now comes from the native auth system (cookie session backed by
+ * D1 — see workers/lib/session.ts and workers/routes/auth.ts). Cloudflare
+ * Access JWTs are still honored as a fallback for backward compatibility:
+ * if POLICY_AUD/TEAM_DOMAIN are set, the middleware in workers/app.ts will
+ * mint a session for the JWT's email so existing Access-only users stay
+ * logged in.
+ *
+ * Mailbox ACL still keys off `email`, so R2 blobs need no migration.
  */
-import { decodeJwt, SignJWT, jwtVerify } from "jose";
+import { SignJWT, jwtVerify } from "jose";
 import type { Context } from "hono";
 import type { Env } from "../types";
 
 export interface AuthUser {
+	/** D1 users.id; "__system__" for internal worker calls. */
+	id: string;
 	email: string;
+	role: "user" | "admin";
 	/** true for internal worker-to-worker calls (e.g. inbound email → auto-draft). */
 	system?: boolean;
 }
 
 /** Header used by the Hono layer to propagate the already-authenticated user
- *  email into DOs (EmailMCP) that would otherwise have to re-validate the JWT. */
+ *  email into DOs (EmailMCP) that would otherwise have to re-validate auth. */
 export const INTERNAL_USER_HEADER = "x-internal-user-email";
 
 /** Header used by receiveEmail → EmailAgent to mark the call as internal.
@@ -32,7 +39,12 @@ export const INTERNAL_SYSTEM_HEADER = "x-internal-system";
  *  when import.meta.env.DEV is true. */
 export const DEV_USER_HEADER = "x-dev-user";
 
-const DEFAULT_DEV_USER: AuthUser = { email: "dev@local.test" };
+const SYSTEM_USER: AuthUser = {
+	id: "__system__",
+	email: "__system__",
+	role: "admin",
+	system: true,
+};
 
 export interface MailboxAcl {
 	owner?: string;
@@ -44,69 +56,27 @@ export function normalizeEmail(email: string): string {
 }
 
 /**
- * Extract the authenticated user from a Hono request. The outer middleware is
- * expected to have already verified the Access JWT (signature + iss + aud);
- * here we cheaply decode the payload to read the `email` claim.
+ * Read the authenticated user from the Hono context. The middleware in
+ * workers/app.ts is responsible for putting it there; this helper exists so
+ * legacy call-sites that still call `getUserFromRequest()` keep working.
  */
-export function getUserFromRequest<E extends { Bindings: Env }>(
+export function getUserFromRequest<E extends { Bindings: Env; Variables: { user?: AuthUser } }>(
 	c: Context<E>,
 ): AuthUser {
 	const sysHeader = c.req.header(INTERNAL_SYSTEM_HEADER);
 	const sysSecret = c.env.INTERNAL_SECRET;
 	if (sysHeader && sysSecret && sysHeader === sysSecret) {
-		return { email: "__system__", system: true };
+		return SYSTEM_USER;
 	}
-
-	if (import.meta.env.DEV) {
-		const devOverride = c.req.header(DEV_USER_HEADER);
-		if (devOverride) return { email: normalizeEmail(devOverride) };
-		return DEFAULT_DEV_USER;
-	}
-
-	const token = c.req.header("cf-access-jwt-assertion");
-	if (!token) {
-		throw new AuthzError(403, "Missing Access token");
-	}
-
-	let claims: { email?: unknown; common_name?: unknown; sub?: unknown };
-	try {
-		claims = decodeJwt(token) as {
-			email?: unknown;
-			common_name?: unknown;
-			sub?: unknown;
-		};
-	} catch {
-		throw new AuthzError(403, "Malformed Access token");
-	}
-
-	// Normal user JWTs carry the `email` claim.
-	if (typeof claims.email === "string" && claims.email) {
-		return { email: normalizeEmail(claims.email) };
-	}
-
-	// Cloudflare Access service tokens do NOT carry `email`; they carry
-	// `common_name` (the token's display name, e.g. "my-token.access") and
-	// `sub` (the token UUID). Synthesize a stable pseudo-email so per-mailbox
-	// ACL treats the token as a distinct identity. Owners grant the token
-	// access by calling `add_member` with this pseudo-email.
-	const commonName = typeof claims.common_name === "string" ? claims.common_name : "";
-	const sub = typeof claims.sub === "string" ? claims.sub : "";
-	if (commonName || sub) {
-		const localPart = commonName
-			? commonName.toLowerCase().replace(/[^a-z0-9_.-]/g, "-").replace(/^-+|-+$/g, "")
-			: `st-${sub}`;
-		if (localPart) {
-			return { email: `${localPart}@service.cloudflareaccess.local` };
-		}
-	}
-
-	throw new AuthzError(403, "Access token has no email or common_name claim");
+	const stashed = c.get("user") as AuthUser | undefined;
+	if (stashed) return stashed;
+	throw new AuthzError(401, "Not authenticated");
 }
 
 /** Thrown by ACL checks. Hono handlers should translate to JSON responses. */
 export class AuthzError extends Error {
 	constructor(
-		public readonly status: 403 | 404,
+		public readonly status: 401 | 403 | 404,
 		message: string,
 	) {
 		super(message);
@@ -283,8 +253,8 @@ export async function removeMailboxMember(
 	return { owner: acl.owner, members };
 }
 
-/** Parse the comma-separated ADMINS env var into a normalised set. */
-export function parseAdmins(env: Env): Set<string> {
+/** Bootstrap-admin email set, used to promote new accounts on creation. */
+export function parseBootstrapAdmins(env: Env): Set<string> {
 	if (!env.ADMINS) return new Set();
 	return new Set(
 		env.ADMINS.split(",")
@@ -294,8 +264,8 @@ export function parseAdmins(env: Env): Set<string> {
 	);
 }
 
-export function isAdmin(env: Env, user: AuthUser): boolean {
-	return parseAdmins(env).has(user.email);
+export function isAdmin(_env: Env, user: AuthUser): boolean {
+	return user.role === "admin";
 }
 
 // ── Invite tokens ──────────────────────────────────────────────────

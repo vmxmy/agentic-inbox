@@ -4,17 +4,26 @@
 
 import { routeAgentRequest } from "agents";
 import { Hono } from "hono";
-import { jwtVerify, createRemoteJWKSet } from "jose";
+import { decodeJwt, jwtVerify, createRemoteJWKSet } from "jose";
 import { createRequestHandler } from "react-router";
 import { app as apiApp, receiveEmail } from "./index";
+import { authApp } from "./routes/auth";
 import { EmailMCP } from "./mcp";
 import {
 	assertMailboxAccess,
 	AuthzError,
-	getUserFromRequest,
 	INTERNAL_USER_HEADER,
+	INTERNAL_SYSTEM_HEADER,
+	normalizeEmail,
 	type AuthUser,
 } from "./lib/auth";
+import {
+	buildSessionCookie,
+	createSession,
+	findSession,
+	readSessionCookie,
+} from "./lib/session";
+import { ensureUser, findUserById } from "./lib/users";
 import type { Env } from "./types";
 
 type AppEnv = { Bindings: Env; Variables: { user: AuthUser } };
@@ -49,60 +58,126 @@ function getAccessUrls(teamDomain: string) {
 	return { issuer, certsUrl };
 }
 
-// Main app that wraps the API and adds React Router fallback
 const app = new Hono<AppEnv>();
 
-// Cloudflare Access JWT validation middleware + per-request user identity.
+// ── Public path predicate ─────────────────────────────────────────
+// These paths must be reachable without an authenticated session so the user
+// can sign in / register / reset password. Static SPA assets are served by
+// React Router's catch-all and are also public.
+function isPublicPath(pathname: string): boolean {
+	if (pathname.startsWith("/api/v1/auth/")) return true;
+	if (pathname === "/api/v1/config") return true;
+	if (pathname === "/login" || pathname === "/register") return true;
+	if (pathname === "/forgot-password" || pathname === "/reset-password") return true;
+	if (pathname === "/verify-email" || pathname === "/magic") return true;
+	if (
+		pathname === "/" ||
+		pathname.startsWith("/assets/") ||
+		pathname.startsWith("/favicon") ||
+		pathname.startsWith("/__manifest")
+	) return true;
+	return false;
+}
+
+// ── Identity middleware ───────────────────────────────────────────
+//
+// Order of resolution:
+//   1. Internal system header (worker-to-worker calls).
+//   2. Dev override header (DEV mode only).
+//   3. Cookie session in D1.
+//   4. Cloudflare Access JWT fallback (only if POLICY_AUD/TEAM_DOMAIN set):
+//      verify the JWT, ensure a user record exists, mint a fresh cookie
+//      session so subsequent requests skip JWT verification.
+//   5. Public path → continue without user.
+//   6. Otherwise → 401.
 app.use("*", async (c, next) => {
-	if (!import.meta.env.DEV) {
-		const { POLICY_AUD, TEAM_DOMAIN } = c.env;
+	const url = new URL(c.req.url);
 
-		// Fail closed in production if Access is not configured.
-		if (!POLICY_AUD || !TEAM_DOMAIN) {
-			return c.text(
-				"Cloudflare Access must be configured in production. Set POLICY_AUD and TEAM_DOMAIN.",
-				500,
-			);
+	// (1) Internal system call (e.g. inbound email → auto-draft agent).
+	const sysHeader = c.req.header(INTERNAL_SYSTEM_HEADER);
+	if (sysHeader && c.env.INTERNAL_SECRET && sysHeader === c.env.INTERNAL_SECRET) {
+		c.set("user", {
+			id: "__system__",
+			email: "__system__",
+			role: "admin",
+			system: true,
+		});
+		return next();
+	}
+
+	// (2) Dev override.
+	if (import.meta.env.DEV) {
+		const devOverride = c.req.header("x-dev-user");
+		const email = devOverride ? normalizeEmail(devOverride) : "dev@local.test";
+		const user = await ensureUser(c.env, email, { emailVerified: true });
+		c.set("user", { id: user.id, email: user.email, role: user.role });
+		return next();
+	}
+
+	// (3) Cookie session.
+	const sid = readSessionCookie(c);
+	if (sid) {
+		const session = await findSession(c.env, sid).catch(() => null);
+		if (session) {
+			const user = await findUserById(c.env, session.userId);
+			if (user) {
+				c.set("user", { id: user.id, email: user.email, role: user.role });
+				return next();
+			}
 		}
+	}
 
-		const token = c.req.header("cf-access-jwt-assertion");
-		if (!token) {
-			return c.text("Missing required CF Access JWT", 403);
-		}
-
+	// (4) Cloudflare Access JWT fallback (legacy compatibility).
+	const accessToken = c.req.header("cf-access-jwt-assertion");
+	if (accessToken && c.env.POLICY_AUD && c.env.TEAM_DOMAIN) {
 		try {
-			const { issuer, certsUrl } = getAccessUrls(TEAM_DOMAIN);
+			const { issuer, certsUrl } = getAccessUrls(c.env.TEAM_DOMAIN);
 			const JWKS = createRemoteJWKSet(certsUrl);
-			await jwtVerify(token, JWKS, {
+			await jwtVerify(accessToken, JWKS, {
 				issuer,
-				audience: POLICY_AUD,
+				audience: c.env.POLICY_AUD,
 			});
+			const claims = decodeJwt(accessToken) as { email?: unknown };
+			const email = typeof claims.email === "string" ? normalizeEmail(claims.email) : "";
+			if (email) {
+				const user = await ensureUser(c.env, email, { emailVerified: true });
+				const sess = await createSession(c.env, {
+					userId: user.id,
+					userAgent: c.req.header("user-agent") ?? null,
+					ip: c.req.header("cf-connecting-ip") ?? null,
+				});
+				c.header("Set-Cookie", buildSessionCookie(sess.id, sess.expiresAt));
+				c.set("user", { id: user.id, email: user.email, role: user.role });
+				return next();
+			}
 		} catch {
-			return c.text("Invalid or expired Access token", 403);
+			// fall through to public-path check / 401
 		}
 	}
 
-	// Decode / resolve the user identity and stash it on the Hono context so
-	// downstream handlers (requireMailbox, /agents, /mcp, member management)
-	// can enforce per-mailbox ACL without re-parsing the JWT.
-	try {
-		c.set("user", getUserFromRequest(c));
-	} catch (e) {
-		if (e instanceof AuthzError) return c.text(e.message, e.status);
-		throw e;
-	}
+	// (5) Public path → allow through with no user.
+	if (isPublicPath(url.pathname)) return next();
 
-	return next();
+	// (6) Anything else: 401 with a redirect hint for browsers.
+	const acceptsHtml = (c.req.header("accept") ?? "").includes("text/html");
+	if (acceptsHtml) {
+		const next_url = url.pathname + url.search;
+		return c.redirect(`/login?next=${encodeURIComponent(next_url)}`, 302);
+	}
+	return c.json({ error: "Not authenticated" }, 401);
 });
 
+// Mount the auth API. The middleware above lets these paths through unauthenticated.
+app.route("/api/v1/auth", authApp);
+
 // MCP server endpoint — used by AI coding tools (ProtoAgent, Claude Code, Cursor, etc.)
-// Must be before API routes and React Router catch-all.
 // We inject the authenticated user email via an internal header so the MCP DO
-// can enforce per-mailbox ACL without re-parsing the Access JWT. Any client-
-// supplied value of the header is stripped first so callers cannot spoof.
+// can enforce per-mailbox ACL without re-parsing auth. Any client-supplied
+// value of the header is stripped first so callers cannot spoof.
 const mcpHandler = EmailMCP.serve("/mcp", { binding: "EMAIL_MCP" });
 function forwardToMcp(c: import("hono").Context<AppEnv>) {
 	const user = c.var.user;
+	if (!user) return c.json({ error: "Not authenticated" }, 401);
 	const headers = new Headers(c.req.raw.headers);
 	headers.delete(INTERNAL_USER_HEADER);
 	headers.set(INTERNAL_USER_HEADER, user.email);
@@ -119,9 +194,8 @@ app.route("/", apiApp);
 // Enforce per-mailbox ACL before handing off to the Agents SDK.
 app.all("/agents/*", async (c) => {
 	const user = c.var.user;
+	if (!user) return c.json({ error: "Not authenticated" }, 401);
 	// URL shape: /agents/<ClassName>/<mailboxId>/...
-	// The Agents SDK may lower-case / kebab-case the class segment, so we
-	// ignore it and read the instance name by position.
 	const url = new URL(c.req.url);
 	const segments = url.pathname.split("/").filter(Boolean);
 	const mailboxId = segments[2] ? decodeURIComponent(segments[2]) : undefined;

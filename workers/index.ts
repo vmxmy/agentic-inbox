@@ -36,6 +36,7 @@ import {
 	signInviteToken,
 	verifyInviteToken,
 } from "./lib/auth";
+import { findUserById, listUsers, setRole } from "./lib/users";
 import { getAgentConfig } from "./lib/agent-config";
 import { evaluateRules } from "./lib/rules";
 import { extensionOf, extractAttachmentsInline } from "./lib/attachment-extract";
@@ -115,7 +116,13 @@ app.get("/api/v1/whoami", (c) => {
 	let user;
 	try { user = c.get("user") ?? getUserFromRequest(c); }
 	catch (e) { if (e instanceof AuthzError) return c.json({ error: e.message }, e.status); throw e; }
-	return c.json({ email: user.email, isAdmin: isAdmin(c.env, user), system: user.system ?? false });
+	return c.json({
+		id: user.id,
+		email: user.email,
+		isAdmin: isAdmin(c.env, user),
+		role: user.role,
+		system: user.system ?? false,
+	});
 });
 
 // -- Mailboxes ------------------------------------------------------
@@ -284,7 +291,40 @@ app.post("/api/v1/invites/accept", async (c) => {
 	return c.json({ mailboxId: claims.mbx, owner: next.owner ?? null, members: next.members });
 });
 
-// -- Admin (configured via vars.ADMINS) ------------------------------
+// -- Admin (role stored in D1 users.role) ----------------------------
+
+app.get("/api/v1/admin/users", async (c) => {
+	let user;
+	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
+	if (!isAdmin(c.env, user)) return c.json({ error: "Admin access required" }, 403);
+	const all = await listUsers(c.env);
+	return c.json(all.map((u) => ({
+		id: u.id,
+		email: u.email,
+		role: u.role,
+		displayName: u.displayName,
+		emailVerifiedAt: u.emailVerifiedAt,
+		createdAt: u.createdAt,
+	})));
+});
+
+app.post("/api/v1/admin/users/:id/role", async (c) => {
+	let user;
+	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
+	if (!isAdmin(c.env, user)) return c.json({ error: "Admin access required" }, 403);
+	const targetId = c.req.param("id")!;
+	const body = (await c.req.json().catch(() => ({}))) as { role?: unknown };
+	if (body.role !== "user" && body.role !== "admin") {
+		return c.json({ error: "role must be 'user' or 'admin'" }, 400);
+	}
+	const target = await findUserById(c.env, targetId);
+	if (!target) return c.json({ error: "User not found" }, 404);
+	if (target.id === user.id && body.role === "user") {
+		return c.json({ error: "Refusing to demote yourself" }, 400);
+	}
+	await setRole(c.env, targetId, body.role);
+	return c.json({ ok: true });
+});
 
 app.get("/api/v1/admin/mailboxes", async (c) => {
 	let user;

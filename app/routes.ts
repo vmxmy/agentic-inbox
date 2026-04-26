@@ -22,5 +22,10 @@ export default [
 	]),
 	route("invite/:token", "routes/invite.tsx"),
 	route("admin", "routes/admin.tsx"),
+	route("login", "routes/login.tsx"),
+	route("register", "routes/register.tsx"),
+	route("magic", "routes/magic.tsx"),
+	route("forgot-password", "routes/forgot-password.tsx"),
+	route("reset-password", "routes/reset-password.tsx"),
 	route("*", "routes/not-found.tsx"),
 ] satisfies RouteConfig;
