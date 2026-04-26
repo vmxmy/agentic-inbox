@@ -117,16 +117,23 @@ app.get("/api/v1/config", (c) => {
 	return c.json({ domains, emailAddresses });
 });
 
-app.get("/api/v1/whoami", (c) => {
+app.get("/api/v1/whoami", async (c) => {
 	let user;
 	try { user = c.get("user") ?? getUserFromRequest(c); }
 	catch (e) { if (e instanceof AuthzError) return c.json({ error: e.message }, e.status); throw e; }
+	const isSystem = user.system ?? false;
+	let hasPassword = false;
+	if (!isSystem) {
+		const record = await findUserById(c.env, user.id);
+		hasPassword = !!record?.passwordHash;
+	}
 	return c.json({
 		id: user.id,
 		email: user.email,
 		isAdmin: isAdmin(c.env, user),
 		role: user.role,
-		system: user.system ?? false,
+		system: isSystem,
+		hasPassword,
 	});
 });
 

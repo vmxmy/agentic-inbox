@@ -189,16 +189,21 @@ export default function LoginRoute() {
 					<Button type="submit" variant="primary" disabled={!email || magic.isPending}>
 						{magic.isPending ? <Loader size="sm" /> : "Send sign-in link"}
 					</Button>
-					<button
-						type="button"
-						className="text-[11px] text-kumo-subtle hover:text-kumo-default hover:underline self-center"
-						onClick={() => {
-							setMode("password");
-							setError(null);
-						}}
-					>
-						Sign in with password instead
-					</button>
+					<div className="flex items-center justify-between text-[11px] text-kumo-subtle">
+						<Link to="/forgot-password" className="hover:underline">
+							Forgot password?
+						</Link>
+						<button
+							type="button"
+							className="hover:text-kumo-default hover:underline"
+							onClick={() => {
+								setMode("password");
+								setError(null);
+							}}
+						>
+							Sign in with password instead
+						</button>
+					</div>
 				</form>
 			</AuthShell>
 		);

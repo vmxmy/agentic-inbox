@@ -9,6 +9,7 @@ import {
 	FunnelIcon,
 	KeyIcon,
 	LinkIcon,
+	LockKeyIcon,
 	PlusIcon,
 	RobotIcon,
 	TrashIcon,
@@ -287,6 +288,7 @@ export default function SettingsRoute() {
 								<Input label="Email" type="email" value={mailbox.email} disabled />
 							</div>
 						</div>
+						<ChangePasswordCard />
 						<ApiKeysCard />
 					</>
 				)}
@@ -782,6 +784,115 @@ function MembersCard({ mailboxId }: { mailboxId: string }) {
 					</div>
 				</>
 			)}
+		</div>
+	);
+}
+
+// ── ChangePasswordCard ─────────────────────────────────────────────
+//
+// Lets a logged-in user rotate their password. Users created via magic-link
+// have no password hash on file; for them this card sets the initial password
+// (no current-password prompt) and switches the title to "Set password".
+
+function ChangePasswordCard() {
+	const toastManager = useKumoToastManager();
+	const qc = useQueryClient();
+	const { data: whoami } = useWhoami();
+	const hasPassword = whoami?.hasPassword ?? false;
+
+	const [currentPassword, setCurrentPassword] = useState("");
+	const [newPassword, setNewPassword] = useState("");
+	const [confirmPassword, setConfirmPassword] = useState("");
+
+	const change = useMutation({
+		mutationFn: () =>
+			api.changePassword(hasPassword ? currentPassword : null, newPassword),
+		onSuccess: () => {
+			qc.invalidateQueries({ queryKey: queryKeys.whoami });
+			setCurrentPassword("");
+			setNewPassword("");
+			setConfirmPassword("");
+			toastManager.add({ title: hasPassword ? "Password updated" : "Password set" });
+		},
+		onError: (e) => {
+			toastManager.add({
+				title: e instanceof ApiError ? e.message : "Failed to update password",
+				variant: "error",
+			});
+		},
+	});
+
+	const handleSubmit = () => {
+		if (newPassword.length < 8) {
+			toastManager.add({
+				title: "New password must be at least 8 characters",
+				variant: "error",
+			});
+			return;
+		}
+		if (newPassword !== confirmPassword) {
+			toastManager.add({ title: "New passwords don't match", variant: "error" });
+			return;
+		}
+		if (hasPassword && !currentPassword) {
+			toastManager.add({ title: "Enter your current password", variant: "error" });
+			return;
+		}
+		change.mutate();
+	};
+
+	const submitDisabled =
+		!newPassword || !confirmPassword || (hasPassword && !currentPassword);
+
+	return (
+		<div className="bg-kumo-base border border-kumo-line rounded-lg p-4 space-y-4">
+			<div className="flex items-center gap-2">
+				<LockKeyIcon size={16} />
+				<span className="text-sm font-medium text-kumo-default">
+					{hasPassword ? "Change password" : "Set password"}
+				</span>
+			</div>
+			{!hasPassword && (
+				<p className="text-xs text-kumo-subtle">
+					Your account doesn't have a password yet — you've only used magic-link
+					sign-in. Set one to enable password sign-in too.
+				</p>
+			)}
+			<div className="space-y-3">
+				{hasPassword && (
+					<Input
+						label="Current password"
+						type="password"
+						autoComplete="current-password"
+						value={currentPassword}
+						onChange={(e) => setCurrentPassword(e.target.value)}
+					/>
+				)}
+				<Input
+					label="New password"
+					type="password"
+					autoComplete="new-password"
+					value={newPassword}
+					onChange={(e) => setNewPassword(e.target.value)}
+				/>
+				<Input
+					label="Confirm new password"
+					type="password"
+					autoComplete="new-password"
+					value={confirmPassword}
+					onChange={(e) => setConfirmPassword(e.target.value)}
+				/>
+			</div>
+			<div className="flex justify-end">
+				<Button
+					variant="primary"
+					onClick={handleSubmit}
+					loading={change.isPending}
+					disabled={submitDisabled}
+				>
+					{hasPassword ? "Update password" : "Set password"}
+				</Button>
+			</div>
 		</div>
 	);
 }
