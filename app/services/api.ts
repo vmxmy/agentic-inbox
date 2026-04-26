@@ -28,6 +28,19 @@ export class ApiError extends Error {
 	}
 }
 
+// Routes that may legitimately return 401 (e.g. POST /login on bad creds);
+// the page that called them is expected to surface the error inline.
+const AUTH_ENDPOINT_PREFIX = "/api/v1/auth/";
+// Public auth pages: don't redirect-loop while the user is signing in.
+const AUTH_PAGE_RE = /^\/(login|register|magic|forgot-password|reset-password|verify-email)(?:\/|$)/;
+
+function shouldRedirectOn401(url: string): boolean {
+	if (typeof window === "undefined") return false;
+	if (url.startsWith(AUTH_ENDPOINT_PREFIX)) return false;
+	if (AUTH_PAGE_RE.test(window.location.pathname)) return false;
+	return true;
+}
+
 async function request<T>(
 	url: string,
 	options: RequestInit = {},
@@ -52,6 +65,15 @@ async function request<T>(
 
 		if (!res.ok) {
 			const body = await res.json().catch(() => ({}));
+			// Session-expiry interceptor: when an authenticated XHR returns 401
+			// from a non-auth endpoint while the user is on a protected page,
+			// kick them to /login and remember where they were. The throw still
+			// happens so callers see the error — the navigation will unmount
+			// them shortly after.
+			if (res.status === 401 && shouldRedirectOn401(url)) {
+				const next = window.location.pathname + window.location.search;
+				window.location.assign(`/login?next=${encodeURIComponent(next)}`);
+			}
 			throw new ApiError(res.status, body as Record<string, unknown>);
 		}
 
@@ -111,7 +133,57 @@ const api = {
 
 	// Identity
 	whoami: () =>
-		get<{ email: string; isAdmin: boolean; system: boolean }>("/api/v1/whoami"),
+		get<{
+			id: string;
+			email: string;
+			isAdmin: boolean;
+			role: "user" | "admin";
+			system: boolean;
+		}>("/api/v1/whoami"),
+
+	// Auth
+	register: (email: string, password: string, displayName?: string) =>
+		post<{ ok: true; message: string }>("/api/v1/auth/register", { email, password, displayName }),
+	login: (email: string, password: string) =>
+		post<{ ok: true; user: { id: string; email: string; role: string; displayName: string | null } }>(
+			"/api/v1/auth/login",
+			{ email, password },
+		),
+	logout: () => post<{ ok: true }>("/api/v1/auth/logout"),
+	requestMagicLink: (email: string) =>
+		post<{ ok: true; message: string }>("/api/v1/auth/magic-link/request", { email }),
+	consumeMagicLink: (token: string) =>
+		get<{ ok: true }>(`/api/v1/auth/magic-link/consume?token=${encodeURIComponent(token)}`),
+	forgotPassword: (email: string) =>
+		post<{ ok: true; message: string }>("/api/v1/auth/password/forgot", { email }),
+	resetPassword: (token: string, password: string) =>
+		post<{ ok: true }>("/api/v1/auth/password/reset", { token, password }),
+
+	// API keys (Bearer tokens for MCP / programmatic clients)
+	listApiKeys: () =>
+		get<Array<{
+			id: string;
+			name: string;
+			prefix: string;
+			lastUsedAt: number | null;
+			expiresAt: number | null;
+			revokedAt: number | null;
+			createdAt: number;
+		}>>("/api/v1/api-keys"),
+	createApiKey: (name: string, expiresAt?: number) =>
+		post<{
+			key: string;
+			record: {
+				id: string;
+				name: string;
+				prefix: string;
+				lastUsedAt: number | null;
+				expiresAt: number | null;
+				revokedAt: number | null;
+				createdAt: number;
+			};
+		}>("/api/v1/api-keys", { name, expiresAt }),
+	revokeApiKey: (id: string) => del<void>(`/api/v1/api-keys/${id}`),
 
 	// Mailboxes
 	listMailboxes: () => get<Mailbox[]>("/api/v1/mailboxes"),

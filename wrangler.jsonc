@@ -10,15 +10,28 @@
 		"nodejs_compat"
 	],
 	"vars": {
-		// Production deploys must also define POLICY_AUD and TEAM_DOMAIN.
-		// TEAM_DOMAIN may be the base Access URL or the full /cdn-cgi/access/certs URL.
-		// The worker now fails closed outside local development if Access is not configured.
+		// POLICY_AUD / TEAM_DOMAIN are now optional. If set, the legacy
+		// Cloudflare Access JWT path is accepted as a fallback (existing users
+		// transparently get a native session on first request). If unset, only
+		// cookie-based sessions issued by /api/v1/auth/* are honored.
 		"DOMAINS": "ziikoo.com",
 		"EMAIL_ADDRESSES": [],
-		// Comma-separated list of admin Access emails (gets access to /admin and
-		// /api/v1/admin/*). Edit to add/remove admins; empty = no admins.
-		"ADMINS": "blueyang@gmail.com"
+		// Bootstrap admins: any email listed here is promoted to role=admin on
+		// registration / first login. Once a user exists in D1, manage admins
+		// via /api/v1/admin/users instead.
+		"ADMINS": "blueyang@gmail.com",
+		// Public origin used to build links inside outbound emails (magic link,
+		// password reset). Falls back to the request origin if unset.
+		"PUBLIC_BASE_URL": ""
 	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "agentic-inbox-auth",
+			"database_id": "REPLACE_WITH_REAL_D1_ID",
+			"migrations_dir": "migrations"
+		}
+	],
 	"send_email": [
 		{
 			"name": "EMAIL",

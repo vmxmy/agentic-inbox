@@ -25,6 +25,7 @@ export const queryKeys = {
 	},
 	config: ["config"] as const,
 	whoami: ["whoami"] as const,
+	apiKeys: ["api-keys"] as const,
 	members: (mailboxId: string) => ["members", mailboxId] as const,
 	adminMailboxes: ["admin", "mailboxes"] as const,
 	invoices: {

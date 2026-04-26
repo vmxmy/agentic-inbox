@@ -1,9 +1,18 @@
-# Cloudflare Access (required in production). TEAM_DOMAIN may be the base Access URL or the full /cdn-cgi/access/certs URL.
-POLICY_AUD=your-access-policy-audience-tag
-TEAM_DOMAIN=https://your-team.cloudflareaccess.com
+# Cloudflare Access (OPTIONAL — kept for backward compatibility). If set, an
+# Access JWT is accepted as a fallback identity source and a native session
+# cookie is minted on first hit. Leave blank to require native cookie
+# sessions only.
+# TEAM_DOMAIN may be the base Access URL or the full /cdn-cgi/access/certs URL.
+POLICY_AUD=
+TEAM_DOMAIN=
 
 # Shared secret for internal worker-to-worker calls (e.g. inbound email →
-# auto-draft). Generate any high-entropy string. In production set via
-# `wrangler secret put INTERNAL_SECRET`. Without it, auto-drafts cannot bypass
-# per-mailbox ACL.
+# auto-draft) and for signing mailbox invite tokens. Generate any
+# high-entropy string. In production set via:
+#   wrangler secret put INTERNAL_SECRET
 INTERNAL_SECRET=dev-secret-change-me
+
+# Public origin used to build links inside outbound auth emails (verify,
+# magic link, password reset). Leave blank in dev — the worker will derive
+# it from the request origin.
+PUBLIC_BASE_URL=

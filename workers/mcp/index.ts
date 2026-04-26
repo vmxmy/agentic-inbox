@@ -116,7 +116,16 @@ export class EmailMCP extends McpAgent<Env> {
 		const env = this.env;
 
 		const currentUser = (): AuthUser | null =>
-			this.currentUserEmail ? { email: this.currentUserEmail } : null;
+			this.currentUserEmail
+				? {
+						// MCP only sees the email forwarded by the Hono layer; the ACL
+						// checks below only key off `email`/`role`/`system`, so a
+						// synthetic id is fine here.
+						id: `mcp:${this.currentUserEmail}`,
+						email: this.currentUserEmail,
+						role: "user",
+					}
+				: null;
 
 		/**
 		 * Verify a mailbox exists AND the current MCP caller has access to it.

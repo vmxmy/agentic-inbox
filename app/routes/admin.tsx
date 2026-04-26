@@ -31,8 +31,8 @@ export default function AdminRoute() {
 					<ShieldIcon size={18} weight="fill" /> Admin dashboard
 				</h1>
 				<p className="text-kumo-subtle">
-					You don't have admin access. Admins are configured in the
-					Worker's <code>ADMINS</code> env var.
+					You don't have admin access. Existing admins can promote you via
+					<code> /api/v1/admin/users/:id/role</code>.
 				</p>
 				<Button variant="secondary" onClick={() => navigate("/")}>Back</Button>
 			</div>
