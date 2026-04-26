@@ -44,7 +44,14 @@ import {
 	revokeApiKey,
 } from "./lib/api-keys";
 import { getAgentConfig } from "./lib/agent-config";
-import { evaluateRules } from "./lib/rules";
+import { evaluateRules, RuleConditionSchema, RuleActionSchema } from "./lib/rules";
+import {
+	listRules as listRulesFromStore,
+	replaceRules as replaceRulesInStore,
+	getRuleHistory as getRuleHistoryFromStore,
+	RuleConflictError,
+	RuleValidationError,
+} from "./lib/rules-store";
 import { extensionOf, extractAttachmentsInline } from "./lib/attachment-extract";
 import {
 	list as listCapabilities,
@@ -332,6 +339,114 @@ app.get("/api/v1/mailboxes/:mailboxId/capabilities", async (c) => {
 		inputSchema: serializeInputSchema(cap.inputSchema),
 	}));
 	return c.json({ capabilities });
+});
+
+// ── Rules CRUD endpoints ──────────────────────────────────────────────
+//
+// New surface for the per-mailbox rules engine. Reads/writes branch on
+// RULES_SOURCE (see workers/lib/rules-store.ts):
+//   - "d1": authoritative MailboxDO SQLite, version-CAS, history
+//   - default: legacy R2 settings.rules JSON (no real CAS)
+//
+// During the bridge phase the legacy PUT /api/v1/mailboxes/:id route still
+// accepts rules embedded in the settings document so old clients keep
+// working until the d1 cutover.
+
+const RuleInputSchema = z.object({
+	id: z.string().optional(),
+	name: z.string().nullable().optional(),
+	enabled: z.boolean(),
+	if: RuleConditionSchema,
+	then: RuleActionSchema,
+});
+
+const PutRulesBody = z.object({
+	rules: z.array(RuleInputSchema),
+	expectedVersions: z.record(z.number().int().nonnegative()).optional(),
+});
+
+app.get("/api/v1/mailboxes/:mailboxId/rules", async (c) => {
+	const mailboxId = c.req.param("mailboxId")!;
+	let user;
+	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
+	try { await assertMailboxAccess(c.env, mailboxId, user); } catch (e) { return handleAuthz(c, e); }
+	const rules = await listRulesFromStore(c.env, mailboxId);
+	return c.json({ rules });
+});
+
+app.put("/api/v1/mailboxes/:mailboxId/rules", async (c) => {
+	const mailboxId = c.req.param("mailboxId")!;
+	let user;
+	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
+	try { await assertMailboxAccess(c.env, mailboxId, user); } catch (e) { return handleAuthz(c, e); }
+
+	const parsed = PutRulesBody.safeParse(await c.req.json().catch(() => ({})));
+	if (!parsed.success) {
+		return c.json({ error: "invalid_body", details: parsed.error.message }, 400);
+	}
+
+	// Webhook actions are integration-level power (outbound HTTP). Adding,
+	// removing, or modifying any `core:webhook` action requires the mailbox
+	// owner. We compare a stable fingerprint vs. the currently-stored rules
+	// so an owner who set up a webhook does not lock members out of editing
+	// the rest of the rules afterwards.
+	const incomingForFingerprint = parsed.data.rules.map((r) => ({
+		if: r.if,
+		then: r.then,
+	}));
+	const existing = await listRulesFromStore(c.env, mailboxId);
+	const existingForFingerprint = existing.map((r) => ({
+		if: r.if,
+		then: r.then,
+	}));
+	if (
+		webhookActionsFingerprint(incomingForFingerprint) !==
+		webhookActionsFingerprint(existingForFingerprint)
+	) {
+		try { await assertMailboxOwner(c.env, mailboxId, user); }
+		catch (e) { return handleAuthz(c, e); }
+	}
+
+	try {
+		const rules = await replaceRulesInStore(c.env, mailboxId, {
+			rules: parsed.data.rules.map((r) => ({
+				id: r.id,
+				name: r.name ?? null,
+				enabled: r.enabled,
+				if: r.if,
+				then: r.then,
+			})),
+			expectedVersions: parsed.data.expectedVersions ?? {},
+			actor: user.system ? "system" : (user.email ?? "unknown"),
+		});
+		return c.json({ rules });
+	} catch (e) {
+		if (e instanceof RuleConflictError) {
+			return c.json(
+				{ error: "version_mismatch", conflictedIds: e.conflicts },
+				409,
+			);
+		}
+		if (e instanceof RuleValidationError) {
+			return c.json(
+				{ error: "invalid_rule", index: e.index ?? null, details: e.message },
+				422,
+			);
+		}
+		throw e;
+	}
+});
+
+app.get("/api/v1/mailboxes/:mailboxId/rules/:ruleId/history", async (c) => {
+	const mailboxId = c.req.param("mailboxId")!;
+	const ruleId = c.req.param("ruleId")!;
+	let user;
+	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
+	try { await assertMailboxAccess(c.env, mailboxId, user); } catch (e) { return handleAuthz(c, e); }
+	const limitParam = c.req.query("limit");
+	const limit = limitParam ? Math.min(Math.max(Number(limitParam) || 20, 1), 100) : 20;
+	const history = await getRuleHistoryFromStore(c.env, mailboxId, ruleId, limit);
+	return c.json({ history });
 });
 
 /**

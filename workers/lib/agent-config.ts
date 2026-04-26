@@ -11,7 +11,8 @@ import {
 	DEFAULT_INVOICE_SOURCE_DOMAINS,
 	isValidInvoiceSourceDomain,
 } from "./invoice-link-scanner";
-import { parseRulesLoose, RulesSchema, type Rule } from "./rules";
+import { RulesSchema, type Rule } from "./rules";
+import { loadRulesForEvaluation } from "./rules-store";
 
 /**
  * Model id is no longer constrained to a hardcoded enum — the runtime catalog
@@ -110,6 +111,10 @@ export async function getAgentConfig(env: Env, mailboxId: string): Promise<Agent
 		const obj = await env.BUCKET.get(`mailboxes/${mailboxId}.json`);
 		if (!obj) return defaults(env);
 		const settings = (await obj.json()) as Record<string, unknown>;
+		// Rules backend is selected by RULES_SOURCE; in d1-mode this hits the
+		// MailboxDO, in r2-mode it parses the in-hand settings document
+		// without a second R2 GET.
+		const rules = await loadRulesForEvaluation(env, mailboxId, settings);
 		return {
 			// Default TRUE for backward compatibility with mailboxes created
 			// before the flag existed.
@@ -121,7 +126,7 @@ export async function getAgentConfig(env: Env, mailboxId: string): Promise<Agent
 				typeof settings.agentSystemPrompt === "string" && settings.agentSystemPrompt.trim()
 					? settings.agentSystemPrompt
 					: null,
-			rules: parseRulesLoose(settings),
+			rules,
 			invoiceSourceDomains: coerceInvoiceSourceDomains(settings.invoiceSourceDomains),
 			invoiceAgentSystemPrompt:
 				typeof settings.invoiceAgentSystemPrompt === "string" && settings.invoiceAgentSystemPrompt.trim()
