@@ -12,9 +12,10 @@ import api from "~/services/api";
 
 /**
  * /invite/:token — recipient lands here after clicking a share link.
- * Cloudflare Access has already authenticated them by the time this route
- * runs (the entire Worker is gated). We submit the token for server-side
- * verification and, on success, redirect to the mailbox.
+ * Unauthenticated visitors are redirected to /login by the worker
+ * middleware (preserving the invite URL via ?next=…), so by the time
+ * this component renders the user has a session. We submit the token
+ * for server-side verification and, on success, redirect to the mailbox.
  */
 export default function InviteRoute() {
 	const { token } = useParams<{ token: string }>();
