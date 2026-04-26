@@ -274,4 +274,42 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX IF NOT EXISTS idx_bundles_created_at ON bundles(created_at DESC);
         `,
 	},
+	{
+		// Rules engine moved out of R2 settings JSON into per-mailbox SQLite.
+		// Per-mailbox DO scoping means no mailbox_id column. `position` is a
+		// dense 10/20/30 sequence — re-numbered on every replaceRules to keep
+		// it dense; the UNIQUE index ensures first-match ordering is always
+		// well-defined. `rule_history` has no FK to rules so deletion audit
+		// trail is preserved.
+		name: "14_add_rules",
+		sql: `
+            CREATE TABLE IF NOT EXISTS rules (
+                id TEXT PRIMARY KEY,
+                position INTEGER NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                name TEXT,
+                conditions_json TEXT NOT NULL,
+                actions_json TEXT NOT NULL,
+                version INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                updated_by TEXT
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_rules_position ON rules(position);
+            CREATE INDEX IF NOT EXISTS idx_rules_enabled_position ON rules(enabled, position);
+
+            CREATE TABLE IF NOT EXISTS rule_history (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                rule_id TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                change_kind TEXT NOT NULL CHECK(change_kind IN ('create','update','delete','reorder')),
+                snapshot_json TEXT NOT NULL,
+                changed_at TEXT NOT NULL,
+                changed_by TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_history_rule ON rule_history(rule_id, seq DESC);
+        `,
+	},
 ];

@@ -128,3 +128,42 @@ export const bundleInvoices = sqliteTable(
 		pk: primaryKey({ columns: [t.bundle_id, t.invoice_id] }),
 	}),
 );
+
+/**
+ * Inbox processing rules. One row per rule, ordered by `position`. The DO is
+ * already mailbox-scoped, so no `mailbox_id` column is needed.
+ *
+ * `conditions_json` / `actions_json` mirror `RuleSchema.if` / `RuleSchema.then`
+ * (see workers/lib/rules.ts) — kept as JSON strings so capability schemas can
+ * evolve without ALTER TABLE.
+ *
+ * `version` is a row-level CAS token: clients pass the version they last read,
+ * `replaceRules` fails the row if the stored version has advanced.
+ */
+export const rules = sqliteTable("rules", {
+	id: text("id").primaryKey(),
+	position: integer("position").notNull(),
+	enabled: integer("enabled").notNull().default(1),
+	name: text("name"),
+	conditions_json: text("conditions_json").notNull(),
+	actions_json: text("actions_json").notNull(),
+	version: integer("version").notNull().default(1),
+	created_at: text("created_at").notNull(),
+	updated_at: text("updated_at").notNull(),
+	updated_by: text("updated_by"),
+});
+
+/**
+ * Append-only audit log for rules. Survives rule deletion (no FK to rules.id),
+ * so a deleted rule's history is recoverable. `seq` is the strictly-increasing
+ * audit ordinal; query by `(rule_id, seq DESC)` for most-recent-first views.
+ */
+export const ruleHistory = sqliteTable("rule_history", {
+	seq: integer("seq").primaryKey({ autoIncrement: true }),
+	rule_id: text("rule_id").notNull(),
+	version: integer("version").notNull(),
+	change_kind: text("change_kind").notNull(),
+	snapshot_json: text("snapshot_json").notNull(),
+	changed_at: text("changed_at").notNull(),
+	changed_by: text("changed_by"),
+});
