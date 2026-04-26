@@ -28,6 +28,19 @@ export class ApiError extends Error {
 	}
 }
 
+// Routes that may legitimately return 401 (e.g. POST /login on bad creds);
+// the page that called them is expected to surface the error inline.
+const AUTH_ENDPOINT_PREFIX = "/api/v1/auth/";
+// Public auth pages: don't redirect-loop while the user is signing in.
+const AUTH_PAGE_RE = /^\/(login|register|magic|forgot-password|reset-password|verify-email)(?:\/|$)/;
+
+function shouldRedirectOn401(url: string): boolean {
+	if (typeof window === "undefined") return false;
+	if (url.startsWith(AUTH_ENDPOINT_PREFIX)) return false;
+	if (AUTH_PAGE_RE.test(window.location.pathname)) return false;
+	return true;
+}
+
 async function request<T>(
 	url: string,
 	options: RequestInit = {},
@@ -52,6 +65,15 @@ async function request<T>(
 
 		if (!res.ok) {
 			const body = await res.json().catch(() => ({}));
+			// Session-expiry interceptor: when an authenticated XHR returns 401
+			// from a non-auth endpoint while the user is on a protected page,
+			// kick them to /login and remember where they were. The throw still
+			// happens so callers see the error — the navigation will unmount
+			// them shortly after.
+			if (res.status === 401 && shouldRedirectOn401(url)) {
+				const next = window.location.pathname + window.location.search;
+				window.location.assign(`/login?next=${encodeURIComponent(next)}`);
+			}
 			throw new ApiError(res.status, body as Record<string, unknown>);
 		}
 
