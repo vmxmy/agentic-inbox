@@ -27,6 +27,35 @@
  */
 import { z } from "zod";
 
+/** Structured-clone-safe JSON, used for capability `params` so the rule shape
+ *  round-trips through Cloudflare DO RPC (which collapses `unknown` to `never`
+ *  and would erase the entire `RuleAction` from RPC return types). Bounded to
+ *  two levels — every capability schema in `workers/lib/capabilities/` fits
+ *  in `Record<string, JsonScalar | JsonScalar[]>`; deeper structures should
+ *  go through their own typed capability instead of riding inside `params`. */
+type JsonScalar = string | number | boolean | null;
+
+export type JsonValue =
+	| JsonScalar
+	| JsonScalar[]
+	| { [key: string]: JsonScalar | JsonScalar[] | undefined };
+
+const JsonScalarSchema = z.union([
+	z.string(),
+	z.number(),
+	z.boolean(),
+	z.null(),
+]);
+
+export const JsonValueSchema: z.ZodType<JsonValue> = z.union([
+	JsonScalarSchema,
+	z.array(JsonScalarSchema),
+	z.record(
+		z.string(),
+		z.union([JsonScalarSchema, z.array(JsonScalarSchema)]).optional(),
+	),
+]);
+
 export const RuleConditionSchema = z.object({
 	from: z.string().optional(),
 	fromDomain: z.string().optional(),
@@ -56,7 +85,7 @@ export const RuleActionSchema = z.object({
 	actions: z.array(
 		z.object({
 			capabilityId: z.string(),
-			params: z.unknown(),
+			params: JsonValueSchema,
 		}),
 	).optional(),
 }).strict();
