@@ -229,6 +229,8 @@ const api = {
 			memberCount: number;
 			inboxCount: number | null;
 		}>>("/api/v1/admin/mailboxes"),
+	adminCreateMailboxForUser: (userId: string, email: string, name: string, settings?: unknown) =>
+		post<Mailbox>(`/api/v1/admin/users/${userId}/mailboxes`, { email, name, settings }),
 
 	// Emails
 	listEmails: (mailboxId: string, params: Record<string, string>, opts?: { signal?: AbortSignal }) =>

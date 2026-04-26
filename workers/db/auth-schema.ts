@@ -6,7 +6,7 @@
  * Drizzle schema for the native auth layer that lives in Cloudflare D1.
  * Replaces the previous Cloudflare Access dependency for identifying users.
  */
-import { sqliteTable, text, integer, index } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, index, primaryKey } from "drizzle-orm/sqlite-core";
 
 export const users = sqliteTable("users", {
 	id: text("id").primaryKey(),
@@ -78,7 +78,22 @@ export const apiKeys = sqliteTable(
 	}),
 );
 
+export const authRateLimits = sqliteTable(
+	"auth_rate_limits",
+	{
+		key: text("key").notNull(),
+		windowStart: integer("window_start").notNull(),
+		count: integer("count").notNull().default(0),
+		expiresAt: integer("expires_at").notNull(),
+	},
+	(t) => ({
+		pk: primaryKey({ columns: [t.key, t.windowStart] }),
+		expiresIdx: index("auth_rate_limits_expires_idx").on(t.expiresAt),
+	}),
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type EmailTokenRow = typeof emailTokens.$inferSelect;
 export type ApiKeyRow = typeof apiKeys.$inferSelect;
+export type AuthRateLimitRow = typeof authRateLimits.$inferSelect;

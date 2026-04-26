@@ -3,7 +3,7 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 // Most bindings come from the wrangler-generated `Cloudflare.Env`. The fields
-// below are secrets / optional secrets / bindings that typegen omits.
+// below are optional secrets / bindings that typegen omits.
 // PUBLIC_BASE_URL and ADMINS keep their literal types from typegen so this
 // interface still satisfies the `Cloudflare.Env` constraint required by some
 // upstream generics (e.g. McpAgent).
@@ -18,9 +18,6 @@ export interface Env extends Cloudflare.Env {
 	 *   wrangler secret put DEEPREAD_API_KEY
 	 */
 	DEEPREAD_API_KEY?: string;
-	/** Shared secret for internal worker-to-worker calls. Set via
-	 *  `wrangler secret put INTERNAL_SECRET` (typegen doesn't see secrets). */
-	INTERNAL_SECRET?: string;
 	/** D1 database holding users / sessions / email_tokens. */
 	DB: D1Database;
 }

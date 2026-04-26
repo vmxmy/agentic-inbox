@@ -28,7 +28,7 @@
 		{
 			"binding": "DB",
 			"database_name": "agentic-inbox-auth",
-			"database_id": "REPLACE_WITH_REAL_D1_ID",
+			"database_id": "4e72ae70-1ceb-49c5-8565-e5d39e0828aa",
 			"migrations_dir": "migrations"
 		}
 	],
