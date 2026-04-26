@@ -7,6 +7,7 @@ import {
 	ArrowCounterClockwiseIcon,
 	CopyIcon,
 	FunnelIcon,
+	KeyIcon,
 	LinkIcon,
 	PlusIcon,
 	ReceiptIcon,
@@ -14,8 +15,10 @@ import {
 	TrashIcon,
 	UsersIcon,
 } from "@phosphor-icons/react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { useParams } from "react-router";
+import { queryKeys } from "~/queries/keys";
 import { useWhoami } from "~/queries/identity";
 import { useMailbox, useUpdateMailbox } from "~/queries/mailboxes";
 import {
@@ -24,6 +27,7 @@ import {
 	useMembers,
 	useRemoveMember,
 } from "~/queries/members";
+import api, { ApiError } from "~/services/api";
 
 // ── Models (keep in sync with workers/lib/agent-config.ts ALLOWED_AGENT_MODELS) ──
 const MODEL_OPTIONS: { value: string; label: string }[] = [
@@ -536,6 +540,9 @@ export default function SettingsRoute() {
 
 				{/* Members & Invites */}
 				{mailboxId && <MembersCard mailboxId={mailboxId} />}
+
+				{/* API Keys (per-user, not per-mailbox) */}
+				<ApiKeysCard />
 			</div>
 		</div>
 	);
@@ -717,6 +724,195 @@ function MembersCard({ mailboxId }: { mailboxId: string }) {
 						)}
 					</div>
 				</>
+			)}
+		</div>
+	);
+}
+
+// ── ApiKeysCard ────────────────────────────────────────────────────
+//
+// Per-user (not per-mailbox) Bearer tokens that MCP / programmatic clients
+// can send via `Authorization: Bearer aix_…`. The raw key is shown exactly
+// once, at creation. Revoking is instant (sets revoked_at; verifyApiKey
+// filters on isNull(revoked_at)).
+
+function ApiKeysCard() {
+	const toastManager = useKumoToastManager();
+	const qc = useQueryClient();
+	const { data: keys, isLoading } = useQuery({
+		queryKey: queryKeys.apiKeys,
+		queryFn: () => api.listApiKeys(),
+	});
+	const create = useMutation({
+		mutationFn: (name: string) => api.createApiKey(name),
+		onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.apiKeys }),
+	});
+	const revoke = useMutation({
+		mutationFn: (id: string) => api.revokeApiKey(id),
+		onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.apiKeys }),
+	});
+
+	const [newName, setNewName] = useState("");
+	const [createdKey, setCreatedKey] = useState<string | null>(null);
+
+	const handleCreate = async () => {
+		const name = newName.trim();
+		if (!name) {
+			toastManager.add({ title: "Give the key a name", variant: "error" });
+			return;
+		}
+		try {
+			const res = await create.mutateAsync(name);
+			setCreatedKey(res.key);
+			setNewName("");
+		} catch (e) {
+			toastManager.add({
+				title: e instanceof ApiError ? e.message : "Failed to create key",
+				variant: "error",
+			});
+		}
+	};
+
+	const handleCopy = async (raw: string) => {
+		try {
+			await navigator.clipboard.writeText(raw);
+			toastManager.add({ title: "API key copied" });
+		} catch {
+			toastManager.add({ title: "Copy failed", variant: "error" });
+		}
+	};
+
+	const handleRevoke = async (id: string, label: string) => {
+		try {
+			await revoke.mutateAsync(id);
+			toastManager.add({ title: `Revoked ${label}` });
+		} catch {
+			toastManager.add({ title: "Revoke failed", variant: "error" });
+		}
+	};
+
+	return (
+		<div className="bg-kumo-base border border-kumo-line rounded-lg p-4 space-y-4">
+			<div className="flex items-center gap-2">
+				<KeyIcon size={16} />
+				<span className="text-sm font-medium text-kumo-default">API keys</span>
+			</div>
+			<p className="text-xs text-kumo-subtle">
+				Bearer tokens for MCP clients (Claude Code, Cursor, ProtoAgent, etc.) and
+				programmatic API calls. Send as{" "}
+				<code className="px-1 py-0.5 rounded bg-kumo-recessed">
+					Authorization: Bearer aix_…
+				</code>
+				. Keys inherit your account's mailbox access; revoking is immediate.
+			</p>
+
+			<div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+				<label className="flex-1 text-xs text-kumo-subtle">
+					New key name
+					<Input
+						className="mt-1 w-full"
+						placeholder="e.g. Claude Code on laptop"
+						value={newName}
+						onChange={(e) => setNewName(e.target.value)}
+					/>
+				</label>
+				<Button
+					variant="primary"
+					onClick={handleCreate}
+					loading={create.isPending}
+					icon={<PlusIcon size={14} />}
+				>
+					Generate
+				</Button>
+			</div>
+
+			{createdKey && (
+				<div className="rounded border border-amber-400/40 bg-amber-500/5 p-3 space-y-2">
+					<p className="text-xs text-amber-400">
+						Copy this key now — it will not be shown again.
+					</p>
+					<div className="flex items-center gap-2">
+						<code className="flex-1 break-all text-xs font-mono text-kumo-default bg-kumo-recessed px-2 py-1 rounded">
+							{createdKey}
+						</code>
+						<Button
+							variant="secondary"
+							size="sm"
+							icon={<CopyIcon size={14} />}
+							onClick={() => handleCopy(createdKey)}
+						>
+							Copy
+						</Button>
+						<Button
+							variant="ghost"
+							size="sm"
+							onClick={() => setCreatedKey(null)}
+						>
+							Done
+						</Button>
+					</div>
+				</div>
+			)}
+
+			{isLoading ? (
+				<div className="flex justify-center py-4">
+					<Loader size="sm" />
+				</div>
+			) : !keys || keys.length === 0 ? (
+				<p className="text-xs text-kumo-subtle italic">No keys yet.</p>
+			) : (
+				<div className="overflow-x-auto rounded border border-kumo-line">
+					<table className="min-w-full text-xs">
+						<thead className="bg-kumo-recessed text-kumo-subtle uppercase tracking-wide text-[10px]">
+							<tr>
+								<th className="px-3 py-2 text-left">Name</th>
+								<th className="px-3 py-2 text-left">Prefix</th>
+								<th className="px-3 py-2 text-left">Last used</th>
+								<th className="px-3 py-2 text-left">Created</th>
+								<th className="px-3 py-2 text-left">Status</th>
+								<th className="px-3 py-2" />
+							</tr>
+						</thead>
+						<tbody>
+							{keys.map((k) => (
+								<tr key={k.id} className="border-t border-kumo-line">
+									<td className="px-3 py-2">{k.name}</td>
+									<td className="px-3 py-2 font-mono text-kumo-subtle">
+										aix_{k.prefix}…
+									</td>
+									<td className="px-3 py-2 text-kumo-subtle">
+										{k.lastUsedAt ? new Date(k.lastUsedAt).toLocaleString() : "—"}
+									</td>
+									<td className="px-3 py-2 text-kumo-subtle">
+										{new Date(k.createdAt).toLocaleDateString()}
+									</td>
+									<td className="px-3 py-2">
+										{k.revokedAt ? (
+											<Badge variant="destructive">revoked</Badge>
+										) : k.expiresAt && k.expiresAt < Date.now() ? (
+											<Badge variant="secondary">expired</Badge>
+										) : (
+											<Badge variant="success">active</Badge>
+										)}
+									</td>
+									<td className="px-3 py-2 text-right">
+										{!k.revokedAt && (
+											<Button
+												variant="ghost"
+												size="xs"
+												icon={<TrashIcon size={14} />}
+												onClick={() => handleRevoke(k.id, k.name)}
+												aria-label={`Revoke ${k.name}`}
+											>
+												Revoke
+											</Button>
+										)}
+									</td>
+								</tr>
+							))}
+						</tbody>
+					</table>
+				</div>
 			)}
 		</div>
 	);
