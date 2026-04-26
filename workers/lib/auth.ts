@@ -130,9 +130,12 @@ export function hasMailboxAccess(acl: MailboxAcl, user: AuthUser): boolean {
 /**
  * Assert that the user can access this mailbox.
  * - Missing mailbox → throws 404.
- * - Legacy mailbox with no owner → claim-on-first-access: the user becomes
- *   the owner. (This keeps backward compat with R2 blobs created before ACL.)
+ * - System callers and admins → always pass.
  * - Owner or member → passes.
+ * - Ownerless mailbox (no owner field set) → 403 for normal users; an admin
+ *   must explicitly assign an owner via POST /api/v1/admin/mailboxes/:id/owner.
+ *   This intentionally removes the previous claim-on-first-access behavior so
+ *   shared mailboxes cannot be hijacked by whoever logs in first.
  * - Otherwise → throws 403.
  */
 export async function assertMailboxAccess(
@@ -143,11 +146,15 @@ export async function assertMailboxAccess(
 	const settings = await readSettings(env, mailboxId);
 	if (!settings) throw new AuthzError(404, "Mailbox not found");
 
-	const acl = extractAcl(settings);
+	if (user.system) return;
+	if (isAdmin(env, user)) return;
 
-	if (!acl.owner && !user.system) {
-		await claimMailbox(env, mailboxId, user.email);
-		return;
+	const acl = extractAcl(settings);
+	if (!acl.owner) {
+		throw new AuthzError(
+			403,
+			"Mailbox has no owner; ask an admin to assign one",
+		);
 	}
 	if (!hasMailboxAccess(acl, user)) {
 		throw new AuthzError(403, "Not authorized for this mailbox");
@@ -163,10 +170,12 @@ export async function assertMailboxOwner(
 	const acl = await getMailboxAcl(env, mailboxId);
 	if (!acl) throw new AuthzError(404, "Mailbox not found");
 	if (user.system) return;
+	if (isAdmin(env, user)) return;
 	if (!acl.owner) {
-		// Legacy: claim ownership before proceeding.
-		await claimMailbox(env, mailboxId, user.email);
-		return;
+		throw new AuthzError(
+			403,
+			"Mailbox has no owner; ask an admin to assign one",
+		);
 	}
 	if (acl.owner !== user.email) {
 		throw new AuthzError(403, "Only the mailbox owner can perform this action");
@@ -192,13 +201,20 @@ export async function claimMailbox(
 	await env.BUCKET.put(key, JSON.stringify(next));
 }
 
-/** List mailboxes this user can see (owner, member, or legacy-no-owner). */
+/**
+ * List mailboxes this user can see.
+ * - Admins (and system callers) see every mailbox, including legacy ownerless
+ *   ones, so they can route or repair them.
+ * - Normal users see only mailboxes where they are explicitly owner or member.
+ *   Legacy ownerless mailboxes are hidden — they are not claimable by browsing.
+ */
 export async function listUserMailboxes(
 	env: Env,
 	user: AuthUser,
 ): Promise<{ id: string; email: string }[]> {
 	const list = await env.BUCKET.list({ prefix: "mailboxes/" });
 	const results: { id: string; email: string }[] = [];
+	const isPrivileged = user.system || isAdmin(env, user);
 	await Promise.all(
 		list.objects.map(async (entry) => {
 			const obj = await env.BUCKET.get(entry.key);
@@ -206,13 +222,42 @@ export async function listUserMailboxes(
 			const settings = (await obj.json()) as Record<string, unknown>;
 			const acl = extractAcl(settings);
 			const id = entry.key.replace("mailboxes/", "").replace(".json", "");
-			// Legacy blobs (no owner) remain visible so any user can claim them.
-			if (!acl.owner || hasMailboxAccess(acl, user)) {
+			if (isPrivileged) {
+				results.push({ id, email: id });
+				return;
+			}
+			if (acl.owner && hasMailboxAccess(acl, user)) {
 				results.push({ id, email: id });
 			}
 		}),
 	);
 	return results;
+}
+
+/**
+ * Admin-only: replace the owner of a mailbox.
+ * Used to assign ownership of legacy ownerless mailboxes and to transfer
+ * ownership when team membership changes. The previous owner (if any and
+ * different from the new owner) is preserved as a member so they keep
+ * collaboration access.
+ */
+export async function setMailboxOwner(
+	env: Env,
+	mailboxId: string,
+	newOwnerEmail: string,
+): Promise<MailboxAcl> {
+	const key = settingsKey(mailboxId);
+	const obj = await env.BUCKET.get(key);
+	if (!obj) throw new AuthzError(404, "Mailbox not found");
+	const settings = (await obj.json()) as Record<string, unknown>;
+	const acl = extractAcl(settings);
+	const owner = normalizeEmail(newOwnerEmail);
+	const memberSet = new Set(acl.members.filter((m) => m !== owner));
+	if (acl.owner && acl.owner !== owner) memberSet.add(acl.owner);
+	const members = [...memberSet];
+	const next = { ...settings, owner, members };
+	await env.BUCKET.put(key, JSON.stringify(next));
+	return { owner, members };
 }
 
 /** Owner-only: add a member. Idempotent. */

@@ -151,8 +151,11 @@ const api = {
 			{ email, password },
 		),
 	logout: () => post<{ ok: true }>("/api/v1/auth/logout"),
-	requestMagicLink: (email: string) =>
-		post<{ ok: true; message: string }>("/api/v1/auth/magic-link/request", { email }),
+	requestMagicLink: (email: string, next?: string) =>
+		post<{ ok: true; message: string }>("/api/v1/auth/magic-link/request", {
+			email,
+			...(next ? { next } : {}),
+		}),
 	consumeMagicLink: (token: string) =>
 		get<{ ok: true }>(`/api/v1/auth/magic-link/consume?token=${encodeURIComponent(token)}`),
 	forgotPassword: (email: string) =>
@@ -190,6 +193,82 @@ const api = {
 			};
 		}>("/api/v1/api-keys", { name, expiresAt }),
 	revokeApiKey: (id: string) => del<void>(`/api/v1/api-keys/${id}`),
+
+	// LLM model catalog — fetched from the configured LLM_BASE_URL/v1/models,
+	// cached in-process by the worker for 5 minutes.
+	listModels: (force?: boolean) =>
+		get<{
+			default: string | null;
+			models: Array<{ id: string; owned_by?: string; created?: number; object?: string }>;
+		}>("/api/v1/models", force ? { params: { force: "1" } } : undefined),
+
+	// LLM provider registry (admin-only)
+	adminListLlmProviders: () =>
+		get<Array<{
+			id: string;
+			name: string;
+			baseUrl: string;
+			apiKeyMasked: string;
+			defaultModel: string;
+			enabled: boolean;
+			isDefault: boolean;
+			createdAt: number;
+			updatedAt: number;
+		}>>("/api/v1/admin/llm-providers"),
+	adminCreateLlmProvider: (input: {
+		name: string;
+		baseUrl: string;
+		apiKey: string;
+		defaultModel: string;
+		enabled?: boolean;
+		makeDefault?: boolean;
+	}) =>
+		post<{
+			id: string;
+			name: string;
+			baseUrl: string;
+			apiKeyMasked: string;
+			defaultModel: string;
+			enabled: boolean;
+			isDefault: boolean;
+			createdAt: number;
+			updatedAt: number;
+		}>("/api/v1/admin/llm-providers", input),
+	adminUpdateLlmProvider: (
+		id: string,
+		patch: Partial<{
+			name: string;
+			baseUrl: string;
+			apiKey: string;
+			defaultModel: string;
+			enabled: boolean;
+			makeDefault: boolean;
+		}>,
+	) => put<{
+		id: string;
+		name: string;
+		baseUrl: string;
+		apiKeyMasked: string;
+		defaultModel: string;
+		enabled: boolean;
+		isDefault: boolean;
+		createdAt: number;
+		updatedAt: number;
+	}>(`/api/v1/admin/llm-providers/${id}`, patch),
+	adminDeleteLlmProvider: (id: string) =>
+		del<void>(`/api/v1/admin/llm-providers/${id}`),
+	adminTestLlmProvider: (id: string) =>
+		post<{ ok: boolean; modelCount: number; modelIds: string[] }>(
+			`/api/v1/admin/llm-providers/${id}/test`,
+		),
+	/** Probe an unsaved provider's `/v1/models` so the form can populate the
+	 *  default-model dropdown before the row is committed. */
+	adminDiscoverLlmModels: (baseUrl: string, apiKey: string) =>
+		post<{
+			ok: boolean;
+			modelCount: number;
+			models: Array<{ id: string; owned_by?: string; created?: number; object?: string }>;
+		}>("/api/v1/admin/llm-providers/discover", { baseUrl, apiKey }),
 
 	// Capabilities (rule actions / agent skills / mcp tools, all backed by
 	// the same workers/lib/capabilities registry)

@@ -20,4 +20,13 @@ export interface Env extends Cloudflare.Env {
 	DEEPREAD_API_KEY?: string;
 	/** D1 database holding users / sessions / email_tokens. */
 	DB: D1Database;
+	/**
+	 * Bearer token for the LLM endpoint. Optional secret:
+	 *   wrangler secret put LLM_API_KEY
+	 *
+	 * `LLM_BASE_URL` and `LLM_DEFAULT_MODEL` are declared in `wrangler.jsonc`
+	 * vars and reach this interface via the typegen extension of
+	 * `Cloudflare.Env`.
+	 */
+	LLM_API_KEY?: string;
 }

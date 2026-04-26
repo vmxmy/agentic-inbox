@@ -26,6 +26,8 @@ export const queryKeys = {
 	config: ["config"] as const,
 	whoami: ["whoami"] as const,
 	apiKeys: ["api-keys"] as const,
+	models: ["models"] as const,
+	adminLlmProviders: ["admin", "llm-providers"] as const,
 	capabilities: (mailboxId: string, surface?: string) =>
 		["capabilities", mailboxId, surface ?? "all"] as const,
 	members: (mailboxId: string) => ["members", mailboxId] as const,

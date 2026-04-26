@@ -46,11 +46,11 @@ import {
 	type AuthUser,
 } from "../lib/auth";
 import {
-	ALLOWED_AGENT_MODELS,
 	getAgentConfig,
 	setRules,
 	updateAgentConfig,
 } from "../lib/agent-config";
+import { listLlmModels } from "../lib/llm-models";
 import type { Env } from "../types";
 
 /** Wrap a plain result object into MCP content format. */
@@ -518,13 +518,16 @@ export class EmailMCP extends McpAgent<Env> {
 				const denied = await verifyMailbox(mailboxId);
 				if (denied) return denied;
 				const config = await getAgentConfig(env, mailboxId);
+				const catalog = await listLlmModels(env);
 				return mcpText({
 					autoDraft: config.autoDraft,
 					model: config.model,
+					emailReplyModel: config.emailReplyModel,
+					invoiceModel: config.invoiceModel,
 					customSystemPrompt: config.customSystemPrompt,
 					invoiceAgentSystemPrompt: config.invoiceAgentSystemPrompt,
 					rules: config.rules,
-					allowedModels: ALLOWED_AGENT_MODELS,
+					availableModels: catalog.map((m) => m.id),
 				});
 			},
 		);
@@ -532,27 +535,33 @@ export class EmailMCP extends McpAgent<Env> {
 		// ── update_agent_config ────────────────────────────────────
 		this.server.tool(
 			"update_agent_config",
-			`Patch the per-mailbox agent config. Omitted fields stay unchanged. Pass customSystemPrompt / invoiceAgentSystemPrompt as null to clear them. Allowed models: ${ALLOWED_AGENT_MODELS.join(", ")}.`,
+			`Patch the per-mailbox agent config. Omitted fields stay unchanged. Pass customSystemPrompt / invoiceAgentSystemPrompt as null to clear them. Each agent has its own model field (emailReplyModel / invoiceModel) — pass null on a per-agent field to clear it (it then falls back to the legacy shared agentModel, then env default). Model ids must exist on the configured LLM endpoint's /v1/models list (call get_agent_config to see availableModels).`,
 			{
 				mailboxId: z.string().describe("The mailbox email address"),
 				autoDraft: z.boolean().optional().describe("Whether inbound email triggers an automatic draft"),
-				agentModel: z.string().optional().describe("Model id — must be one of the allowed models"),
+				agentModel: z.string().optional().describe("Legacy shared model — kept for back-compat. Prefer emailReplyModel / invoiceModel."),
+				emailReplyModel: z.string().nullable().optional().describe("Model id used by the EmailAgent. Null clears the per-agent override."),
+				invoiceModel: z.string().nullable().optional().describe("Model id used by the InvoiceAgent. Null clears the per-agent override."),
 				agentSystemPrompt: z.string().nullable().optional().describe("Custom system prompt for the email agent. Null clears it."),
 				invoiceAgentSystemPrompt: z.string().nullable().optional().describe("Custom system prompt for the invoice agent chat. Null clears it."),
 			},
-			async ({ mailboxId, autoDraft, agentModel, agentSystemPrompt, invoiceAgentSystemPrompt }) => {
+			async ({ mailboxId, autoDraft, agentModel, emailReplyModel, invoiceModel, agentSystemPrompt, invoiceAgentSystemPrompt }) => {
 				const denied = await verifyMailbox(mailboxId);
 				if (denied) return denied;
 				try {
 					const config = await updateAgentConfig(env, mailboxId, {
 						autoDraft,
 						agentModel,
+						emailReplyModel,
+						invoiceModel,
 						agentSystemPrompt,
 						invoiceAgentSystemPrompt,
 					});
 					return mcpText({
 						autoDraft: config.autoDraft,
 						model: config.model,
+						emailReplyModel: config.emailReplyModel,
+						invoiceModel: config.invoiceModel,
 						customSystemPrompt: config.customSystemPrompt,
 						invoiceAgentSystemPrompt: config.invoiceAgentSystemPrompt,
 					});

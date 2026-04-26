@@ -22,7 +22,17 @@
 		"ADMINS": "blueyang@gmail.com",
 		// Public origin used to build links inside outbound emails (magic link,
 		// password reset). Falls back to the request origin if unset.
-		"PUBLIC_BASE_URL": ""
+		"PUBLIC_BASE_URL": "",
+		// OpenAI-compatible LLM endpoint that powers agent inference. Can be
+		// a hosted gateway (e.g. CF AI Gateway compat URL), a self-hosted
+		// LiteLLM proxy, or any provider exposing /v1/chat/completions and
+		// /v1/models. Workers AI binding (env.AI) is still used for safety
+		// models (verifyDraft / isPromptInjection).
+		"LLM_BASE_URL": "https://litellm.ziikoo.com",
+		// Default model id when a mailbox hasn't pinned one. Must exist on
+		// the LLM_BASE_URL endpoint's /v1/models list.
+		"LLM_DEFAULT_MODEL": "glm-5.1"
+		// LLM_API_KEY is a secret — set via `wrangler secret put LLM_API_KEY`.
 	},
 	"d1_databases": [
 		{

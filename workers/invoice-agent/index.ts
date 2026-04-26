@@ -8,9 +8,9 @@ import {
 	convertToModelMessages,
 	stepCountIs,
 } from "ai";
-import { createWorkersAI } from "workers-ai-provider";
 import { z } from "zod";
 import { getAgentConfig } from "../lib/agent-config";
+import { getLlmProvider, listLlmModels, pickModel, resolveLlmConfig } from "../lib/llm-models";
 import {
 	toolProcessEmailInvoices,
 	toolListInvoices,
@@ -276,13 +276,16 @@ export class InvoiceAgent extends AIChatAgent<any> {
 	async onChatMessage(onFinish: any) {
 		const env = this.env as Env;
 		const mailboxId = this.name;
-		const workersai = createWorkersAI({ binding: env.AI });
 		const tools = createInvoiceTools(env, mailboxId);
 		const config = await getAgentConfig(env, mailboxId);
 		const systemPrompt = resolveSystemPrompt(config.invoiceAgentSystemPrompt);
+		const cfg = await resolveLlmConfig(env);
+		const provider = getLlmProvider(env, cfg);
+		const catalog = await listLlmModels(env, { cfg });
+		const modelId = pickModel(catalog, config.invoiceModel ?? config.model, cfg.defaultModel);
 
 		const result = streamText({
-			model: workersai(config.model),
+			model: provider(modelId),
 			system: systemPrompt,
 			messages: await convertToModelMessages(this.messages),
 			tools,

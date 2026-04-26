@@ -13,20 +13,34 @@ import {
 } from "./invoice-link-scanner";
 import { parseRulesLoose, RulesSchema, type Rule } from "./rules";
 
-/** Supported models. Keep this list in sync with the Settings dropdown. */
-export const ALLOWED_AGENT_MODELS = [
-	"@cf/moonshotai/kimi-k2.5",
-	"@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-	"@cf/qwen/qwen2.5-coder-32b-instruct",
-] as const;
+/**
+ * Model id is no longer constrained to a hardcoded enum — the runtime catalog
+ * is fetched dynamically from `${LLM_BASE_URL}/v1/models` (see
+ * `workers/lib/llm-models.ts`). The constants below are kept only as a safety
+ * net for the rare case where the model fetch fails AND the mailbox has no
+ * model pinned; in production both `LLM_DEFAULT_MODEL` (env var) and the
+ * runtime catalog cover that path.
+ */
+export const FALLBACK_AGENT_MODEL = "glm-5.1";
 
-export type AgentModel = typeof ALLOWED_AGENT_MODELS[number];
+/** Legacy alias for callers that still import this. Prefer `LlmModel.id` from
+ *  `./llm-models` for live data. */
+export type AgentModel = string;
 
-export const DEFAULT_AGENT_MODEL: AgentModel = "@cf/moonshotai/kimi-k2.5";
+export const DEFAULT_AGENT_MODEL: AgentModel = FALLBACK_AGENT_MODEL;
 
 export interface AgentConfig {
 	autoDraft: boolean;
-	model: AgentModel;
+	/** Legacy shared-model field. Kept for back-compat reads of mailboxes
+	 *  written before per-agent overrides existed; the per-agent fields below
+	 *  fall back to this value when null. New writes target the per-agent
+	 *  fields and stop writing this one. */
+	model: string;
+	/** Per-agent override for the EmailAgent. `null` = use the legacy `model`
+	 *  field, then env default. */
+	emailReplyModel: string | null;
+	/** Per-agent override for the InvoiceAgent. Same fallback chain. */
+	invoiceModel: string | null;
 	customSystemPrompt: string | null;
 	rules: Rule[];
 	/** Per-mailbox extras appended to the built-in invoice-source whitelist.
@@ -48,11 +62,14 @@ export interface AgentConfig {
 	invoiceEnabledSkills: readonly string[] | null;
 }
 
-function coerceModel(raw: unknown): AgentModel {
-	if (typeof raw === "string" && (ALLOWED_AGENT_MODELS as readonly string[]).includes(raw)) {
-		return raw as AgentModel;
-	}
-	return DEFAULT_AGENT_MODEL;
+function coerceModel(raw: unknown, env: Env): AgentModel {
+	if (typeof raw === "string" && raw.trim()) return raw.trim();
+	return env.LLM_DEFAULT_MODEL?.trim() || DEFAULT_AGENT_MODEL;
+}
+
+function coerceOptionalModel(raw: unknown): string | null {
+	if (typeof raw === "string" && raw.trim()) return raw.trim();
+	return null;
 }
 
 function coerceInvoiceSourceDomains(raw: unknown): readonly string[] {
@@ -91,13 +108,15 @@ function coerceSkills(raw: unknown): readonly string[] | null {
 export async function getAgentConfig(env: Env, mailboxId: string): Promise<AgentConfig> {
 	try {
 		const obj = await env.BUCKET.get(`mailboxes/${mailboxId}.json`);
-		if (!obj) return defaults();
+		if (!obj) return defaults(env);
 		const settings = (await obj.json()) as Record<string, unknown>;
 		return {
 			// Default TRUE for backward compatibility with mailboxes created
 			// before the flag existed.
 			autoDraft: settings.autoDraft !== false,
-			model: coerceModel(settings.agentModel),
+			model: coerceModel(settings.agentModel, env),
+			emailReplyModel: coerceOptionalModel(settings.emailReplyModel),
+			invoiceModel: coerceOptionalModel(settings.invoiceModel),
 			customSystemPrompt:
 				typeof settings.agentSystemPrompt === "string" && settings.agentSystemPrompt.trim()
 					? settings.agentSystemPrompt
@@ -112,14 +131,16 @@ export async function getAgentConfig(env: Env, mailboxId: string): Promise<Agent
 			invoiceEnabledSkills: coerceSkills(settings.invoiceEnabledSkills),
 		};
 	} catch {
-		return defaults();
+		return defaults(env);
 	}
 }
 
-function defaults(): AgentConfig {
+function defaults(env: Env): AgentConfig {
 	return {
 		autoDraft: true,
-		model: DEFAULT_AGENT_MODEL,
+		model: env.LLM_DEFAULT_MODEL?.trim() || DEFAULT_AGENT_MODEL,
+		emailReplyModel: null,
+		invoiceModel: null,
 		customSystemPrompt: null,
 		rules: [],
 		invoiceSourceDomains: [],
@@ -148,7 +169,14 @@ export async function resolveInvoiceSourceDomains(
 
 export interface AgentConfigUpdate {
 	autoDraft?: boolean;
+	/** Legacy shared model override. New callers should set
+	 *  `emailReplyModel` / `invoiceModel` instead. */
 	agentModel?: string;
+	/** Per-agent model override for EmailAgent. Pass `null` to clear and fall
+	 *  back to the legacy `agentModel`, then env default. */
+	emailReplyModel?: string | null;
+	/** Per-agent model override for InvoiceAgent. Same fallback chain. */
+	invoiceModel?: string | null;
 	/** Pass `null` to clear the custom prompt and fall back to the default. */
 	agentSystemPrompt?: string | null;
 	/** Pass `null` to clear the InvoiceAgent prompt and fall back to its default. */
@@ -195,12 +223,25 @@ export async function updateAgentConfig(
 		settings.autoDraft = update.autoDraft;
 	}
 	if (update.agentModel !== undefined) {
-		if (!(ALLOWED_AGENT_MODELS as readonly string[]).includes(update.agentModel)) {
-			throw new Error(
-				`Unknown agent model "${update.agentModel}". Allowed: ${ALLOWED_AGENT_MODELS.join(", ")}`,
-			);
+		const trimmed = update.agentModel.trim();
+		if (!trimmed) throw new Error("agentModel must be a non-empty string");
+		// No enum check — model id is validated against the live `/v1/models`
+		// catalog at agent invocation time (see workers/lib/llm-models.ts).
+		settings.agentModel = trimmed;
+	}
+	if (update.emailReplyModel !== undefined) {
+		if (update.emailReplyModel === null || !update.emailReplyModel.trim()) {
+			delete settings.emailReplyModel;
+		} else {
+			settings.emailReplyModel = update.emailReplyModel.trim();
 		}
-		settings.agentModel = update.agentModel;
+	}
+	if (update.invoiceModel !== undefined) {
+		if (update.invoiceModel === null || !update.invoiceModel.trim()) {
+			delete settings.invoiceModel;
+		} else {
+			settings.invoiceModel = update.invoiceModel.trim();
+		}
 	}
 	if (update.agentSystemPrompt !== undefined) {
 		if (update.agentSystemPrompt === null) delete settings.agentSystemPrompt;

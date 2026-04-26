@@ -64,7 +64,7 @@ export const AGENTS: AgentDescriptor[] = [
 		description: "Searches invoices and manages reimbursement bundles.",
 		icon: ReceiptIcon,
 		promptField: "invoiceAgentSystemPrompt",
-		hasModelOverride: false,
+		hasModelOverride: true,
 		hasAutoDraft: false,
 		tools: INVOICE_TOOLS,
 	},
