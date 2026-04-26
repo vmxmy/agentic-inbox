@@ -18,6 +18,7 @@ import {
 	type ExistingAttachment,
 	type PipelineStub,
 } from "../lib/invoice-pipeline";
+import type { RuleCondition, RuleAction } from "../lib/rules";
 
 export interface InvoiceFilters {
 	dateFrom?: string;
@@ -1456,4 +1457,352 @@ export class MailboxDO extends DurableObject<Env> {
 			allowedDomains: opts.allowedDomains,
 		});
 	}
+
+	// ── Rules engine (persistence layer) ────────────────────────────────
+	//
+	// Read by `workers/lib/rules-store.ts` and the inbound-email pipeline
+	// in `workers/index.ts`. Domain validation (zod RuleSchema) lives in
+	// rules-store; this DO trusts inputs are well-formed and only handles
+	// row identity, position ordering, version CAS, and history.
+
+	async listRules(): Promise<DoStoredRule[]> {
+		const rows = this.db
+			.select()
+			.from(schema.rules)
+			.orderBy(asc(schema.rules.position))
+			.all();
+		return rows.map(rowToDoStoredRule);
+	}
+
+	async replaceRules(input: DoReplaceRulesInput): Promise<DoReplaceRulesResult> {
+		// Pre-flight: read current rows + detect version conflicts before opening
+		// the write transaction. A conflict means someone else wrote between the
+		// caller's read and this call; we surface the offending ids and let the
+		// caller decide (refresh + retry, or merge UI).
+		const existingRows = this.db.select().from(schema.rules).all();
+		const existingMap = new Map(existingRows.map((r) => [r.id, r]));
+
+		const conflicts: string[] = [];
+		for (const r of input.rules) {
+			if (r.id && existingMap.has(r.id)) {
+				const expected = input.expectedVersions[r.id];
+				const actual = existingMap.get(r.id)!.version;
+				if (expected !== undefined && expected !== actual) {
+					conflicts.push(r.id);
+				}
+			}
+		}
+		if (conflicts.length > 0) {
+			return { ok: false, reason: "version_mismatch", conflicts };
+		}
+
+		// Diff input vs. existing.
+		const inputIds = new Set(
+			input.rules.filter((r): r is typeof r & { id: string } => !!r.id).map((r) => r.id),
+		);
+		const toDelete = existingRows.filter((r) => !inputIds.has(r.id));
+
+		const now = new Date().toISOString();
+		const actor = input.actor;
+
+		this.ctx.storage.transactionSync(() => {
+			// Stage existing rows at negative positions to free 1..N for the
+			// final dense numbering without tripping the UNIQUE index. SQLite
+			// allows negative integers; the staging values are guaranteed not
+			// to collide with the final 10/20/30… targets.
+			for (const r of existingRows) {
+				this.db
+					.update(schema.rules)
+					.set({ position: -r.position - 1 })
+					.where(eq(schema.rules.id, r.id))
+					.run();
+			}
+
+			// Delete rows not present in the input. History is written before
+			// the row goes away so the snapshot survives.
+			for (const r of toDelete) {
+				this.db
+					.insert(schema.ruleHistory)
+					.values({
+						rule_id: r.id,
+						version: r.version,
+						change_kind: "delete",
+						snapshot_json: JSON.stringify({
+							id: r.id,
+							name: r.name,
+							enabled: !!r.enabled,
+							conditions: safeJsonParse(r.conditions_json),
+							actions: safeJsonParse(r.actions_json),
+							position: r.position,
+						}),
+						changed_at: now,
+						changed_by: actor,
+					})
+					.run();
+				this.db.delete(schema.rules).where(eq(schema.rules.id, r.id)).run();
+			}
+
+			// Walk input in order; assign dense positions 10/20/30…
+			let pos = 10;
+			for (const r of input.rules) {
+				const conditionsJson = JSON.stringify(r.conditions ?? {});
+				const actionsJson = JSON.stringify(r.actions ?? {});
+
+				if (r.id && existingMap.has(r.id)) {
+					const old = existingMap.get(r.id)!;
+					const oldName = old.name;
+					const newName = r.name ?? null;
+					const contentChanged =
+						oldName !== newName ||
+						!!old.enabled !== r.enabled ||
+						old.conditions_json !== conditionsJson ||
+						old.actions_json !== actionsJson;
+					const positionChanged = old.position !== pos;
+
+					if (contentChanged) {
+						const newVersion = old.version + 1;
+						this.db
+							.update(schema.rules)
+							.set({
+								position: pos,
+								enabled: r.enabled ? 1 : 0,
+								name: newName,
+								conditions_json: conditionsJson,
+								actions_json: actionsJson,
+								version: newVersion,
+								updated_at: now,
+								updated_by: actor,
+							})
+							.where(eq(schema.rules.id, r.id))
+							.run();
+						this.db
+							.insert(schema.ruleHistory)
+							.values({
+								rule_id: r.id,
+								version: newVersion,
+								change_kind: "update",
+								snapshot_json: JSON.stringify({
+									id: r.id,
+									name: newName,
+									enabled: r.enabled,
+									conditions: r.conditions,
+									actions: r.actions,
+									position: pos,
+								}),
+								changed_at: now,
+								changed_by: actor,
+							})
+							.run();
+					} else if (positionChanged) {
+						// Reorder-only: bump version and log a 'reorder' history row.
+						// We still bump version because the row visibly changed; UI's
+						// next read will see the new version token.
+						const newVersion = old.version + 1;
+						this.db
+							.update(schema.rules)
+							.set({
+								position: pos,
+								version: newVersion,
+								updated_at: now,
+								updated_by: actor,
+							})
+							.where(eq(schema.rules.id, r.id))
+							.run();
+						this.db
+							.insert(schema.ruleHistory)
+							.values({
+								rule_id: r.id,
+								version: newVersion,
+								change_kind: "reorder",
+								snapshot_json: JSON.stringify({
+									id: r.id,
+									position: pos,
+									previousPosition: old.position,
+								}),
+								changed_at: now,
+								changed_by: actor,
+							})
+							.run();
+					} else {
+						// No content or position change — just restore the staged
+						// negative position back to its original (== pos) value.
+						this.db
+							.update(schema.rules)
+							.set({ position: pos })
+							.where(eq(schema.rules.id, r.id))
+							.run();
+					}
+				} else {
+					// New rule. Caller may pre-supply id (rare; e.g., backfill); else
+					// we mint one. ULID-style would be sortable, but `position`
+					// already encodes order so a UUID v4 is sufficient.
+					const newId = r.id ?? `rule_${crypto.randomUUID()}`;
+					this.db
+						.insert(schema.rules)
+						.values({
+							id: newId,
+							position: pos,
+							enabled: r.enabled ? 1 : 0,
+							name: r.name ?? null,
+							conditions_json: conditionsJson,
+							actions_json: actionsJson,
+							version: 1,
+							created_at: now,
+							updated_at: now,
+							updated_by: actor,
+						})
+						.run();
+					this.db
+						.insert(schema.ruleHistory)
+						.values({
+							rule_id: newId,
+							version: 1,
+							change_kind: "create",
+							snapshot_json: JSON.stringify({
+								id: newId,
+								name: r.name ?? null,
+								enabled: r.enabled,
+								conditions: r.conditions,
+								actions: r.actions,
+								position: pos,
+							}),
+							changed_at: now,
+							changed_by: actor,
+						})
+						.run();
+				}
+				pos += 10;
+			}
+		});
+
+		const rules = await this.listRules();
+		return { ok: true, rules };
+	}
+
+	async getRuleHistory(
+		ruleId: string,
+		limit = 20,
+	): Promise<DoRuleHistoryEntry[]> {
+		const cap = Math.min(Math.max(limit, 1), 100);
+		const rows = this.db
+			.select()
+			.from(schema.ruleHistory)
+			.where(eq(schema.ruleHistory.rule_id, ruleId))
+			.orderBy(desc(schema.ruleHistory.seq))
+			.limit(cap)
+			.all();
+		return rows.map((r) => ({
+			seq: r.seq,
+			rule_id: r.rule_id,
+			version: r.version,
+			change_kind: r.change_kind,
+			// snapshots are written exclusively by replaceRules using one of the
+			// two DoRuleSnapshot shapes — the cast is safe at this boundary.
+			snapshot: safeJsonParse(r.snapshot_json) as DoRuleSnapshot,
+			changed_at: r.changed_at,
+			changed_by: r.changed_by,
+		}));
+	}
+}
+
+// ── Rules helpers (module-private) ───────────────────────────────────
+
+function safeJsonParse(text: string): unknown {
+	try {
+		return JSON.parse(text);
+	} catch {
+		return null;
+	}
+}
+
+interface RulesRow {
+	id: string;
+	position: number;
+	enabled: number;
+	name: string | null;
+	conditions_json: string;
+	actions_json: string;
+	version: number;
+	created_at: string;
+	updated_at: string;
+	updated_by: string | null;
+}
+
+function rowToDoStoredRule(r: RulesRow): DoStoredRule {
+	// JSON columns are written by `replaceRules` after the caller (rules-store)
+	// has already validated them through the zod RuleSchema, so the cast is
+	// safe at the boundary. `rules-store.toStoredRule` re-parses on read for
+	// defense in depth against a corrupt row from manual SQL edits.
+	return {
+		id: r.id,
+		position: r.position,
+		enabled: !!r.enabled,
+		name: r.name,
+		conditions: safeJsonParse(r.conditions_json) as RuleCondition,
+		actions: safeJsonParse(r.actions_json) as RuleAction,
+		version: r.version,
+		created_at: r.created_at,
+		updated_at: r.updated_at,
+		updated_by: r.updated_by,
+	};
+}
+
+// Plain shapes for DO RPC — structured-cloneable. `conditions` and `actions`
+// are `unknown` here because the DO does not own the domain schema; the
+// rules-store wrapper validates against zod RuleSchema before passing through.
+
+export interface DoStoredRule {
+	id: string;
+	position: number;
+	enabled: boolean;
+	name: string | null;
+	conditions: RuleCondition;
+	actions: RuleAction;
+	version: number;
+	created_at: string;
+	updated_at: string;
+	updated_by: string | null;
+}
+
+export interface DoReplaceRulesInput {
+	rules: Array<{
+		id?: string;
+		name?: string | null;
+		enabled: boolean;
+		conditions: RuleCondition;
+		actions: RuleAction;
+	}>;
+	/** Map of ruleId → version the caller last saw. Used for row-level CAS:
+	 *  any id present here whose stored version no longer matches is reported
+	 *  as a conflict and the entire replace is aborted. */
+	expectedVersions: Record<string, number>;
+	/** Free-form actor identifier written into rule_history.changed_by. */
+	actor: string;
+}
+
+export type DoReplaceRulesResult =
+	| { ok: true; rules: DoStoredRule[] }
+	| { ok: false; reason: "version_mismatch"; conflicts: string[] };
+
+/** Captured rule state at the time of a history event. The full-content shape
+ *  is written for create/update/delete; reorder writes a position-only delta. */
+export type DoRuleSnapshot =
+	| {
+			id: string;
+			name: string | null;
+			enabled: boolean;
+			conditions: RuleCondition;
+			actions: RuleAction;
+			position: number;
+	  }
+	| { id: string; position: number; previousPosition: number };
+
+export interface DoRuleHistoryEntry {
+	seq: number;
+	rule_id: string;
+	version: number;
+	change_kind: string;
+	snapshot: DoRuleSnapshot;
+	changed_at: string;
+	changed_by: string | null;
 }
