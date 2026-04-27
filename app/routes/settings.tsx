@@ -18,7 +18,7 @@ import {
 	UsersIcon,
 } from "@phosphor-icons/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router";
 import { AGENTS, type AgentId } from "~/lib/agent-registry";
 import { queryKeys } from "~/queries/keys";
@@ -26,6 +26,7 @@ import { useWhoami } from "~/queries/identity";
 import { useCapabilities } from "~/queries/capabilities";
 import { useModels } from "~/queries/models";
 import CapabilityActionEditor from "~/components/CapabilityActionEditor";
+import { useFolders } from "~/queries/folders";
 import { useMailbox, useUpdateMailbox } from "~/queries/mailboxes";
 import {
 	useAddMember,
@@ -115,13 +116,7 @@ const BLANK_RULE: UIRule = {
 	actions: [],
 	_unknownThen: {},
 };
-const MOVE_OPTIONS = [
-	{ value: "",        label: "(keep in inbox)" },
-	{ value: "inbox",   label: "Inbox (no-op)" },
-	{ value: "archive", label: "Archive" },
-	{ value: "trash",   label: "Trash" },
-	{ value: "spam",    label: "Spam" },
-];
+const MOVE_KEEP_OPTION = { value: "", label: "(keep in inbox)" } as const;
 
 // Boolean rule actions that ride on legacy top-level `then.*` fields. Surfaced
 // as a multi-select Combobox so the rule editor scales as more no-arg actions
@@ -255,6 +250,11 @@ export default function SettingsRoute() {
 	const { mailboxId } = useParams<{ mailboxId: string }>();
 	const toastManager = useKumoToastManager();
 	const { data: mailbox } = useMailbox(mailboxId);
+	const { data: folders } = useFolders(mailboxId);
+	const moveOptions = useMemo(() => {
+		const list = (folders ?? []).map((f) => ({ value: f.id, label: f.name }));
+		return [MOVE_KEEP_OPTION, ...list];
+	}, [folders]);
 	const updateMailboxMutation = useUpdateMailbox();
 	const { data: modelsData, isLoading: modelsLoading } = useModels();
 	const modelOptions = modelsData?.models ?? [];
@@ -691,9 +691,12 @@ export default function SettingsRoute() {
 														onChange={(e) => updateRule(idx, { moveTo: e.target.value })}
 														className="w-full rounded border border-kumo-line bg-kumo-base px-2 py-1 text-xs text-kumo-default"
 													>
-														{MOVE_OPTIONS.map((o) => (
+														{moveOptions.map((o) => (
 															<option key={o.value} value={o.value}>{o.label}</option>
 														))}
+														{r.moveTo && !moveOptions.some((o) => o.value === r.moveTo) && (
+															<option key={r.moveTo} value={r.moveTo}>{r.moveTo} (missing)</option>
+														)}
 													</select>
 												</div>
 												<div>
