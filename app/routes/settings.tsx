@@ -2,7 +2,7 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { Badge, Button, Input, Loader, useKumoToastManager } from "@cloudflare/kumo";
+import { Badge, Button, Combobox, Input, Loader, useKumoToastManager } from "@cloudflare/kumo";
 import {
 	ArrowCounterClockwiseIcon,
 	CopyIcon,
@@ -122,6 +122,39 @@ const MOVE_OPTIONS = [
 	{ value: "trash",   label: "Trash" },
 	{ value: "spam",    label: "Spam" },
 ];
+
+// Boolean rule actions that ride on legacy top-level `then.*` fields. Surfaced
+// as a multi-select Combobox so the rule editor scales as more no-arg actions
+// land — for capabilities that need parameters (move-email, webhook, …) see
+// `RuleCapabilityActions` below.
+type ThenActionId = "skipDraft" | "markRead" | "extractAttachmentText" | "extractInvoice";
+interface ThenActionOption {
+	id: ThenActionId;
+	label: string;
+	description: string;
+}
+const THEN_ACTION_OPTIONS: readonly ThenActionOption[] = [
+	{
+		id: "skipDraft",
+		label: "Skip auto-draft",
+		description: "Don't have the agent draft an auto-reply for this email.",
+	},
+	{
+		id: "markRead",
+		label: "Mark as read",
+		description: "Auto-mark the email as read on receipt.",
+	},
+	{
+		id: "extractAttachmentText",
+		label: "Extract attachment text",
+		description: "Parse XML attachments inline (incl. 全电发票) and feed into the agent's prompt. PDF OCR coming next.",
+	},
+	{
+		id: "extractInvoice",
+		label: "Extract invoice",
+		description: "Parse Chinese 全电/增值税发票 XML and persist header + line items to the mailbox database.",
+	},
+] as const;
 
 function csvToArray(s: string): string[] {
 	return s.split(",").map((x) => x.trim()).filter(Boolean);
@@ -647,54 +680,10 @@ export default function SettingsRoute() {
 										<div>
 											<label className="block text-[10px] uppercase tracking-wide text-kumo-subtle mb-1">Then …</label>
 											<div className="space-y-1.5">
-												<label className="flex items-center gap-2 text-xs text-kumo-default">
-													<input
-														type="checkbox"
-														className="h-3.5 w-3.5 accent-kumo-primary"
-														checked={r.skipDraft}
-														onChange={(e) => updateRule(idx, { skipDraft: e.target.checked })}
-													/>
-													Skip auto-draft
-												</label>
-												<label className="flex items-center gap-2 text-xs text-kumo-default">
-													<input
-														type="checkbox"
-														className="h-3.5 w-3.5 accent-kumo-primary"
-														checked={r.markRead}
-														onChange={(e) => updateRule(idx, { markRead: e.target.checked })}
-													/>
-													Mark as read
-												</label>
-												<label className="flex items-start gap-2 text-xs text-kumo-default">
-													<input
-														type="checkbox"
-														className="mt-0.5 h-3.5 w-3.5 accent-kumo-primary"
-														checked={r.extractAttachmentText}
-														onChange={(e) => updateRule(idx, { extractAttachmentText: e.target.checked })}
-													/>
-													<span>
-														<span className="block">Extract attachment text</span>
-														<span className="block text-[10px] text-kumo-subtle">
-															XML parsed inline (incl. 全电发票). PDF OCR — coming next.
-														</span>
-													</span>
-												</label>
-												<label className="flex items-start gap-2 text-xs text-kumo-default">
-													<input
-														type="checkbox"
-														className="mt-0.5 h-3.5 w-3.5 accent-kumo-primary"
-														checked={r.extractInvoice}
-														onChange={(e) => updateRule(idx, { extractInvoice: e.target.checked })}
-													/>
-													<span>
-														<span className="block">Extract invoice</span>
-														<span className="block text-[10px] text-kumo-subtle">
-															Parse Chinese 全电发票 / 增值税发票 XML attachments and persist
-															header + line items to the mailbox database. Runs alongside
-															Skip auto-draft.
-														</span>
-													</span>
-												</label>
+												<RuleThenActionsPicker
+													value={r}
+													onChange={(patch) => updateRule(idx, patch)}
+												/>
 												<div>
 													<label className="block text-[10px] text-kumo-subtle mb-0.5">Move to folder</label>
 													<select
@@ -936,6 +925,61 @@ function MembersCard({ mailboxId }: { mailboxId: string }) {
 // Lets a logged-in user rotate their password. Users created via magic-link
 // have no password hash on file; for them this card sets the initial password
 // (no current-password prompt) and switches the title to "Set password".
+
+// ── RuleThenActionsPicker ──────────────────────────────────────────
+//
+// Multi-select Combobox covering the four boolean rule actions that ride
+// on legacy top-level `then.*` fields (skipDraft / markRead /
+// extractAttachmentText / extractInvoice). Replaces what used to be four
+// stacked checkboxes — same data shape on the wire, more compact UI, room
+// to grow as new no-arg actions land.
+
+function RuleThenActionsPicker({
+	value,
+	onChange,
+}: {
+	value: Pick<UIRule, ThenActionId>;
+	onChange: (patch: Partial<UIRule>) => void;
+}) {
+	const selected = THEN_ACTION_OPTIONS.filter((o) => value[o.id]);
+	return (
+		<Combobox
+			multiple
+			items={THEN_ACTION_OPTIONS as unknown as ThenActionOption[]}
+			value={selected}
+			onValueChange={(next: unknown) => {
+				const arr = Array.isArray(next) ? (next as ThenActionOption[]) : [];
+				const ids = new Set(arr.map((o) => o.id));
+				onChange({
+					skipDraft: ids.has("skipDraft"),
+					markRead: ids.has("markRead"),
+					extractAttachmentText: ids.has("extractAttachmentText"),
+					extractInvoice: ids.has("extractInvoice"),
+				});
+			}}
+		>
+			<Combobox.TriggerMultipleWithInput<ThenActionOption>
+				placeholder={selected.length === 0 ? "Pick actions…" : "Add another…"}
+				renderItem={(item) => <Combobox.Chip>{item.label}</Combobox.Chip>}
+			/>
+			<Combobox.Content>
+				<Combobox.List>
+					{((item: ThenActionOption) => (
+						<Combobox.Item key={item.id} value={item}>
+							<div>
+								<div className="text-xs">{item.label}</div>
+								<div className="text-[10px] text-kumo-subtle">
+									{item.description}
+								</div>
+							</div>
+						</Combobox.Item>
+					)) as unknown as React.ReactNode}
+				</Combobox.List>
+				<Combobox.Empty>No matching actions</Combobox.Empty>
+			</Combobox.Content>
+		</Combobox>
+	);
+}
 
 // ── RuleCapabilityActions ──────────────────────────────────────────
 //
