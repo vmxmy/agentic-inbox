@@ -13,6 +13,9 @@
 import type { ZodType } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 
-export function serializeInputSchema(schema: ZodType): unknown {
+/** Serialise any zod schema (input OR output) to JSON Schema. Returns the
+ *  same shape `zod-to-json-schema` produces; the frontend reads `properties`
+ *  / `required` to render param forms and inspect outputSchema. */
+export function serializeZodSchema(schema: ZodType): unknown {
 	return zodToJsonSchema(schema, { target: "jsonSchema7", $refStrategy: "none" });
 }

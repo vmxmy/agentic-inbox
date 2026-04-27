@@ -34,4 +34,4 @@ export * from "./types";
 export * from "./registry";
 export { normalizeRuleAction } from "./legacy-shim";
 export type { NormalizedAction, NormalizedRuleAction } from "./legacy-shim";
-export { serializeInputSchema } from "./zod-form";
+export { serializeZodSchema } from "./zod-form";

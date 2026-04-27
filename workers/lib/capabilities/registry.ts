@@ -50,6 +50,22 @@ export function register<I, O>(cap: Capability<I, O>): void {
 	if (registry.has(cap.id)) {
 		throw new Error(`Capability "${cap.id}" is already registered`);
 	}
+	// Owner-only capabilities are only enforceable on the rule-action surface
+	// today: the rule path either bypasses (PUT-time fingerprint already
+	// gated owner authorship) or runs the registry permission gate. The
+	// agent-tool surface does not thread a user into CapabilityContext today,
+	// and the mcp surface relays `currentUser()` without admin-role
+	// preservation. Refusing the combination at registration time prevents
+	// a future capability from silently bypassing the owner gate. Lift this
+	// once `EmailAgent` plumbs the request user into its tool ctx.
+	if (cap.permission === "owner") {
+		const allowed = cap.surfaces.every((s) => s === "rule-action");
+		if (!allowed) {
+			throw new Error(
+				`Capability "${cap.id}" declares permission: "owner" but exposes non-rule surfaces (${cap.surfaces.join(", ")}). Owner-only is currently rule-action only — see workers/lib/capabilities/registry.ts.`,
+			);
+		}
+	}
 	registry.set(cap.id, cap as Capability);
 }
 
@@ -83,9 +99,25 @@ export async function invoke<O = unknown>(
 	if (!cap) {
 		return { ok: false, error: `Unknown capability: ${id}`, code: "unknown_capability" };
 	}
+	// Koa-style chain dispatch with a per-position called guard. Calling
+	// `next()` twice from the same middleware advances the chain twice and
+	// would otherwise re-run downstream middleware (and runCore) — log loudly
+	// and reject the second call rather than execute the capability twice.
 	let i = -1;
+	let lastCalled = -1;
 	const dispatch = async (): Promise<CapabilityResult> => {
 		i += 1;
+		if (i <= lastCalled) {
+			console.error(
+				`Capability ${cap.id}: middleware called next() multiple times`,
+			);
+			return {
+				ok: false,
+				error: `middleware misuse: next() called multiple times`,
+				code: "run_failed",
+			};
+		}
+		lastCalled = i;
 		if (i < middlewares.length) {
 			return middlewares[i](ctx, cap, rawInput, dispatch);
 		}

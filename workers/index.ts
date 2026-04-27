@@ -58,7 +58,7 @@ import {
 	list as listCapabilities,
 	invoke as invokeCapability,
 	normalizeRuleAction,
-	serializeInputSchema,
+	serializeZodSchema,
 } from "./lib/capabilities";
 import { listLlmModels } from "./lib/llm-models";
 import {
@@ -338,8 +338,8 @@ app.get("/api/v1/mailboxes/:mailboxId/capabilities", async (c) => {
 		surfaces: cap.surfaces,
 		scopes: cap.scopes,
 		version: cap.version,
-		inputSchema: serializeInputSchema(cap.inputSchema),
-		outputSchema: cap.outputSchema ? serializeInputSchema(cap.outputSchema) : null,
+		inputSchema: serializeZodSchema(cap.inputSchema),
+		outputSchema: cap.outputSchema ? serializeZodSchema(cap.outputSchema) : null,
 	}));
 	return c.json({ capabilities });
 });
