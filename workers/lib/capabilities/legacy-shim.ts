@@ -18,16 +18,11 @@
  * affects the `movedOutOfInbox` decision in `workers/index.ts`, so we keep
  * it in the envelope alongside emitting the action.
  *
- * `extractAttachmentText` is a real capability now (`core:extract-attachment-text`)
- * — its return value contributes to the auto-draft prompt envelope through
- * `CapabilityPromptContribution`. The shim still translates the legacy
- * boolean field into a capability invocation so existing R2 rules keep
- * working without rewrite.
- *
- * `extractInvoice` is the last hold-out: the matching `core:extract-invoice`
- * capability is still a marker only, because the executor dispatches the
- * InvoiceAgent via DO RPC and that side-effect lives outside the
- * capability ctx for now. Phase-2 work will fold that in.
+ * `extractAttachmentText` and `extractInvoice` are real capabilities now
+ * (`core:extract-attachment-text` and `core:extract-invoice`). The shim
+ * still translates the legacy boolean fields into capability invocations so
+ * existing R2 rules keep working without rewrite, but no inline executor
+ * code remains — the action loop in `workers/index.ts` does the work.
  */
 import type { RuleAction } from "../rules";
 
@@ -44,7 +39,6 @@ export interface NormalizedRuleAction {
 		skipDraft: boolean;
 		promptOverride: string | null;
 		moveTo: string | null;
-		extractInvoice: boolean;
 	};
 }
 
@@ -86,7 +80,6 @@ export function normalizeRuleAction(raw: RuleAction): NormalizedRuleAction {
 			moveTo:
 				raw.moveTo ??
 				(typeof explicitMoveToFolder === "string" ? explicitMoveToFolder : null),
-			extractInvoice: !!raw.extractInvoice || explicitIds.has("core:extract-invoice"),
 		},
 	};
 }

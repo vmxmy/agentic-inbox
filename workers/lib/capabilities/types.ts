@@ -46,6 +46,12 @@ export interface CapabilityContext {
 	/** Set when invoked as an agent tool. */
 	agentId?: "email-reply" | "invoice";
 	triggeredBy: "rule" | "agent-tool" | "mcp";
+	/** Cloudflare Worker `ExecutionContext.waitUntil`. Capabilities that
+	 *  schedule fire-and-forget async work (subrequests, DO dispatches)
+	 *  pass their promise here so the runtime keeps the worker alive
+	 *  until completion. Optional — only the rule executor on inbound
+	 *  mail wires it today; agent-tool / mcp call sites await synchronously. */
+	waitUntil?: (promise: Promise<unknown>) => void;
 }
 
 export interface Capability<I = unknown, O = unknown> {

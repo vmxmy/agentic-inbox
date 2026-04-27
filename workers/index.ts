@@ -1368,6 +1368,11 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 				mailboxId,
 				emailId: messageId,
 				triggeredBy: "rule",
+				// Forward the request-scoped ExecutionContext.waitUntil so
+				// capabilities that schedule fire-and-forget work (today:
+				// `core:extract-invoice` dispatching INVOICE_AGENT) keep
+				// the worker alive until their async dispatch resolves.
+				waitUntil: (p) => ctx.waitUntil(p),
 			},
 			a.capabilityId,
 			a.params,
@@ -1385,26 +1390,6 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 				if (typeof f === "string") deferredPdfs.push(f);
 			}
 		}
-	}
-
-	// Structured invoice extraction. Runs BEFORE the auto-draft early return
-	// so it works alongside skipDraft (which is the common config for invoices).
-	// Async via INVOICE_AGENT — receiveEmail returns immediately; the agent
-	// reads the email back from MailboxDO and runs the deterministic pipeline
-	// (workers/lib/invoice-tools.ts:toolProcessEmailInvoices →
-	//  MailboxDO.reprocessInvoicesForEmail → workers/lib/invoice-pipeline.ts).
-	// Phase-1 note: the matching `core:extract-invoice` capability is a marker
-	// only; the actual InvoiceAgent dispatch stays here until Phase 2 makes
-	// extracted text addressable from the capability ctx.
-	if (normalized.flow.extractInvoice) {
-		const invoiceAgentStub = env.INVOICE_AGENT.get(env.INVOICE_AGENT.idFromName(mailboxId));
-		const invoiceAgentHeaders: Record<string, string> = { "Content-Type": "application/json" };
-		if (env.INTERNAL_SECRET) invoiceAgentHeaders[INTERNAL_SYSTEM_HEADER] = env.INTERNAL_SECRET;
-		ctx.waitUntil(invoiceAgentStub.fetch(new Request("https://agents/onNewEmail", {
-			method: "POST",
-			headers: invoiceAgentHeaders,
-			body: JSON.stringify({ mailboxId, emailId: messageId }),
-		})));
 	}
 
 	const movedOutOfInbox = !!(normalized.flow.moveTo && normalized.flow.moveTo !== Folders.INBOX);
