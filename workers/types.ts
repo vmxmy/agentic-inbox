@@ -29,13 +29,8 @@ export interface Env extends Cloudflare.Env {
 	 * `Cloudflare.Env`.
 	 */
 	LLM_API_KEY?: string;
-	/**
-	 * Storage backend for inbox processing rules.
-	 *   - "d1" : per-mailbox SQLite (rules table, ACID, version-CAS, history)
-	 *   - anything else (default) : legacy R2 settings.rules JSON array
-	 *
-	 * Flip to "d1" only after the rules-to-D1 backfill has completed for all
-	 * mailboxes — see scripts/backfill-rules-to-d1 (Phase 2 work).
-	 */
-	RULES_SOURCE?: string;
+	// RULES_SOURCE is declared in wrangler.jsonc vars (literal "d1" today,
+	// "r2" if explicitly overridden) and reaches this interface via the
+	// typegen extension of `Cloudflare.Env`. Used by workers/lib/rules-store
+	// to pick the active rules backend per request.
 }

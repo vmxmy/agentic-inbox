@@ -49,6 +49,7 @@ import {
 	listRules as listRulesFromStore,
 	replaceRules as replaceRulesInStore,
 	getRuleHistory as getRuleHistoryFromStore,
+	mirrorLegacyRulesToD1,
 	RuleConflictError,
 	RuleValidationError,
 } from "./lib/rules-store";
@@ -507,6 +508,13 @@ app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 		members: Array.isArray(prev.members) ? prev.members : [],
 	};
 	await c.env.BUCKET.put(key, JSON.stringify(merged));
+	// Transitional bridge: in d1 mode, mirror the legacy rules payload into
+	// the DO so the inbound-email pipeline (which reads D1) stays in sync
+	// with the settings UI (which still saves through this legacy endpoint).
+	// No-op in r2 mode; remove once settings.tsx switches to /rules.
+	if ("rules" in clientClean) {
+		await mirrorLegacyRulesToD1(c.env, mailboxId, clientClean.rules, user.email);
+	}
 	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings: merged });
 });
 

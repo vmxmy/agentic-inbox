@@ -111,10 +111,56 @@ function toStoredRule(row: DoStoredRule): StoredRule {
 }
 
 /**
+ * In d1 mode, if the DO has zero rules but the legacy R2 settings document
+ * still has some, copy them into the DO so the cutover is non-destructive.
+ * Returns the post-backfill rows. Idempotent: subsequent calls find a
+ * non-empty DO and short-circuit without touching R2.
+ *
+ * No-op (returns the input rows unchanged) when the DO already has rules or
+ * when R2 has no rules to copy. Validation failures are swallowed and logged
+ * — a malformed legacy rule should not block the cutover, the offending
+ * mailbox just stays empty until an admin re-saves.
+ */
+async function backfillFromR2IfEmpty(
+	env: Env,
+	mailboxId: string,
+	currentRows: DoStoredRule[],
+	settingsHint?: Record<string, unknown> | null,
+): Promise<DoStoredRule[]> {
+	if (currentRows.length > 0) return currentRows;
+	const settings =
+		settingsHint !== undefined ? settingsHint : await readSettings(env, mailboxId);
+	const r2Rules = parseRulesLoose(settings ?? undefined);
+	if (r2Rules.length === 0) return currentRows;
+	try {
+		const stub = getMailboxStub(env, mailboxId);
+		const result = await stub.replaceRules({
+			rules: r2Rules.map((r) => ({
+				name: r.name ?? null,
+				enabled: r.enabled,
+				conditions: r.if,
+				actions: r.then,
+			})),
+			expectedVersions: {},
+			actor: "r2-backfill",
+		});
+		if (result.ok) return result.rules;
+	} catch (err) {
+		console.error(
+			`rules-store: r2→d1 backfill failed for mailbox ${mailboxId}`,
+			err,
+		);
+	}
+	return currentRows;
+}
+
+/**
  * Read all rules for a mailbox, sorted by position.
  *
  * Branches on `getRulesSource(env)`:
- *   - "d1": authoritative SQLite read with real ids / versions
+ *   - "d1": authoritative SQLite read with real ids / versions; lazily
+ *           backfills from legacy R2 settings.rules on first read so the
+ *           cutover is non-destructive
  *   - "r2": legacy settings.rules JSON; ids are synthesized as `r2-<idx>`
  *           and version is always 1 since R2 has no row-level CAS. Callers
  *           that depend on stable ids across saves must wait for the d1
@@ -123,7 +169,8 @@ function toStoredRule(row: DoStoredRule): StoredRule {
 export async function listRules(env: Env, mailboxId: string): Promise<StoredRule[]> {
 	if (getRulesSource(env) === "d1") {
 		const stub = getMailboxStub(env, mailboxId);
-		const rows = await stub.listRules();
+		let rows = await stub.listRules();
+		rows = await backfillFromR2IfEmpty(env, mailboxId, rows);
 		return rows.map(toStoredRule);
 	}
 	const settings = await readSettings(env, mailboxId);
@@ -148,7 +195,8 @@ export async function listRules(env: Env, mailboxId: string): Promise<StoredRule
  *
  * Accepts an optional `settingsHint` so callers that already have the R2
  * settings document in hand (e.g. `getAgentConfig`) avoid a second R2 GET
- * in the r2-source path.
+ * in the r2-source path. The hint also feeds the lazy d1 backfill so the
+ * inbound-email pipeline does not pay an extra R2 GET on first hit.
  */
 export async function loadRulesForEvaluation(
 	env: Env,
@@ -157,7 +205,8 @@ export async function loadRulesForEvaluation(
 ): Promise<Rule[]> {
 	if (getRulesSource(env) === "d1") {
 		const stub = getMailboxStub(env, mailboxId);
-		const rows = await stub.listRules();
+		let rows = await stub.listRules();
+		rows = await backfillFromR2IfEmpty(env, mailboxId, rows, settingsHint);
 		return rows.map(toStoredRule).map((r) => ({
 			name: r.name,
 			enabled: r.enabled,
@@ -177,6 +226,47 @@ async function readSettings(
 	const obj = await env.BUCKET.get(`mailboxes/${mailboxId}.json`);
 	if (!obj) return null;
 	return (await obj.json()) as Record<string, unknown>;
+}
+
+/**
+ * In d1 mode, mirror an R2-shape rules array (the legacy PUT
+ * /api/v1/mailboxes/:id payload) into the per-mailbox DO. No-op in r2 mode.
+ *
+ * Used as a transitional bridge so a UI that still saves rules through the
+ * legacy settings endpoint stays consistent with the inbound-email pipeline,
+ * which reads from the DO in d1 mode. Once settings.tsx switches to the
+ * dedicated /rules endpoints (Workstream 3) this can be deleted.
+ *
+ * Failures are logged and swallowed — the legacy PUT has already written R2
+ * authoritatively for the user, so a D1 mirror failure should not 500 the
+ * settings save. The next D1 read will trigger the lazy backfill path.
+ */
+export async function mirrorLegacyRulesToD1(
+	env: Env,
+	mailboxId: string,
+	rawRules: unknown,
+	actor: string,
+): Promise<void> {
+	if (getRulesSource(env) !== "d1") return;
+	const settingsLike = { rules: rawRules } as Record<string, unknown>;
+	const parsed = parseRulesLoose(settingsLike);
+	try {
+		await replaceRules(env, mailboxId, {
+			rules: parsed.map((r) => ({
+				name: r.name ?? null,
+				enabled: r.enabled,
+				if: r.if,
+				then: r.then,
+			})),
+			expectedVersions: {},
+			actor,
+		});
+	} catch (err) {
+		console.error(
+			`rules-store: legacy→d1 mirror failed for mailbox ${mailboxId}`,
+			err,
+		);
+	}
 }
 
 export interface ReplaceRulesArgs {
