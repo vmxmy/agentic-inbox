@@ -211,6 +211,12 @@ app.route("/", apiApp);
 
 // Agent WebSocket routing - must be before React Router catch-all.
 // Enforce per-mailbox ACL before handing off to the Agents SDK.
+//
+// We strip and re-inject `INTERNAL_USER_HEADER` so the EmailAgent /
+// InvoiceAgent DOs can read the authenticated user without re-validating
+// auth. This mirrors the MCP forwarder above. Required for the capability
+// registry's `permission: "owner"` gate to evaluate against the real caller
+// when the agent invokes an owner-only capability as a tool.
 app.all("/agents/*", async (c) => {
 	const user = c.var.user;
 	if (!user) return c.json({ error: "Not authenticated" }, 401);
@@ -226,7 +232,11 @@ app.all("/agents/*", async (c) => {
 			throw e;
 		}
 	}
-	const response = await routeAgentRequest(c.req.raw, c.env);
+	const headers = new Headers(c.req.raw.headers);
+	headers.delete(INTERNAL_USER_HEADER);
+	headers.set(INTERNAL_USER_HEADER, user.email);
+	const req = new Request(c.req.raw, { headers });
+	const response = await routeAgentRequest(req, c.env);
 	if (response) return response;
 	return c.text("Agent not found", 404);
 });

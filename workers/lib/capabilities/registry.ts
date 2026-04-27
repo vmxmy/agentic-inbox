@@ -50,22 +50,17 @@ export function register<I, O>(cap: Capability<I, O>): void {
 	if (registry.has(cap.id)) {
 		throw new Error(`Capability "${cap.id}" is already registered`);
 	}
-	// Owner-only capabilities are only enforceable on the rule-action surface
-	// today: the rule path either bypasses (PUT-time fingerprint already
-	// gated owner authorship) or runs the registry permission gate. The
-	// agent-tool surface does not thread a user into CapabilityContext today,
-	// and the mcp surface relays `currentUser()` without admin-role
-	// preservation. Refusing the combination at registration time prevents
-	// a future capability from silently bypassing the owner gate. Lift this
-	// once `EmailAgent` plumbs the request user into its tool ctx.
-	if (cap.permission === "owner") {
-		const allowed = cap.surfaces.every((s) => s === "rule-action");
-		if (!allowed) {
-			throw new Error(
-				`Capability "${cap.id}" declares permission: "owner" but exposes non-rule surfaces (${cap.surfaces.join(", ")}). Owner-only is currently rule-action only — see workers/lib/capabilities/registry.ts.`,
-			);
-		}
-	}
+	// All three surfaces now thread an authenticated user into
+	// CapabilityContext when one is available:
+	//   - rule-action: rule-triggered calls bypass the owner gate (rules were
+	//     authored under PUT-time fingerprint checks).
+	//   - agent-tool: workers/agent/index.ts:EmailAgent reads
+	//     INTERNAL_USER_HEADER in fetch() and forwards `user` to invoke().
+	//   - mcp-tool: workers/mcp/index.ts does the same with admin-role
+	//     preservation via D1 lookup.
+	// System-triggered agent dispatch (auto-draft from receiveEmail) leaves
+	// `user` null — owner-only capabilities will deny in that path, which
+	// is intentional (the system isn't authorised to invoke owner power).
 	registry.set(cap.id, cap as Capability);
 }
 

@@ -24,6 +24,8 @@ import {
 	get as getCapability,
 	invoke as invokeCapability,
 } from "../lib/capabilities";
+import { INTERNAL_USER_HEADER, normalizeEmail, type AuthUser } from "../lib/auth";
+import { findUserByEmail } from "../lib/users";
 import type { Env } from "../types";
 
 // AI SDK v6 changed tool() overloads significantly. We define tools as plain
@@ -131,6 +133,7 @@ function buildToolsFor(
 	agentId: "email-reply" | "invoice",
 	enabledSkills: readonly string[] | null,
 	allowedDefaults: readonly string[],
+	user: AuthUser | null,
 ): Record<string, ReturnType<typeof defineTool>> {
 	// `enabledSkills` only narrows: user-supplied ids outside the agent's
 	// allowlist are dropped so an EmailAgent can't accidentally pull invoice
@@ -146,7 +149,7 @@ function buildToolsFor(
 			parameters: cap.inputSchema as z.ZodType<unknown>,
 			execute: async (input: unknown): Promise<unknown> => {
 				const result = await invokeCapability(
-					{ env, mailboxId, agentId, triggeredBy: "agent-tool" },
+					{ env, mailboxId, agentId, triggeredBy: "agent-tool", user },
 					id,
 					input,
 				);
@@ -161,19 +164,42 @@ function createEmailTools(
 	env: Env,
 	mailboxId: string,
 	enabledSkills: readonly string[] | null = null,
+	user: AuthUser | null = null,
 ) {
-	return buildToolsFor(env, mailboxId, "email-reply", enabledSkills, EMAIL_AGENT_DEFAULT_SKILLS);
+	return buildToolsFor(env, mailboxId, "email-reply", enabledSkills, EMAIL_AGENT_DEFAULT_SKILLS, user);
 }
 
 // Use `any` for the Env generic to avoid type conflicts between the custom
 // SEND_EMAIL binding shape and the AIChatAgent constraint.  The actual env
 // is fully typed inside the tools via the closure.
 export class EmailAgent extends AIChatAgent<any> {
+	/** Per-request authenticated user. Populated by {@link fetch} from the
+	 *  internal header set by the Hono layer (`workers/app.ts:/agents/*`).
+	 *  DOs serialise requests on the fetch boundary, so reading this field
+	 *  inside `onChatMessage` is safe for the current request. Null for
+	 *  system-triggered paths (auto-draft `onNewEmail`) — the registry's
+	 *  owner-only gate denies in that case, which is intentional. */
+	private currentUser: AuthUser | null = null;
+
+	override async fetch(request: Request): Promise<Response> {
+		const hdr = request.headers.get(INTERNAL_USER_HEADER);
+		if (hdr) {
+			const email = normalizeEmail(hdr);
+			const record = await findUserByEmail(this.env as Env, email);
+			this.currentUser = record
+				? { id: record.id, email: record.email, role: record.role }
+				: null;
+		} else {
+			this.currentUser = null;
+		}
+		return super.fetch(request);
+	}
+
 	async onChatMessage(onFinish: any) {
 		const env = this.env as Env;
 		const mailboxId = this.name;
 		const config = await getAgentConfig(env, mailboxId);
-		const tools = createEmailTools(env, mailboxId, config.emailReplyEnabledSkills);
+		const tools = createEmailTools(env, mailboxId, config.emailReplyEnabledSkills, this.currentUser);
 		const systemPrompt = resolveSystemPrompt(config.customSystemPrompt);
 		const cfg = await resolveLlmConfig(env);
 		const provider = getLlmProvider(env, cfg);
