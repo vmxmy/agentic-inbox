@@ -10,6 +10,10 @@
  * for lookups.
  */
 
+// Default middleware — registers the logging interceptor at module load
+// time so every capability invocation gets a structured one-line log.
+import "./middleware/logging";
+
 // Built-ins — order doesn't matter, ids are unique.
 import "./builtin/move-email";
 import "./builtin/mark-email-read";
