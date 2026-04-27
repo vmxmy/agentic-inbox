@@ -112,6 +112,55 @@ export interface IncomingEmailFacts {
 	attachmentExts: string[];
 }
 
+/** Legacy boolean → capability id mapping used by `canonicalizeRuleAction`.
+ *  Order matters for stable rewrite output. */
+const LEGACY_BOOL_FIELDS: ReadonlyArray<{
+	key: "skipDraft" | "markRead" | "extractAttachmentText" | "extractInvoice";
+	capabilityId: string;
+	params: Record<string, unknown>;
+}> = [
+	{ key: "skipDraft", capabilityId: "core:skip-draft", params: {} },
+	{ key: "markRead", capabilityId: "core:mark-email-read", params: { read: true } },
+	{ key: "extractAttachmentText", capabilityId: "core:extract-attachment-text", params: {} },
+	{ key: "extractInvoice", capabilityId: "core:extract-invoice", params: {} },
+];
+
+/**
+ * Translate any legacy boolean fields (`skipDraft` / `markRead` /
+ * `extractAttachmentText` / `extractInvoice`) into entries on `actions[]`,
+ * dedupe against any existing entries, and drop the legacy fields from the
+ * returned object. `moveTo` and `promptOverride` are values rather than
+ * flags and survive verbatim.
+ *
+ * Idempotent — calling on an already-canonical rule returns it unchanged.
+ * Used by `replaceRules` to keep new writes in canonical shape and by the
+ * admin backfill endpoint to migrate stored rules in a single shot.
+ */
+export function canonicalizeRuleAction(raw: RuleAction): RuleAction {
+	type CapabilityInvocation = NonNullable<RuleAction["actions"]>[number];
+	const actions: CapabilityInvocation[] = [];
+	const seen = new Set<string>();
+	for (const { key, capabilityId, params } of LEGACY_BOOL_FIELDS) {
+		if (raw[key] === true && !seen.has(capabilityId)) {
+			seen.add(capabilityId);
+			actions.push({ capabilityId, params: params as JsonValue });
+		}
+	}
+	if (Array.isArray(raw.actions)) {
+		for (const a of raw.actions) {
+			if (!seen.has(a.capabilityId)) {
+				seen.add(a.capabilityId);
+				actions.push(a);
+			}
+		}
+	}
+	return {
+		...(raw.moveTo ? { moveTo: raw.moveTo } : {}),
+		...(raw.promptOverride ? { promptOverride: raw.promptOverride } : {}),
+		...(actions.length ? { actions } : {}),
+	};
+}
+
 function normalize(s: string): string {
 	return s.trim().toLowerCase();
 }

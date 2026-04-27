@@ -694,6 +694,60 @@ app.get("/api/v1/admin/mailboxes", async (c) => {
 	return c.json(detailed);
 });
 
+// -- Rules backfill (admin, one-shot) -------------------------------
+//
+// Walks every mailbox and re-saves its rules through the canonicalising
+// `replaceRules` path. Idempotent — already-canonical rules pass through
+// unchanged. Used to migrate R2 / D1 documents that still carry legacy
+// boolean fields (`then.skipDraft: true`, etc.) into the `actions[]`
+// shape so the legacy translation block in `legacy-shim.ts` and the
+// matching schema fields can be safely removed in the next release.
+
+app.post("/api/v1/admin/rules/backfill", async (c) => {
+	const guard = requireAdmin(c);
+	if (guard instanceof Response) return guard;
+	const entries = await listMailboxes(c.env.BUCKET);
+	const report: Array<{ mailboxId: string; rules: number; rewritten: boolean; error?: string }> = [];
+	for (const { id: mailboxId } of entries) {
+		try {
+			const before = await listRulesFromStore(c.env, mailboxId);
+			if (before.length === 0) {
+				report.push({ mailboxId, rules: 0, rewritten: false });
+				continue;
+			}
+			await replaceRulesInStore(c.env, mailboxId, {
+				rules: before.map((r) => ({
+					id: r.id.startsWith("r2-") ? undefined : r.id,
+					name: r.name ?? null,
+					enabled: r.enabled,
+					if: r.if,
+					then: r.then,
+				})),
+				expectedVersions: Object.fromEntries(
+					before
+						.filter((r) => !r.id.startsWith("r2-"))
+						.map((r) => [r.id, r.version]),
+				),
+				actor: `admin-backfill:${guard.user.email}`,
+			});
+			report.push({ mailboxId, rules: before.length, rewritten: true });
+		} catch (e) {
+			report.push({
+				mailboxId,
+				rules: 0,
+				rewritten: false,
+				error: e instanceof Error ? e.message : String(e),
+			});
+		}
+	}
+	return c.json({
+		mailboxes: report.length,
+		rewritten: report.filter((r) => r.rewritten).length,
+		errors: report.filter((r) => r.error).length,
+		report,
+	});
+});
+
 // -- LLM providers (admin) ------------------------------------------
 //
 // Manage the OpenAI-compatible endpoints EmailAgent / InvoiceAgent stream

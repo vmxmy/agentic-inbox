@@ -20,6 +20,7 @@ import {
 	RuleConditionSchema,
 	RuleActionSchema,
 	RulesSchema,
+	canonicalizeRuleAction,
 	parseRulesLoose,
 	type Rule,
 	type RuleAction,
@@ -293,9 +294,12 @@ export async function replaceRules(
 	mailboxId: string,
 	args: ReplaceRulesArgs,
 ): Promise<StoredRule[]> {
-	// Validate every rule before touching the DO. Failing fast here gives the
-	// UI a clean 422 instead of a partial DO write.
-	args.rules.forEach((r, idx) => {
+	// Validate every rule, then canonicalise — legacy boolean fields lift
+	// into `actions[]` here so storage is single-source-of-truth and the
+	// shim's translation block becomes dead on the read side. Idempotent on
+	// already-canonical rules. Validation runs first so the caller sees a
+	// clean 422 instead of a partial DO write.
+	const canonical = args.rules.map((r, idx) => {
 		const cond = RuleConditionSchema.safeParse(r.if);
 		if (!cond.success) {
 			throw new RuleValidationError(
@@ -310,11 +314,12 @@ export async function replaceRules(
 				idx,
 			);
 		}
+		return { ...r, then: canonicalizeRuleAction(act.data) };
 	});
 
 	if (getRulesSource(env) === "d1") {
 		const input: DoReplaceRulesInput = {
-			rules: args.rules.map((r) => ({
+			rules: canonical.map((r) => ({
 				id: r.id,
 				name: r.name ?? null,
 				enabled: r.enabled,
@@ -337,7 +342,7 @@ export async function replaceRules(
 	// matches the legacy PUT /api/v1/mailboxes/:id behaviour and is the
 	// price of keeping the bridge phase simple. The d1 cutover restores
 	// row-level CAS.
-	const flatRules = args.rules.map((r) => ({
+	const flatRules = canonical.map((r) => ({
 		...(r.name ? { name: r.name } : {}),
 		enabled: r.enabled,
 		if: r.if,
