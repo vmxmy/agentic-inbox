@@ -23,6 +23,11 @@ const Input = z.object({
 		),
 });
 
+const Output = z.object({
+	promptText: z.string().optional(),
+	deferredPdfs: z.array(z.string()).optional(),
+});
+
 register({
 	id: "core:extract-attachment-text",
 	displayName: "Extract attachment text",
@@ -32,6 +37,7 @@ register({
 	scopes: ["mailbox.read"],
 	version: 1,
 	inputSchema: Input,
+	outputSchema: Output,
 	async run(ctx, input): Promise<CapabilityPromptContribution> {
 		const emailId = input.emailId ?? ctx.emailId;
 		if (!emailId) {

@@ -65,6 +65,18 @@ export async function invoke<O = unknown>(
 	}
 	try {
 		const value = (await cap.run(ctx, parsed.data)) as O;
+		// Warn-only output validation. A capability that misdeclares its
+		// outputSchema (or returns garbage on an edge case) should not blow
+		// up the rule pipeline — log and pass the raw value through so the
+		// downstream consumer can either coerce or shrug.
+		if (cap.outputSchema) {
+			const out = cap.outputSchema.safeParse(value);
+			if (!out.success) {
+				console.warn(
+					`Capability ${id} v${cap.version} return shape did not match outputSchema: ${out.error.message}`,
+				);
+			}
+		}
 		return { ok: true, value };
 	} catch (e) {
 		return {

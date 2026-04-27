@@ -18,6 +18,10 @@ export interface CapabilityDescriptor {
 	version: number;
 	/** JSON Schema (zod-to-json-schema serialised) for the capability's params. */
 	inputSchema: unknown;
+	/** Optional JSON Schema for the capability's structured return shape. Null
+	 *  for capabilities that don't declare one (most agent-tool / mcp-tool
+	 *  capabilities — output is consumed conversationally). */
+	outputSchema: unknown | null;
 }
 
 /**

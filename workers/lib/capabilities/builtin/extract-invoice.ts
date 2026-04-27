@@ -16,6 +16,10 @@ const Input = z.object({
 		),
 });
 
+const Output = z.object({
+	scheduled: z.boolean(),
+});
+
 register({
 	id: "core:extract-invoice",
 	displayName: "Extract invoice",
@@ -25,6 +29,7 @@ register({
 	scopes: ["mailbox.write"],
 	version: 1,
 	inputSchema: Input,
+	outputSchema: Output,
 	async run(ctx, input): Promise<{ scheduled: boolean }> {
 		const emailId = input.emailId ?? ctx.emailId;
 		if (!emailId) {

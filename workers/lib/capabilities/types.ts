@@ -68,6 +68,12 @@ export interface Capability<I = unknown, O = unknown> {
 	 *  every built-in. */
 	version: number;
 	inputSchema: z.ZodType<I>;
+	/** Optional structured-output contract. Declared for capabilities whose
+	 *  return value is consumed downstream (e.g. CapabilityPromptContribution
+	 *  for the rule executor; structured agent-tool results). Validated by
+	 *  registry.invoke in warn-only mode — a mismatch logs but does not fail
+	 *  the call so a buggy capability does not blow up the rule pipeline. */
+	outputSchema?: z.ZodType<O>;
 	run(ctx: CapabilityContext, input: I): Promise<O>;
 }
 
