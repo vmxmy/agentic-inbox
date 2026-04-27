@@ -16,6 +16,11 @@
  */
 import { SignJWT, jwtVerify } from "jose";
 import type { Context } from "hono";
+import {
+	addMemberRecord,
+	removeMemberRecord,
+	upsertMailboxRecord,
+} from "./mailbox-directory";
 import type { Env } from "../types";
 
 export interface AuthUser {
@@ -206,12 +211,16 @@ export async function claimMailbox(
 	if (!obj) throw new AuthzError(404, "Mailbox not found");
 	const settings = (await obj.json()) as Record<string, unknown>;
 	if (typeof settings.owner === "string" && settings.owner) return; // lost the race
+	const ownerNorm = normalizeEmail(ownerEmail);
 	const next = {
 		...settings,
-		owner: normalizeEmail(ownerEmail),
+		owner: ownerNorm,
 		members: Array.isArray(settings.members) ? settings.members : [],
 	};
 	await env.BUCKET.put(key, JSON.stringify(next));
+	// PR 3 dual-write: shadow the new owner into D1. Failures are logged
+	// inside upsertMailboxRecord; backfill reconciles drift.
+	await upsertMailboxRecord(env, mailboxId, ownerNorm);
 }
 
 /**
@@ -270,6 +279,12 @@ export async function setMailboxOwner(
 	const members = [...memberSet];
 	const next = { ...settings, owner, members };
 	await env.BUCKET.put(key, JSON.stringify(next));
+	// PR 3 dual-write: shadow new owner + the demoted previous owner (now
+	// a member) into D1.
+	await upsertMailboxRecord(env, mailboxId, owner);
+	if (acl.owner && acl.owner !== owner) {
+		await addMemberRecord(env, mailboxId, acl.owner, null);
+	}
 	return { owner, members };
 }
 
@@ -289,6 +304,11 @@ export async function addMailboxMember(
 	const members = [...acl.members, normalized];
 	const next = { ...settings, members };
 	await env.BUCKET.put(key, JSON.stringify(next));
+	// PR 3 dual-write. addedByUserId left null here because the helper has
+	// no caller identity context — `workers/index.ts` could pass it in a
+	// follow-up; the directory backfill still ties the row to a user when
+	// the email later registers.
+	await addMemberRecord(env, mailboxId, normalized, null);
 	return { owner: acl.owner, members };
 }
 
@@ -308,6 +328,8 @@ export async function removeMailboxMember(
 	if (members.length === acl.members.length) return acl;
 	const next = { ...settings, members };
 	await env.BUCKET.put(key, JSON.stringify(next));
+	// PR 3 dual-write.
+	await removeMemberRecord(env, mailboxId, normalized);
 	return { owner: acl.owner, members };
 }
 
