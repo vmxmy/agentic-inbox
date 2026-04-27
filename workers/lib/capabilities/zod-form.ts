@@ -4,8 +4,9 @@
 
 /**
  * Tiny wrapper around `zod-to-json-schema` so the /capabilities endpoint can
- * ship each capability's `inputSchema` as standard JSON Schema, and the
- * frontend can render a param form without depending on Zod at runtime.
+ * ship each capability's input + output schemas as standard JSON Schema, and
+ * the frontend can render param forms / inspect output shapes without
+ * depending on Zod at runtime.
  *
  * The dep is already pulled in transitively via the AI SDK; we don't add it
  * to package.json directly.
@@ -13,9 +14,6 @@
 import type { ZodType } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 
-/** Serialise any zod schema (input OR output) to JSON Schema. Returns the
- *  same shape `zod-to-json-schema` produces; the frontend reads `properties`
- *  / `required` to render param forms and inspect outputSchema. */
 export function serializeZodSchema(schema: ZodType): unknown {
 	return zodToJsonSchema(schema, { target: "jsonSchema7", $refStrategy: "none" });
 }
