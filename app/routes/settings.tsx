@@ -23,7 +23,7 @@ import { useParams } from "react-router";
 import { AGENTS, type AgentId } from "~/lib/agent-registry";
 import { queryKeys } from "~/queries/keys";
 import { useWhoami } from "~/queries/identity";
-import { useCapabilities } from "~/queries/capabilities";
+import { useCapabilities, type CapabilityDescriptor } from "~/queries/capabilities";
 import { useModels } from "~/queries/models";
 import CapabilityActionEditor from "~/components/CapabilityActionEditor";
 import { useFolders } from "~/queries/folders";
@@ -64,9 +64,12 @@ interface UIRuleAction {
 	capabilityId: string;
 	params: Record<string, unknown>;
 }
-// Keys of `then` that the UI knows how to render. Any other key the backend
-// supports must round-trip via `_unknownThen` so a Settings save never silently
-// destroys a field the UI doesn't yet have a control for.
+// Keys of `then` that the UI knows how to handle. Legacy boolean keys
+// (skipDraft / markRead / extractAttachmentText / extractInvoice) are NOT
+// written by new saves — they round-trip into `actions[]` on read so the
+// data model stays single-source-of-truth. Any other key flows through
+// `_unknownThen` so a Settings save never silently destroys a field the UI
+// doesn't yet have a control for.
 const KNOWN_THEN_KEYS = new Set([
 	"skipDraft",
 	"moveTo",
@@ -76,6 +79,14 @@ const KNOWN_THEN_KEYS = new Set([
 	"promptOverride",
 	"actions",
 ]);
+// Capability ids that the legacy boolean `then.*` flags lift into. Order
+// preserved on read so a rule with all four bools renders deterministically.
+const LEGACY_BOOL_TO_CAPABILITY: ReadonlyArray<{ key: string; capabilityId: string }> = [
+	{ key: "skipDraft", capabilityId: "core:skip-draft" },
+	{ key: "markRead", capabilityId: "core:mark-email-read" },
+	{ key: "extractAttachmentText", capabilityId: "core:extract-attachment-text" },
+	{ key: "extractInvoice", capabilityId: "core:extract-invoice" },
+];
 interface UIRule {
 	name: string;
 	enabled: boolean;
@@ -85,13 +96,10 @@ interface UIRule {
 	subjectContains: string;   // comma-separated in UI; split on save
 	bodyContains: string;      // comma-separated in UI; split on save
 	hasAttachmentExt: string;  // comma-separated, e.g. "xml,pdf"
-	skipDraft: boolean;
-	moveTo: string;            // "" | inbox | sent | draft | archive | trash | spam
-	markRead: boolean;
-	extractAttachmentText: boolean;
-	extractInvoice: boolean;
+	moveTo: string;            // "" | <folder id>
 	promptOverride: string;
-	/** Capability invocations beyond the 5 legacy field actions above. */
+	/** Source of truth for every action the rule runs. Legacy boolean
+	 *  fields from R2 are translated into entries here on read. */
 	actions: UIRuleAction[];
 	/** Backend-supported `then.*` keys the UI doesn't render. Preserved verbatim
 	 *  so a save round-trip never deletes them — see the Apr 2026 review where
@@ -107,49 +115,21 @@ const BLANK_RULE: UIRule = {
 	subjectContains: "",
 	bodyContains: "",
 	hasAttachmentExt: "",
-	skipDraft: false,
 	moveTo: "",
-	markRead: false,
-	extractAttachmentText: false,
-	extractInvoice: false,
 	promptOverride: "",
 	actions: [],
 	_unknownThen: {},
 };
 const MOVE_KEEP_OPTION = { value: "", label: "(keep in inbox)" } as const;
 
-// Boolean rule actions that ride on legacy top-level `then.*` fields. Surfaced
-// as a multi-select Combobox so the rule editor scales as more no-arg actions
-// land — for capabilities that need parameters (move-email, webhook, …) see
-// `RuleCapabilityActions` below.
-type ThenActionId = "skipDraft" | "markRead" | "extractAttachmentText" | "extractInvoice";
-interface ThenActionOption {
-	id: ThenActionId;
-	label: string;
-	description: string;
+/** A capability has no required input fields when the JSON-Schema-serialised
+ *  form has no `required` array (or an empty one). Used by RuleThenActionsPicker
+ *  to decide which capabilities surface in the no-arg multi-select. */
+function hasNoRequiredFields(jsonSchema: unknown): boolean {
+	if (!jsonSchema || typeof jsonSchema !== "object") return false;
+	const required = (jsonSchema as { required?: unknown }).required;
+	return !Array.isArray(required) || required.length === 0;
 }
-const THEN_ACTION_OPTIONS: readonly ThenActionOption[] = [
-	{
-		id: "skipDraft",
-		label: "Skip auto-draft",
-		description: "Don't have the agent draft an auto-reply for this email.",
-	},
-	{
-		id: "markRead",
-		label: "Mark as read",
-		description: "Auto-mark the email as read on receipt.",
-	},
-	{
-		id: "extractAttachmentText",
-		label: "Extract attachment text",
-		description: "Parse XML attachments inline (incl. 全电发票) and feed into the agent's prompt. PDF OCR coming next.",
-	},
-	{
-		id: "extractInvoice",
-		label: "Extract invoice",
-		description: "Parse Chinese 全电/增值税发票 XML and persist header + line items to the mailbox database.",
-	},
-] as const;
 
 function csvToArray(s: string): string[] {
 	return s.split(",").map((x) => x.trim()).filter(Boolean);
@@ -167,6 +147,35 @@ function loadRulesFromSettings(settings: Record<string, unknown> | undefined): U
 		for (const [key, value] of Object.entries(act)) {
 			if (!KNOWN_THEN_KEYS.has(key)) unknownThen[key] = value;
 		}
+
+		// Build the action list: legacy boolean fields lift into capability
+		// invocations first (preserving stable order) and explicit actions[]
+		// entries follow. Dedupe by capabilityId so a rule with both shapes
+		// for the same capability collapses to one entry.
+		const actions: UIRuleAction[] = [];
+		const seen = new Set<string>();
+		for (const { key, capabilityId } of LEGACY_BOOL_TO_CAPABILITY) {
+			if (act[key] === true && !seen.has(capabilityId)) {
+				seen.add(capabilityId);
+				actions.push({ capabilityId, params: {} });
+			}
+		}
+		if (Array.isArray(act.actions)) {
+			for (const a of act.actions as unknown[]) {
+				if (!a || typeof a !== "object") continue;
+				const item = a as { capabilityId?: unknown; params?: unknown };
+				if (typeof item.capabilityId !== "string") continue;
+				if (seen.has(item.capabilityId)) continue;
+				seen.add(item.capabilityId);
+				actions.push({
+					capabilityId: item.capabilityId,
+					params: item.params && typeof item.params === "object"
+						? (item.params as Record<string, unknown>)
+						: {},
+				});
+			}
+		}
+
 		return {
 			name: typeof r?.name === "string" ? r.name : "",
 			enabled: r?.enabled !== false,
@@ -176,25 +185,9 @@ function loadRulesFromSettings(settings: Record<string, unknown> | undefined): U
 			subjectContains: arrayToCsv(cond.subjectContains),
 			bodyContains: arrayToCsv(cond.bodyContains),
 			hasAttachmentExt: arrayToCsv(cond.hasAttachmentExt),
-			skipDraft: act.skipDraft === true,
 			moveTo: typeof act.moveTo === "string" ? act.moveTo : "",
-			markRead: act.markRead === true,
-			extractAttachmentText: act.extractAttachmentText === true,
-			extractInvoice: act.extractInvoice === true,
 			promptOverride: typeof act.promptOverride === "string" ? act.promptOverride : "",
-			actions: Array.isArray(act.actions)
-				? (act.actions as unknown[]).flatMap((a) => {
-					if (!a || typeof a !== "object") return [];
-					const raw = a as { capabilityId?: unknown; params?: unknown };
-					if (typeof raw.capabilityId !== "string") return [];
-					return [{
-						capabilityId: raw.capabilityId,
-						params: (raw.params && typeof raw.params === "object"
-							? (raw.params as Record<string, unknown>)
-							: {}),
-					}];
-				})
-				: [],
+			actions,
 			_unknownThen: unknownThen,
 		};
 	});
@@ -216,12 +209,13 @@ function dumpRulesForSave(rules: UIRule[]) {
 			// conflict — preserves backend-supported fields the UI does not yet
 			// render (e.g. a future capability flag) without overriding state
 			// the user just edited in the UI.
+			//
+			// Legacy boolean fields (skipDraft / markRead / extractAttachmentText /
+			// extractInvoice) are no longer written. Their information lives in
+			// `actions[]` now; the backend's legacy-shim still accepts the old
+			// shape on read so existing R2 documents keep working without rewrite.
 			const act: Record<string, unknown> = { ...r._unknownThen };
-			if (r.skipDraft) act.skipDraft = true;
 			if (r.moveTo) act.moveTo = r.moveTo;
-			if (r.markRead) act.markRead = true;
-			if (r.extractAttachmentText) act.extractAttachmentText = true;
-			if (r.extractInvoice) act.extractInvoice = true;
 			if (r.promptOverride.trim()) act.promptOverride = r.promptOverride.trim();
 			const cleanActions = r.actions.filter((a) => a.capabilityId.trim().length > 0);
 			if (cleanActions.length) act.actions = cleanActions;
@@ -681,8 +675,9 @@ export default function SettingsRoute() {
 											<label className="block text-[10px] uppercase tracking-wide text-kumo-subtle mb-1">Then …</label>
 											<div className="space-y-1.5">
 												<RuleThenActionsPicker
-													value={r}
-													onChange={(patch) => updateRule(idx, patch)}
+													mailboxId={mailboxId}
+													actions={r.actions}
+													onChange={(nextActions) => updateRule(idx, { actions: nextActions })}
 												/>
 												<div>
 													<label className="block text-[10px] text-kumo-subtle mb-0.5">Move to folder</label>
@@ -931,46 +926,74 @@ function MembersCard({ mailboxId }: { mailboxId: string }) {
 
 // ── RuleThenActionsPicker ──────────────────────────────────────────
 //
-// Multi-select Combobox covering the four boolean rule actions that ride
-// on legacy top-level `then.*` fields (skipDraft / markRead /
-// extractAttachmentText / extractInvoice). Replaces what used to be four
-// stacked checkboxes — same data shape on the wire, more compact UI, room
-// to grow as new no-arg actions land.
+// Multi-select Combobox covering every no-arg rule-action capability in
+// the registry. Pulls options from useCapabilities at runtime so any new
+// no-arg capability shows up automatically — no hardcoded list, no second
+// edit when a capability is added. Capabilities that need parameters
+// (move-email, webhook, …) live in `RuleCapabilityActions` below.
 
 function RuleThenActionsPicker({
-	value,
+	mailboxId,
+	actions,
 	onChange,
 }: {
-	value: Pick<UIRule, ThenActionId>;
-	onChange: (patch: Partial<UIRule>) => void;
+	mailboxId: string | undefined;
+	actions: UIRuleAction[];
+	onChange: (next: UIRuleAction[]) => void;
 }) {
-	const selected = THEN_ACTION_OPTIONS.filter((o) => value[o.id]);
+	const { data, isLoading } = useCapabilities(mailboxId, { surface: "rule-action" });
+	const noArgCaps = useMemo(
+		() => (data?.capabilities ?? []).filter((c) => hasNoRequiredFields(c.inputSchema)),
+		[data],
+	);
+	const noArgIds = useMemo(() => new Set(noArgCaps.map((c) => c.id)), [noArgCaps]);
+	const selected = useMemo(() => {
+		const selectedIds = new Set(actions.map((a) => a.capabilityId));
+		return noArgCaps.filter((c) => selectedIds.has(c.id));
+	}, [actions, noArgCaps]);
+
 	return (
 		<Combobox
 			multiple
-			items={THEN_ACTION_OPTIONS as unknown as ThenActionOption[]}
+			items={noArgCaps as unknown as CapabilityDescriptor[]}
 			value={selected}
 			onValueChange={(next: unknown) => {
-				const arr = Array.isArray(next) ? (next as ThenActionOption[]) : [];
-				const ids = new Set(arr.map((o) => o.id));
-				onChange({
-					skipDraft: ids.has("skipDraft"),
-					markRead: ids.has("markRead"),
-					extractAttachmentText: ids.has("extractAttachmentText"),
-					extractInvoice: ids.has("extractInvoice"),
-				});
+				const picked = Array.isArray(next) ? (next as CapabilityDescriptor[]) : [];
+				const pickedIds = new Set(picked.map((c) => c.id));
+				// Keep with-param actions (handled by RuleCapabilityActions)
+				// untouched; replace the no-arg slice with the new selection.
+				const kept = actions.filter((a) => !noArgIds.has(a.capabilityId));
+				const added = picked.map((c) => ({ capabilityId: c.id, params: {} }));
+				const reordered: UIRuleAction[] = [];
+				// Stable order: previously-selected first, then newly-added.
+				for (const a of actions) {
+					if (pickedIds.has(a.capabilityId) && noArgIds.has(a.capabilityId)) {
+						reordered.push(a);
+						pickedIds.delete(a.capabilityId);
+					}
+				}
+				for (const c of added) {
+					if (pickedIds.has(c.capabilityId)) reordered.push(c);
+				}
+				onChange([...reordered, ...kept]);
 			}}
 		>
-			<Combobox.TriggerMultipleWithInput<ThenActionOption>
-				placeholder={selected.length === 0 ? "Pick actions…" : "Add another…"}
-				renderItem={(item) => <Combobox.Chip>{item.label}</Combobox.Chip>}
+			<Combobox.TriggerMultipleWithInput<CapabilityDescriptor>
+				placeholder={
+					isLoading
+						? "Loading actions…"
+						: selected.length === 0
+							? "Pick actions…"
+							: "Add another…"
+				}
+				renderItem={(item) => <Combobox.Chip>{item.displayName}</Combobox.Chip>}
 			/>
 			<Combobox.Content>
 				<Combobox.List>
-					{((item: ThenActionOption) => (
+					{((item: CapabilityDescriptor) => (
 						<Combobox.Item key={item.id} value={item}>
 							<div>
-								<div className="text-xs">{item.label}</div>
+								<div className="text-xs">{item.displayName}</div>
 								<div className="text-[10px] text-kumo-subtle">
 									{item.description}
 								</div>
@@ -986,12 +1009,10 @@ function RuleThenActionsPicker({
 
 // ── RuleCapabilityActions ──────────────────────────────────────────
 //
-// Editable list of capability invocations attached to a rule's `then.actions`
-// list. Sits below the legacy "Skip auto-draft / Mark as read / Move to /
-// Prompt addon" controls — those still emit their respective Capability
-// invocations on the backend via the legacy translator, so the user only
-// reaches for this section when they need something the legacy fields don't
-// cover (webhook, future capabilities).
+// Editor for capability invocations that take parameters (webhook URL,
+// custom fields, etc.). No-arg capabilities live in `RuleThenActionsPicker`
+// above and `core:move-email` has its own "Move to folder" field — this
+// component handles everything else.
 
 function RuleCapabilityActions({
 	mailboxId,
@@ -1004,7 +1025,14 @@ function RuleCapabilityActions({
 }) {
 	const { data, isLoading } = useCapabilities(mailboxId, { surface: "rule-action" });
 	const allCaps = data?.capabilities ?? [];
-	const selectableCaps = allCaps.filter((c) => c.id !== "core:skip-draft");
+	// No-arg capabilities live in `RuleThenActionsPicker` (the Combobox above);
+	// `core:move-email` has its own dedicated "Move to folder" field. Both are
+	// excluded here so each capability has exactly one home in the editor.
+	const selectableCaps = allCaps.filter((c) => {
+		if (hasNoRequiredFields(c.inputSchema)) return false;
+		if (c.id === "core:move-email") return false;
+		return true;
+	});
 
 	const addAction = () => {
 		const first = selectableCaps[0];
