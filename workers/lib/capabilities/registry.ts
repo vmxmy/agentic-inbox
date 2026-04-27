@@ -114,7 +114,7 @@ export async function invoke<O = unknown>(
 			return {
 				ok: false,
 				error: `middleware misuse: next() called multiple times`,
-				code: "run_failed",
+				code: "middleware_misuse",
 			};
 		}
 		lastCalled = i;

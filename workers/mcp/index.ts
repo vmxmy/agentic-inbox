@@ -45,6 +45,7 @@ import {
 	verifyInviteToken,
 	type AuthUser,
 } from "../lib/auth";
+import { findUserByEmail } from "../lib/users";
 import {
 	getAgentConfig,
 	setRules,
@@ -98,16 +99,27 @@ export class EmailMCP extends McpAgent<Env> {
 	});
 
 	/**
-	 * Per-request authenticated user email. Populated by {@link fetch} from the
+	 * Per-request authenticated user. Populated by {@link fetch} from the
 	 * internal header set by the Hono layer (`workers/app.ts`). DOs serialise
 	 * requests on the fetch boundary, so this field is safe to read inside
 	 * tool handlers for the current request.
+	 *
+	 * The role is resolved from D1 at fetch time so admin status survives the
+	 * Hono → DO hop — without the lookup, every MCP caller would land here
+	 * as `role: "user"` and admin-only registry gates (e.g.
+	 * `permission: "owner"`) would deny admins who are not the mailbox owner.
 	 */
 	private currentUserEmail: string | null = null;
+	private currentUserRole: "user" | "admin" = "user";
 
 	override async fetch(request: Request): Promise<Response> {
 		const hdr = request.headers.get(INTERNAL_USER_HEADER);
 		this.currentUserEmail = hdr ? normalizeEmail(hdr) : null;
+		this.currentUserRole = "user";
+		if (this.currentUserEmail) {
+			const record = await findUserByEmail(this.env, this.currentUserEmail);
+			if (record?.role === "admin") this.currentUserRole = "admin";
+		}
 		return super.fetch(request);
 	}
 
@@ -119,10 +131,11 @@ export class EmailMCP extends McpAgent<Env> {
 				? {
 						// MCP only sees the email forwarded by the Hono layer; the ACL
 						// checks below only key off `email`/`role`/`system`, so a
-						// synthetic id is fine here.
+						// synthetic id is fine here. The role was resolved from D1 in
+						// `fetch()` so admin status survives the Hono → DO hop.
 						id: `mcp:${this.currentUserEmail}`,
 						email: this.currentUserEmail,
-						role: "user",
+						role: this.currentUserRole,
 					}
 				: null;
 

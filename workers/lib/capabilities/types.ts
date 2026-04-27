@@ -88,7 +88,9 @@ export interface Capability<I = unknown, O = unknown> {
 	run(ctx: CapabilityContext, input: I): Promise<O>;
 }
 
-/** Result of `registry.invoke()`. Discriminated for type-safe consumers. */
+/** Result of `registry.invoke()`. Discriminated for type-safe consumers.
+ *  `middleware_misuse` distinguishes framework bugs (a middleware called
+ *  `next()` zero or multiple times) from genuine capability failures. */
 export type CapabilityResult<O = unknown> =
 	| { ok: true; value: O }
 	| {
@@ -98,7 +100,8 @@ export type CapabilityResult<O = unknown> =
 				| "unknown_capability"
 				| "invalid_input"
 				| "run_failed"
-				| "permission_denied";
+				| "permission_denied"
+				| "middleware_misuse";
 	  };
 
 /**
