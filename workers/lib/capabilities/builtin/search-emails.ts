@@ -17,6 +17,7 @@ register({
 	description: "Search for emails matching a query across subject and body fields.",
 	surfaces: ["agent-tool", "mcp-tool"],
 	scopes: ["mailbox.read"],
+	version: 1,
 	inputSchema: Input,
 	async run(ctx, input) {
 		return toolSearchEmails(ctx.env, ctx.mailboxId, input);

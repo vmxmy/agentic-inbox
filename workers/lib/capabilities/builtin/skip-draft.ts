@@ -17,6 +17,7 @@ register({
 	description: "Suppress the EmailAgent auto-draft for this email.",
 	surfaces: ["rule-action"],
 	scopes: [],
+	version: 1,
 	inputSchema: z.object({}),
 	async run() {
 		return { ok: true };

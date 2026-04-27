@@ -29,6 +29,7 @@ register({
 		"Draft a new email (not a reply) and save it to the Drafts folder. This does NOT send — it saves a draft for the operator to review. Use this for composing new outbound emails. Write the body as plain text — no HTML tags.",
 	surfaces: ["agent-tool", "mcp-tool"],
 	scopes: ["mailbox.write"],
+	version: 1,
 	inputSchema: Input,
 	async run(ctx, input) {
 		// Agent surface always treats body as plain text — matches today's

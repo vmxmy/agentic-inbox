@@ -24,6 +24,7 @@ register({
 	description: "Move an email to a different folder (inbox, sent, draft, archive, trash).",
 	surfaces: ["rule-action", "agent-tool", "mcp-tool"],
 	scopes: ["mailbox.write"],
+	version: 1,
 	inputSchema: Input,
 	async run(ctx, input) {
 		const emailId = input.emailId ?? ctx.emailId;

@@ -337,6 +337,7 @@ app.get("/api/v1/mailboxes/:mailboxId/capabilities", async (c) => {
 		description: cap.description,
 		surfaces: cap.surfaces,
 		scopes: cap.scopes,
+		version: cap.version,
 		inputSchema: serializeInputSchema(cap.inputSchema),
 	}));
 	return c.json({ capabilities });

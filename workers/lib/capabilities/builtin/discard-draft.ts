@@ -17,6 +17,7 @@ register({
 		"Delete a draft email. Use this to discard drafts that are no longer needed or were rejected by the operator.",
 	surfaces: ["agent-tool", "mcp-tool"],
 	scopes: ["mailbox.write"],
+	version: 1,
 	inputSchema: Input,
 	async run(ctx, input) {
 		return toolDiscardDraft(ctx.env, ctx.mailboxId, input.draftId);

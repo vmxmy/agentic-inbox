@@ -62,6 +62,11 @@ export interface Capability<I = unknown, O = unknown> {
 	description: string;
 	surfaces: readonly CapabilitySurface[];
 	scopes: readonly CapabilityScope[];
+	/** Major-version of the capability's input contract. Bump when breaking
+	 *  changes to the input shape land — old stored rules can stay on the
+	 *  pinned version while clients migrate. v1 is the current contract for
+	 *  every built-in. */
+	version: number;
 	inputSchema: z.ZodType<I>;
 	run(ctx: CapabilityContext, input: I): Promise<O>;
 }

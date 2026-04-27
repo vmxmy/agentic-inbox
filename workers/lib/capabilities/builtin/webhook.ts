@@ -145,6 +145,7 @@ register({
 	description: "POST a JSON envelope describing the matched email to an external URL.",
 	surfaces: ["rule-action"],
 	scopes: ["external.http"],
+	version: 1,
 	inputSchema: Input,
 	async run(ctx, input) {
 		let target: URL;

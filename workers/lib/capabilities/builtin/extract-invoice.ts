@@ -23,6 +23,7 @@ register({
 		"Parse Chinese 全电/增值税发票 XML attachments and persist header + line items to the mailbox database. Runs alongside Skip auto-draft.",
 	surfaces: ["rule-action"],
 	scopes: ["mailbox.write"],
+	version: 1,
 	inputSchema: Input,
 	async run(ctx, input): Promise<{ scheduled: boolean }> {
 		const emailId = input.emailId ?? ctx.emailId;

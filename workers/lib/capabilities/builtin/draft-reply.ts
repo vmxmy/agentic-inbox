@@ -27,6 +27,7 @@ register({
 		"Draft a reply to an existing email and save it to the Drafts folder. This does NOT send — it saves a draft for the operator to review and send from the UI. Write the body as plain text — no HTML tags.",
 	surfaces: ["agent-tool", "mcp-tool"],
 	scopes: ["mailbox.write"],
+	version: 1,
 	inputSchema: Input,
 	async run(ctx, input) {
 		// Agent surface forces plain-text + AI safety verify — matches today's

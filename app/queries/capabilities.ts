@@ -14,6 +14,8 @@ export interface CapabilityDescriptor {
 	description: string;
 	surfaces: ReadonlyArray<CapabilitySurface>;
 	scopes: readonly string[];
+	/** Major-version of the capability's input contract. v1 today. */
+	version: number;
 	/** JSON Schema (zod-to-json-schema serialised) for the capability's params. */
 	inputSchema: unknown;
 }

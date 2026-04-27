@@ -30,6 +30,7 @@ register({
 		"Parse text-based attachments (XML inline; PDF deferred to async OCR) and feed the extracted block into the auto-draft agent's prompt.",
 	surfaces: ["rule-action"],
 	scopes: ["mailbox.read"],
+	version: 1,
 	inputSchema: Input,
 	async run(ctx, input): Promise<CapabilityPromptContribution> {
 		const emailId = input.emailId ?? ctx.emailId;

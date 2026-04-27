@@ -22,6 +22,7 @@ register({
 		"Send a brand-new email via the mailbox's outbound binding. Deliberately not exposed to agents — agents only draft.",
 	surfaces: ["mcp-tool"],
 	scopes: ["email.send"],
+	version: 1,
 	inputSchema: Input,
 	async run(ctx, input) {
 		const bodyHtml = input.isPlainText ? textToHtml(input.body) : input.body;

@@ -22,6 +22,7 @@ register({
 		"Get all emails in a conversation thread. This is essential for understanding the full context of a conversation before drafting a response. Returns all messages sorted chronologically.",
 	surfaces: ["agent-tool", "mcp-tool"],
 	scopes: ["mailbox.read"],
+	version: 1,
 	inputSchema: Input,
 	async run(ctx, input) {
 		return toolGetThread(ctx.env, ctx.mailboxId, input.threadId);

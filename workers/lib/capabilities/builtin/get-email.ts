@@ -23,6 +23,7 @@ register({
 		"Get a single email with its full body content and attachments. Use this to read the actual content of an email.",
 	surfaces: ["agent-tool", "mcp-tool"],
 	scopes: ["mailbox.read"],
+	version: 1,
 	inputSchema: Input,
 	async run(ctx, input) {
 		const emailId = input.emailId ?? ctx.emailId;

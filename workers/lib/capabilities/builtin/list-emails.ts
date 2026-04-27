@@ -20,6 +20,7 @@ register({
 		"List emails in a folder. Returns email metadata (id, subject, sender, recipient, date, read/starred status, thread_id). Use folder='inbox' for received emails, 'sent' for sent emails.",
 	surfaces: ["agent-tool", "mcp-tool"],
 	scopes: ["mailbox.read"],
+	version: 1,
 	inputSchema: Input,
 	async run(ctx, input) {
 		return toolListEmails(ctx.env, ctx.mailboxId, {
