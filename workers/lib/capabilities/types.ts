@@ -52,6 +52,11 @@ export interface CapabilityContext {
 	 *  until completion. Optional — only the rule executor on inbound
 	 *  mail wires it today; agent-tool / mcp call sites await synchronously. */
 	waitUntil?: (promise: Promise<unknown>) => void;
+	/** Composition hook — call another capability with the same ctx. The
+	 *  registry synthesises this on every invocation so a capability can
+	 *  delegate to siblings without re-plumbing env / mailboxId / user.
+	 *  Composed calls walk the same middleware chain as top-level calls. */
+	invoke?: <O = unknown>(id: string, input: unknown) => Promise<CapabilityResult<O>>;
 }
 
 export interface Capability<I = unknown, O = unknown> {

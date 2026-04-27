@@ -118,8 +118,16 @@ async function runCore(
 			code: "invalid_input",
 		};
 	}
+	// Synthesise ctx.invoke so the capability can compose calls to siblings
+	// without re-plumbing env / mailboxId / user. Composed calls re-enter
+	// `invoke` and therefore walk the middleware chain (logging sees them
+	// as nested invocations) and the permission gate.
+	const childCtx: CapabilityContext = {
+		...ctx,
+		invoke: <O>(id: string, input: unknown) => invoke<O>(childCtx, id, input),
+	};
 	try {
-		const value = await cap.run(ctx, parsed.data);
+		const value = await cap.run(childCtx, parsed.data);
 		// Warn-only output validation. A capability that misdeclares its
 		// outputSchema (or returns garbage on an edge case) should not blow
 		// up the rule pipeline — log and pass the raw value through so the
