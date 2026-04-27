@@ -146,6 +146,7 @@ register({
 	surfaces: ["rule-action"],
 	scopes: ["external.http"],
 	version: 1,
+	permission: "owner",
 	inputSchema: Input,
 	async run(ctx, input) {
 		let target: URL;

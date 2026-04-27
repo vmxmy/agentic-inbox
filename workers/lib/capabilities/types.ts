@@ -67,6 +67,12 @@ export interface Capability<I = unknown, O = unknown> {
 	 *  pinned version while clients migrate. v1 is the current contract for
 	 *  every built-in. */
 	version: number;
+	/** Minimum permission required at the call site. Default `member` (any
+	 *  mailbox member or admin can invoke). `owner` is enforced at
+	 *  registry.invoke time for non-rule-triggered calls — rule-triggered
+	 *  invocations bypass the runtime check because the rule itself was
+	 *  authored under PUT-time ownership rules. */
+	permission?: "member" | "owner";
 	inputSchema: z.ZodType<I>;
 	/** Optional structured-output contract. Declared for capabilities whose
 	 *  return value is consumed downstream (e.g. CapabilityPromptContribution
@@ -80,7 +86,15 @@ export interface Capability<I = unknown, O = unknown> {
 /** Result of `registry.invoke()`. Discriminated for type-safe consumers. */
 export type CapabilityResult<O = unknown> =
 	| { ok: true; value: O }
-	| { ok: false; error: string; code: "unknown_capability" | "invalid_input" | "run_failed" };
+	| {
+			ok: false;
+			error: string;
+			code:
+				| "unknown_capability"
+				| "invalid_input"
+				| "run_failed"
+				| "permission_denied";
+	  };
 
 /**
  * Optional return shape for capabilities that contribute to the inbound-email

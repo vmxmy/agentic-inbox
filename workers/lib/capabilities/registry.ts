@@ -13,6 +13,7 @@ import type {
 	CapabilityResult,
 	CapabilitySurface,
 } from "./types";
+import { getMailboxAcl, isAdmin, normalizeEmail, type AuthUser } from "../auth";
 
 const ID_REGEX = /^[a-z]+:[a-z][a-z0-9-]*$/;
 
@@ -55,6 +56,16 @@ export async function invoke<O = unknown>(
 	if (!cap) {
 		return { ok: false, error: `Unknown capability: ${id}`, code: "unknown_capability" };
 	}
+
+	// Permission gate. Rule-triggered invocations bypass — the rule itself
+	// was authored under PUT-time ownership rules (see workers/index.ts:
+	// PUT /api/v1/mailboxes/:id and PUT .../rules), so re-checking here
+	// would also block legitimate rules from running.
+	if (cap.permission === "owner" && ctx.triggeredBy !== "rule") {
+		const denied = await checkOwnerPermission(ctx);
+		if (denied) return denied as CapabilityResult<O>;
+	}
+
 	const parsed = cap.inputSchema.safeParse(rawInput);
 	if (!parsed.success) {
 		return {
@@ -85,4 +96,41 @@ export async function invoke<O = unknown>(
 			code: "run_failed",
 		};
 	}
+}
+
+/**
+ * Owner-permission check used by `invoke` for capabilities that declare
+ * `permission: "owner"`. Returns a `permission_denied` failure result when
+ * the caller is not the mailbox owner (and not a global admin); returns
+ * `null` when the caller is allowed to proceed.
+ */
+async function checkOwnerPermission(
+	ctx: CapabilityContext,
+): Promise<CapabilityResult | null> {
+	if (!ctx.user) {
+		return {
+			ok: false,
+			error: "Owner-only capability requires an authenticated caller",
+			code: "permission_denied",
+		};
+	}
+	// Admins bypass — same policy the rest of the codebase applies (see
+	// workers/lib/auth.ts:assertMailboxOwner).
+	if (isAdmin(ctx.env, ctx.user as AuthUser)) return null;
+	const acl = await getMailboxAcl(ctx.env, ctx.mailboxId);
+	if (!acl?.owner) {
+		return {
+			ok: false,
+			error: `Mailbox "${ctx.mailboxId}" has no owner — owner-only capability cannot be invoked`,
+			code: "permission_denied",
+		};
+	}
+	if (normalizeEmail(ctx.user.email) !== acl.owner) {
+		return {
+			ok: false,
+			error: "Owner-only capability requires the mailbox owner",
+			code: "permission_denied",
+		};
+	}
+	return null;
 }
