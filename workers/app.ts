@@ -12,9 +12,11 @@ import { EmailMCP } from "./mcp";
 import {
 	assertMailboxAccess,
 	AuthzError,
-	INTERNAL_USER_HEADER,
+	INTERNAL_AUTH_CONTEXT_HEADER,
 	INTERNAL_SYSTEM_HEADER,
+	INTERNAL_USER_HEADER,
 	normalizeEmail,
+	serializeInternalAuthContext,
 	type AuthUser,
 } from "./lib/auth";
 import {
@@ -190,16 +192,21 @@ app.use("*", async (c, next) => {
 app.route("/api/v1/auth", authApp);
 
 // MCP server endpoint — used by AI coding tools (ProtoAgent, Claude Code, Cursor, etc.)
-// We inject the authenticated user email via an internal header so the MCP DO
-// can enforce per-mailbox ACL without re-parsing auth. Any client-supplied
-// value of the header is stripped first so callers cannot spoof.
+// We mint a signed internal auth-context JWT carrying the full caller
+// identity (id, email, role, system?) so the MCP DO can enforce per-mailbox
+// ACL — including admin-only paths — without round-tripping D1 to recover
+// role. Any client-supplied value of the auth-context header is stripped
+// first so external callers cannot spoof. The legacy email-only header is
+// also stripped during the rollout to prevent mixed-mode requests.
 const mcpHandler = EmailMCP.serve("/mcp", { binding: "EMAIL_MCP" });
-function forwardToMcp(c: import("hono").Context<AppEnv>) {
+async function forwardToMcp(c: import("hono").Context<AppEnv>) {
 	const user = c.var.user;
 	if (!user) return c.json({ error: "Not authenticated" }, 401);
 	const headers = new Headers(c.req.raw.headers);
+	headers.delete(INTERNAL_AUTH_CONTEXT_HEADER);
 	headers.delete(INTERNAL_USER_HEADER);
-	headers.set(INTERNAL_USER_HEADER, user.email);
+	const token = await serializeInternalAuthContext(user, c.env);
+	headers.set(INTERNAL_AUTH_CONTEXT_HEADER, token);
 	const req = new Request(c.req.raw, { headers });
 	return mcpHandler.fetch(req, c.env, c.executionCtx as ExecutionContext);
 }
@@ -212,9 +219,10 @@ app.route("/", apiApp);
 // Agent WebSocket routing - must be before React Router catch-all.
 // Enforce per-mailbox ACL before handing off to the Agents SDK.
 //
-// We strip and re-inject `INTERNAL_USER_HEADER` so the EmailAgent /
-// InvoiceAgent DOs can read the authenticated user without re-validating
-// auth. This mirrors the MCP forwarder above. Required for the capability
+// We mint a signed internal auth-context JWT carrying the full caller
+// identity so the EmailAgent / InvoiceAgent DOs can read the authenticated
+// user without re-validating auth or re-querying D1 for the caller's role.
+// This mirrors the MCP forwarder above. Required for the capability
 // registry's `permission: "owner"` gate to evaluate against the real caller
 // when the agent invokes an owner-only capability as a tool.
 app.all("/agents/*", async (c) => {
@@ -233,8 +241,10 @@ app.all("/agents/*", async (c) => {
 		}
 	}
 	const headers = new Headers(c.req.raw.headers);
+	headers.delete(INTERNAL_AUTH_CONTEXT_HEADER);
 	headers.delete(INTERNAL_USER_HEADER);
-	headers.set(INTERNAL_USER_HEADER, user.email);
+	const token = await serializeInternalAuthContext(user, c.env);
+	headers.set(INTERNAL_AUTH_CONTEXT_HEADER, token);
 	const req = new Request(c.req.raw, { headers });
 	const response = await routeAgentRequest(req, c.env);
 	if (response) return response;

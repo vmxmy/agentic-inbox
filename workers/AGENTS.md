@@ -32,7 +32,7 @@ Cloudflare Workers backend. Hosts the Hono API + React Router SSR (`app.ts`), th
 - **Three trust layers:** (1) Cloudflare Access JWT verified in `app.ts` middleware, (2) `getUserFromRequest` resolves the user (or `__system__` for internal calls), (3) `assertMailboxAccess` / `assertMailboxOwner` checks the per-mailbox ACL stored in `mailboxes/<id>.json` in R2. New mutating endpoints **must** call one of these.
 - **Class names matter to migrations.** `wrangler.jsonc` declares `MailboxDO` (v1), `EmailAgent` (v2), `EmailMCP` (v3) as `new_sqlite_classes`. Do not rename without an additional migration tag.
 - **Inbound email is asynchronous.** The `email` handler in `app.ts` calls `receiveEmail` and re-throws on failure so Cloudflare retries. Auto-draft runs via `ctx.waitUntil(...)` — do not await it from the email path.
-- **MCP receives the user via internal header.** `app.ts` strips the client-supplied `INTERNAL_USER_HEADER` and re-injects the authenticated email so the DO can enforce ACL without re-validating the JWT.
+- **MCP and `/agents/*` receive the user via a signed internal auth-context JWT.** `app.ts` strips any client-supplied `INTERNAL_AUTH_CONTEXT_HEADER` (and the legacy email-only `INTERNAL_USER_HEADER`) and re-injects a fresh token carrying the full `{id, email, role, system?}` so DOs can enforce ACL — including admin-only paths — without re-validating auth or round-tripping D1 to recover role. Token is HS256, audience-bound (`internal-do-auth`), 60s TTL.
 - **Worker-to-worker auto-draft** sets `INTERNAL_SYSTEM_HEADER: env.INTERNAL_SECRET`. Never log this header value.
 - All files use **tabs**.
 

@@ -27,9 +27,22 @@ export interface AuthUser {
 	system?: boolean;
 }
 
-/** Header used by the Hono layer to propagate the already-authenticated user
- *  email into DOs (EmailMCP) that would otherwise have to re-validate auth. */
+/**
+ * @deprecated Superseded by {@link INTERNAL_AUTH_CONTEXT_HEADER}. This header
+ * carried only the caller's email, forcing every Durable Object to re-resolve
+ * role from D1. Removed once no consumer reads it; the Hono layer still strips
+ * any inbound value to defang spoofing during the rollout.
+ */
 export const INTERNAL_USER_HEADER = "x-internal-user-email";
+
+/**
+ * Header carrying a signed internal auth-context JWT from the Hono layer to
+ * Durable Objects. Payload is an {@link InternalAuthClaims}: full
+ * `id`/`email`/`role`/`system` so the DO does not have to round-trip D1.
+ * Hono strips any inbound value before re-injecting one signed with
+ * {@link Env.INTERNAL_SECRET}.
+ */
+export const INTERNAL_AUTH_CONTEXT_HEADER = "x-internal-auth-context";
 
 /** Header used by receiveEmail → EmailAgent to mark the call as internal.
  *  Value must match env.INTERNAL_SECRET. */
@@ -379,5 +392,128 @@ export async function verifyInviteToken(
 	} catch (e) {
 		if (e instanceof AuthzError) throw e;
 		throw new AuthzError(403, "Invalid or expired invite token");
+	}
+}
+
+// ── Internal auth context ──────────────────────────────────────────
+//
+// Signed envelope used by the Hono layer to forward an already-authenticated
+// user identity to Durable Objects (EmailMCP, EmailAgent, InvoiceAgent).
+// Carries the full {id, email, role, system?} so DOs do not need to re-query
+// D1 to recover role. Signed with `INTERNAL_SECRET` (HS256, audience-bound,
+// short TTL) so a leaked or replayed token from outside the trust boundary
+// cannot be used.
+
+const INTERNAL_AUTH_ISSUER = "agentic-inbox";
+const INTERNAL_AUTH_AUDIENCE = "internal-do-auth";
+const INTERNAL_AUTH_TTL_SECONDS = 60;
+
+/** Decoded payload of {@link INTERNAL_AUTH_CONTEXT_HEADER}. */
+export interface InternalAuthClaims {
+	sub: string;
+	email: string;
+	role: "user" | "admin";
+	system?: boolean;
+	iss: string;
+	aud: string;
+	iat: number;
+	exp: number;
+}
+
+function internalAuthSigningKey(env: Env): Uint8Array {
+	if (!env.INTERNAL_SECRET) {
+		// Misconfiguration, not a per-request auth failure: a plain Error
+		// surfaces as 500 to the client which is the correct semantic. Hit
+		// from the Hono → DO hop on every /mcp and /agents/* request, so this
+		// will fire on the first chat or MCP call after a deploy without the
+		// secret. The fix is in README.md → Configuration.
+		throw new Error(
+			"INTERNAL_SECRET is required but not configured. /mcp and /agents/* cannot mint internal auth context. Set it via `wrangler secret put INTERNAL_SECRET` (or in `.dev.vars` for local dev).",
+		);
+	}
+	return new TextEncoder().encode(env.INTERNAL_SECRET);
+}
+
+/**
+ * Mint a signed internal auth-context JWT for the given user.
+ *
+ * Used only by the Worker layer (Hono → DO hop). Throws if INTERNAL_SECRET is
+ * missing — that is a deployment misconfiguration, not a per-request error.
+ */
+export async function serializeInternalAuthContext(
+	user: AuthUser,
+	env: Env,
+): Promise<string> {
+	const key = internalAuthSigningKey(env);
+	const now = Math.floor(Date.now() / 1000);
+	const exp = now + INTERNAL_AUTH_TTL_SECONDS;
+	const payload: Record<string, unknown> = {
+		email: normalizeEmail(user.email),
+		role: user.role,
+	};
+	if (user.system) payload.system = true;
+	return await new SignJWT(payload)
+		.setProtectedHeader({ alg: "HS256" })
+		.setSubject(user.id)
+		.setIssuer(INTERNAL_AUTH_ISSUER)
+		.setAudience(INTERNAL_AUTH_AUDIENCE)
+		.setIssuedAt(now)
+		.setExpirationTime(exp)
+		.sign(key);
+}
+
+/**
+ * Verify a signed internal auth-context JWT and return the decoded user.
+ * Throws AuthzError(401) if the token is malformed, unverifiable, or missing
+ * required claims.
+ */
+export async function parseInternalAuthContext(
+	token: string,
+	env: Env,
+): Promise<AuthUser> {
+	const key = internalAuthSigningKey(env);
+	let payload: Record<string, unknown>;
+	try {
+		const result = await jwtVerify(token, key, {
+			issuer: INTERNAL_AUTH_ISSUER,
+			audience: INTERNAL_AUTH_AUDIENCE,
+		});
+		payload = result.payload as Record<string, unknown>;
+	} catch {
+		throw new AuthzError(401, "Invalid internal auth context");
+	}
+	const sub = payload.sub;
+	const email = payload.email;
+	const role = payload.role;
+	if (typeof sub !== "string" || !sub) {
+		throw new AuthzError(401, "Internal auth context missing sub");
+	}
+	if (typeof email !== "string" || !email) {
+		throw new AuthzError(401, "Internal auth context missing email");
+	}
+	if (role !== "user" && role !== "admin") {
+		throw new AuthzError(401, "Internal auth context has invalid role");
+	}
+	const user: AuthUser = { id: sub, email, role };
+	if (payload.system === true) user.system = true;
+	return user;
+}
+
+/**
+ * Read and verify {@link INTERNAL_AUTH_CONTEXT_HEADER} from a DO-side request.
+ * Returns null when the header is absent (e.g. system-triggered email path).
+ * Returns null when the token is present but invalid — DOs should treat that
+ * as "no user context" and let downstream ACL checks deny, rather than crash.
+ */
+export async function readInternalAuthContextHeader(
+	request: Request,
+	env: Env,
+): Promise<AuthUser | null> {
+	const token = request.headers.get(INTERNAL_AUTH_CONTEXT_HEADER);
+	if (!token) return null;
+	try {
+		return await parseInternalAuthContext(token, env);
+	} catch {
+		return null;
 	}
 }
