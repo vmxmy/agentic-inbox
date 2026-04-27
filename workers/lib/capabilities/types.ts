@@ -64,3 +64,19 @@ export interface Capability<I = unknown, O = unknown> {
 export type CapabilityResult<O = unknown> =
 	| { ok: true; value: O }
 	| { ok: false; error: string; code: "unknown_capability" | "invalid_input" | "run_failed" };
+
+/**
+ * Optional return shape for capabilities that contribute to the inbound-email
+ * auto-draft agent's prompt envelope. The rule executor in `workers/index.ts`
+ * harvests `promptText` from each invocation and concatenates them into the
+ * final `promptOverride` passed to EmailAgent. Capabilities that do not
+ * contribute simply return any other value (or void); the executor reads
+ * these fields with `typeof` guards so non-contributing capabilities pay
+ * nothing.
+ */
+export interface CapabilityPromptContribution {
+	/** Text to append to the agent's prompt. Blank string means no contribution. */
+	promptText?: string;
+	/** Filenames of attachments deferred to async OCR (informational). */
+	deferredPdfs?: string[];
+}

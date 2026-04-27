@@ -23,6 +23,7 @@ import "./builtin/draft-reply";
 import "./builtin/discard-draft";
 import "./builtin/send-email";
 import "./builtin/webhook";
+import "./builtin/extract-attachment-text";
 
 export * from "./types";
 export * from "./registry";

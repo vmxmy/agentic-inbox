@@ -53,7 +53,7 @@ import {
 	RuleConflictError,
 	RuleValidationError,
 } from "./lib/rules-store";
-import { extensionOf, extractAttachmentsInline } from "./lib/attachment-extract";
+import { extensionOf } from "./lib/attachment-extract";
 import {
 	list as listCapabilities,
 	invoke as invokeCapability,
@@ -1353,7 +1353,14 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 	// invocations on read; the flow envelope still drives auto-draft / move
 	// suppression. Sequential execution (downgrade from previous parallel
 	// `Promise.allSettled`) — predictable order is worth the ~2ms regression.
+	//
+	// Capabilities that need to feed the auto-draft prompt return a
+	// `CapabilityPromptContribution` shape (see capabilities/types.ts); we
+	// harvest those into `promptContributions` / `deferredPdfs` here and merge
+	// them into `promptOverride` after the shouldDraft decision below.
 	const normalized = normalizeRuleAction(action);
+	const promptContributions: string[] = [];
+	const deferredPdfs: string[] = [];
 	for (const a of normalized.actions) {
 		const result = await invokeCapability(
 			{
@@ -1367,6 +1374,16 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 		);
 		if (!result.ok) {
 			console.error(`Rule capability ${a.capabilityId} failed: ${result.error}`);
+			continue;
+		}
+		const contrib = result.value as { promptText?: unknown; deferredPdfs?: unknown };
+		if (typeof contrib?.promptText === "string" && contrib.promptText.length > 0) {
+			promptContributions.push(contrib.promptText);
+		}
+		if (Array.isArray(contrib?.deferredPdfs)) {
+			for (const f of contrib.deferredPdfs) {
+				if (typeof f === "string") deferredPdfs.push(f);
+			}
 		}
 	}
 
@@ -1394,22 +1411,11 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 	const shouldDraft = config.autoDraft && !normalized.flow.skipDraft && !movedOutOfInbox;
 	if (!shouldDraft) return;
 
-	// Run attachment extraction (XML inline; PDF → deferred OCR follow-up).
-	let extractedBlock = "";
-	let deferredPdfs: string[] = [];
-	if (normalized.flow.extractAttachmentText && parsedEmail.attachments?.length) {
-		const { text, skippedPdf } = extractAttachmentsInline(
-			parsedEmail.attachments.map((a) => ({
-				filename: a.filename || "untitled",
-				mimetype: a.mimeType,
-				content: a.content,
-			})),
+	const extractedBlock = promptContributions.join("\n\n");
+	if (deferredPdfs.length) {
+		console.log(
+			`Deferred PDF OCR for ${mailboxId}/${messageId}: ${deferredPdfs.join(", ")} (Phase 2 not yet wired)`,
 		);
-		if (text) extractedBlock = text;
-		deferredPdfs = skippedPdf;
-		if (skippedPdf.length) {
-			console.log(`Deferred PDF OCR for ${mailboxId}/${messageId}: ${skippedPdf.join(", ")} (Phase 2 not yet wired)`);
-		}
 	}
 
 	const promptOverrideMerged = [
