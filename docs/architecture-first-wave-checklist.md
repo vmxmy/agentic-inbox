@@ -278,26 +278,46 @@ Make the application read and enforce mailbox owner/member semantics from D1.
 
 ### Implementation Checklist
 
-- [ ] Update `assertMailboxAccess` to use D1 mailbox owner/member state
-- [ ] Update `assertMailboxOwner` to use D1 mailbox owner state
-- [ ] Update `listUserMailboxes` to use D1 mailbox directory and membership index
-- [ ] Update mailbox provisioning endpoints to write/read D1-backed control-plane state
-- [ ] Update admin owner-assignment endpoints to use D1-backed control-plane state
-- [ ] Keep a temporary compatibility fallback only where absolutely needed during cutover
-- [ ] Remove R2 ACL reads from hot authorization paths
+- [x] Update `assertMailboxAccess` to use D1 mailbox owner/member state
+      *(now reads through D1-first `getMailboxAcl`)*
+- [x] Update `assertMailboxOwner` to use D1 mailbox owner state
+      *(via the same `getMailboxAcl` path)*
+- [x] Update `listUserMailboxes` to use D1 mailbox directory and
+      membership index *(via `listMailboxIdsForUser`; admin path also
+      surfaces R2-only legacy mailboxes via stale-detection)*
+- [x] Update mailbox provisioning endpoints to write/read D1-backed
+      control-plane state *(reads via `getMailboxAcl`/D1; writes already
+      dual-wrote in PR 3)*
+- [x] Update admin owner-assignment endpoints to use D1-backed
+      control-plane state *(`GET /api/v1/admin/mailboxes` enumerates
+      from D1 via `listUserMailboxes`)*
+- [x] Keep a temporary compatibility fallback only where absolutely
+      needed during cutover *(R2 self-heal in `getMailboxAcl` for
+      un-backfilled legacy mailboxes; logs WARN pointing at the admin
+      backfill endpoint)*
+- [x] Remove R2 ACL reads from hot authorization paths
+      *(`assertMailboxAccess` no longer reads `mailboxes/<id>.json`
+      unless D1 misses; admin enumeration no longer iterates
+      `BUCKET.list` for ACL)*
 
 ### Files Likely Touched
 
-- `workers/lib/auth.ts`
-- `workers/index.ts`
-- `app/routes/admin.tsx`
-- mailbox/member API client and query layers as needed
+- `workers/lib/auth.ts` — `getMailboxAcl` D1-first + R2 self-heal,
+  `assertMailboxAccess` cuts to D1, `listUserMailboxes` rewritten
+- `workers/index.ts` — `GET /api/v1/admin/mailboxes` enumerates via D1
+- `workers/AGENTS.md`, `workers/lib/AGENTS.md` — trust-boundary docs
+  realigned to D1-as-source-of-truth
 
 ### Acceptance Criteria
 
-- [ ] owner/member semantics are enforced from D1
-- [ ] mailbox enumeration no longer depends on `BUCKET.list("mailboxes/")`
-- [ ] R2 mailbox JSON is no longer the active ACL source of truth
+- [x] owner/member semantics are enforced from D1
+- [x] mailbox enumeration no longer depends on `BUCKET.list("mailboxes/")`
+      *(remaining usages are: admin backfill — by design — and rules
+      backfill — same)*
+- [x] R2 mailbox JSON is no longer the active ACL source of truth
+      *(retained as a self-heal fallback for un-backfilled legacy
+      mailboxes; will be removed once a deploy cycle confirms D1
+      coverage is complete)*
 
 ### Verification
 
