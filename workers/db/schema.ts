@@ -167,3 +167,31 @@ export const ruleHistory = sqliteTable("rule_history", {
 	changed_at: text("changed_at").notNull(),
 	changed_by: text("changed_by"),
 });
+
+/**
+ * Mailbox-local agent + UI settings. Singleton row per DO (`id = 'settings'`)
+ * because every column applies mailbox-wide. PR 5 + PR 6 of the first-wave
+ * architecture migration moved these fields out of the legacy R2 settings
+ * blob (`mailboxes/<id>.json`) so writes land transactionally inside the DO
+ * and reads no longer need an R2 GET on every agent invocation.
+ *
+ * Array fields are JSON-serialised text — SQLite has no array type, so the
+ * application layer parses on read and stringifies on write.
+ *
+ * `auto_draft` defaults to NULL meaning "unset"; agent-config callers
+ * coalesce to `true` for backward compatibility with mailboxes that pre-date
+ * the flag.
+ */
+export const mailboxSettings = sqliteTable("mailbox_settings", {
+	id: text("id").primaryKey(),
+	auto_draft: integer("auto_draft"),
+	agent_model: text("agent_model"),
+	email_reply_model: text("email_reply_model"),
+	invoice_model: text("invoice_model"),
+	agent_system_prompt: text("agent_system_prompt"),
+	invoice_agent_system_prompt: text("invoice_agent_system_prompt"),
+	invoice_source_domains_json: text("invoice_source_domains_json"),
+	email_reply_enabled_skills_json: text("email_reply_enabled_skills_json"),
+	invoice_enabled_skills_json: text("invoice_enabled_skills_json"),
+	updated_at: integer("updated_at").notNull(),
+});

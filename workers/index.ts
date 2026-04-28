@@ -45,11 +45,16 @@ import {
 	upsertMailboxRecord,
 } from "./lib/mailbox-directory";
 import {
+	AGENT_CONFIG_FIELDS,
+	agentSettingsPatchFromRaw,
+	getAgentConfig,
+	mailboxSettingsRowToR2Shape,
+} from "./lib/agent-config";
+import {
 	issueApiKey,
 	listApiKeys,
 	revokeApiKey,
 } from "./lib/api-keys";
-import { getAgentConfig } from "./lib/agent-config";
 import { evaluateRules, RuleConditionSchema, RuleActionSchema } from "./lib/rules";
 import {
 	listRules as listRulesFromStore,
@@ -320,9 +325,21 @@ app.get("/api/v1/mailboxes/:mailboxId", async (c) => {
 	let user;
 	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
 	try { await assertMailboxAccess(c.env, mailboxId, user); } catch (e) { return handleAuthz(c, e); }
-	const obj = await c.env.BUCKET.get(`mailboxes/${mailboxId}.json`);
+	// Unified settings shape: legacy non-agent UI fields + ACL stay on R2;
+	// agent-config slice lives in MailboxDO. Both reads are independent —
+	// fire them in parallel so the settings page does not pay sequential
+	// round-trip latency.
+	const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(mailboxId));
+	const [obj, doRow] = await Promise.all([
+		c.env.BUCKET.get(`mailboxes/${mailboxId}.json`),
+		stub.getMailboxSettings().catch(() => null),
+	]);
 	if (!obj) return c.json({ error: "Not found" }, 404);
-	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings: await obj.json() });
+	const r2Settings = (await obj.json()) as Record<string, unknown>;
+	const settings = doRow
+		? { ...r2Settings, ...mailboxSettingsRowToR2Shape(doRow) }
+		: r2Settings;
+	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings });
 });
 
 // Capability registry — discovery endpoint for the Rule editor and the
@@ -514,12 +531,39 @@ app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 		try { await assertMailboxOwner(c.env, mailboxId, user); } catch (e) { return handleAuthz(c, e); }
 	}
 
+	// Split agent-config fields off the R2 write path — they belong to the
+	// DO's `mailbox_settings` row after PR 6.
+	const agentPatch: Record<string, unknown> = {};
+	const r2Clean: Record<string, unknown> = {};
+	for (const [k, v] of Object.entries(clientClean)) {
+		if ((AGENT_CONFIG_FIELDS as readonly string[]).includes(k)) {
+			agentPatch[k] = v;
+		} else {
+			r2Clean[k] = v;
+		}
+	}
+	// Drop any leftover agent-config fields that the legacy R2 blob still
+	// carries from before PR 6 — once the DO is the source of truth, those
+	// columns must not coexist with their R2 cousins or downstream readers
+	// see stale values during the cutover window.
+	const r2Pruned: Record<string, unknown> = { ...prev };
+	for (const k of AGENT_CONFIG_FIELDS) delete r2Pruned[k];
 	const merged: Record<string, unknown> = {
-		...clientClean,
+		...r2Pruned,
+		...r2Clean,
 		owner: prev.owner,
 		members: Array.isArray(prev.members) ? prev.members : [],
 	};
 	await c.env.BUCKET.put(key, JSON.stringify(merged));
+
+	// Route the agent-config slice into the DO. Skip the call entirely when
+	// the client did not touch any of those fields so we do not no-op the
+	// updated_at column.
+	if (Object.keys(agentPatch).length > 0) {
+		const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(mailboxId));
+		await stub.updateMailboxSettings(agentSettingsPatchFromRaw(agentPatch));
+	}
+
 	// Transitional bridge: in d1 mode, mirror the legacy rules payload into
 	// the DO so the inbound-email pipeline (which reads D1) stays in sync
 	// with the settings UI (which still saves through this legacy endpoint).
@@ -527,8 +571,18 @@ app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 	if ("rules" in clientClean) {
 		await mirrorLegacyRulesToD1(c.env, mailboxId, clientClean.rules, user.email);
 	}
-	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings: merged });
+
+	// Surface the unified settings shape — R2 non-agent fields merged with
+	// the freshly-written DO row — so the client sees what the next GET
+	// would return without paying a round-trip.
+	const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(mailboxId));
+	const doRow = await stub.getMailboxSettings().catch(() => null);
+	const unified = doRow
+		? { ...merged, ...mailboxSettingsRowToR2Shape(doRow) }
+		: merged;
+	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings: unified });
 });
+
 
 app.delete("/api/v1/mailboxes/:mailboxId", async (c) => {
 	const mailboxId = c.req.param("mailboxId")!;

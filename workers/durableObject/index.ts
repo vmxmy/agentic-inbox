@@ -1703,6 +1703,202 @@ export class MailboxDO extends DurableObject<Env> {
 			changed_by: r.changed_by,
 		}));
 	}
+
+	// ── Mailbox settings (PR 5/6) ───────────────────────────────────
+	//
+	// Singleton row keyed by `id = 'settings'`. Mirrors the agent-config
+	// slice that previously lived in the legacy R2 settings blob;
+	// `workers/lib/agent-config.ts` reads through these RPCs first and
+	// falls back to R2 only for un-backfilled legacy mailboxes.
+
+	async getMailboxSettings(): Promise<MailboxSettingsRow | null> {
+		const rows = this.db
+			.select()
+			.from(schema.mailboxSettings)
+			.where(eq(schema.mailboxSettings.id, MAILBOX_SETTINGS_ROW_ID))
+			.limit(1)
+			.all();
+		return rows[0] ? rowToMailboxSettings(rows[0]) : null;
+	}
+
+	async replaceMailboxSettings(
+		input: MailboxSettingsInput,
+	): Promise<MailboxSettingsRow> {
+		const row = mailboxSettingsInputToColumns(input);
+		this.db
+			.insert(schema.mailboxSettings)
+			.values(row)
+			.onConflictDoUpdate({
+				target: schema.mailboxSettings.id,
+				set: {
+					auto_draft: row.auto_draft,
+					agent_model: row.agent_model,
+					email_reply_model: row.email_reply_model,
+					invoice_model: row.invoice_model,
+					agent_system_prompt: row.agent_system_prompt,
+					invoice_agent_system_prompt: row.invoice_agent_system_prompt,
+					invoice_source_domains_json: row.invoice_source_domains_json,
+					email_reply_enabled_skills_json: row.email_reply_enabled_skills_json,
+					invoice_enabled_skills_json: row.invoice_enabled_skills_json,
+					updated_at: row.updated_at,
+				},
+			})
+			.run();
+		return rowToMailboxSettings(row);
+	}
+
+	async updateMailboxSettings(
+		patch: MailboxSettingsPatch,
+	): Promise<MailboxSettingsRow> {
+		// Read-modify-write so callers can pass a partial patch without having
+		// to reconstruct the full settings shape. Undefined fields skip;
+		// `null` explicitly clears.
+		const existing = await this.getMailboxSettings();
+		const merged: MailboxSettingsInput = {
+			autoDraft:
+				patch.autoDraft !== undefined ? patch.autoDraft : existing?.autoDraft ?? null,
+			agentModel:
+				patch.agentModel !== undefined ? patch.agentModel : existing?.agentModel ?? null,
+			emailReplyModel:
+				patch.emailReplyModel !== undefined
+					? patch.emailReplyModel
+					: existing?.emailReplyModel ?? null,
+			invoiceModel:
+				patch.invoiceModel !== undefined
+					? patch.invoiceModel
+					: existing?.invoiceModel ?? null,
+			agentSystemPrompt:
+				patch.agentSystemPrompt !== undefined
+					? patch.agentSystemPrompt
+					: existing?.agentSystemPrompt ?? null,
+			invoiceAgentSystemPrompt:
+				patch.invoiceAgentSystemPrompt !== undefined
+					? patch.invoiceAgentSystemPrompt
+					: existing?.invoiceAgentSystemPrompt ?? null,
+			invoiceSourceDomains:
+				patch.invoiceSourceDomains !== undefined
+					? patch.invoiceSourceDomains
+					: existing?.invoiceSourceDomains ?? null,
+			emailReplyEnabledSkills:
+				patch.emailReplyEnabledSkills !== undefined
+					? patch.emailReplyEnabledSkills
+					: existing?.emailReplyEnabledSkills ?? null,
+			invoiceEnabledSkills:
+				patch.invoiceEnabledSkills !== undefined
+					? patch.invoiceEnabledSkills
+					: existing?.invoiceEnabledSkills ?? null,
+		};
+		return this.replaceMailboxSettings(merged);
+	}
+}
+
+// ── Mailbox settings helpers (module-private) ────────────────────────
+
+const MAILBOX_SETTINGS_ROW_ID = "settings";
+
+export interface MailboxSettingsRow {
+	autoDraft: boolean | null;
+	agentModel: string | null;
+	emailReplyModel: string | null;
+	invoiceModel: string | null;
+	agentSystemPrompt: string | null;
+	invoiceAgentSystemPrompt: string | null;
+	invoiceSourceDomains: readonly string[] | null;
+	emailReplyEnabledSkills: readonly string[] | null;
+	invoiceEnabledSkills: readonly string[] | null;
+	updatedAt: number;
+}
+
+export interface MailboxSettingsInput {
+	autoDraft: boolean | null;
+	agentModel: string | null;
+	emailReplyModel: string | null;
+	invoiceModel: string | null;
+	agentSystemPrompt: string | null;
+	invoiceAgentSystemPrompt: string | null;
+	invoiceSourceDomains: readonly string[] | null;
+	emailReplyEnabledSkills: readonly string[] | null;
+	invoiceEnabledSkills: readonly string[] | null;
+}
+
+/** Partial update — undefined skips, null clears, value writes. */
+export interface MailboxSettingsPatch {
+	autoDraft?: boolean | null;
+	agentModel?: string | null;
+	emailReplyModel?: string | null;
+	invoiceModel?: string | null;
+	agentSystemPrompt?: string | null;
+	invoiceAgentSystemPrompt?: string | null;
+	invoiceSourceDomains?: readonly string[] | null;
+	emailReplyEnabledSkills?: readonly string[] | null;
+	invoiceEnabledSkills?: readonly string[] | null;
+}
+
+interface MailboxSettingsRawRow {
+	id: string;
+	auto_draft: number | null;
+	agent_model: string | null;
+	email_reply_model: string | null;
+	invoice_model: string | null;
+	agent_system_prompt: string | null;
+	invoice_agent_system_prompt: string | null;
+	invoice_source_domains_json: string | null;
+	email_reply_enabled_skills_json: string | null;
+	invoice_enabled_skills_json: string | null;
+	updated_at: number;
+}
+
+function parseStringArrayJson(raw: string | null): readonly string[] | null {
+	if (raw === null) return null;
+	const parsed = safeJsonParse(raw);
+	if (!Array.isArray(parsed)) return null;
+	const out: string[] = [];
+	for (const entry of parsed) {
+		if (typeof entry === "string") out.push(entry);
+	}
+	return out;
+}
+
+function rowToMailboxSettings(row: MailboxSettingsRawRow): MailboxSettingsRow {
+	return {
+		autoDraft: row.auto_draft === null ? null : row.auto_draft !== 0,
+		agentModel: row.agent_model,
+		emailReplyModel: row.email_reply_model,
+		invoiceModel: row.invoice_model,
+		agentSystemPrompt: row.agent_system_prompt,
+		invoiceAgentSystemPrompt: row.invoice_agent_system_prompt,
+		invoiceSourceDomains: parseStringArrayJson(row.invoice_source_domains_json),
+		emailReplyEnabledSkills: parseStringArrayJson(row.email_reply_enabled_skills_json),
+		invoiceEnabledSkills: parseStringArrayJson(row.invoice_enabled_skills_json),
+		updatedAt: row.updated_at,
+	};
+}
+
+function mailboxSettingsInputToColumns(
+	input: MailboxSettingsInput,
+): MailboxSettingsRawRow {
+	return {
+		id: MAILBOX_SETTINGS_ROW_ID,
+		auto_draft: input.autoDraft === null ? null : input.autoDraft ? 1 : 0,
+		agent_model: input.agentModel,
+		email_reply_model: input.emailReplyModel,
+		invoice_model: input.invoiceModel,
+		agent_system_prompt: input.agentSystemPrompt,
+		invoice_agent_system_prompt: input.invoiceAgentSystemPrompt,
+		invoice_source_domains_json:
+			input.invoiceSourceDomains === null
+				? null
+				: JSON.stringify([...input.invoiceSourceDomains]),
+		email_reply_enabled_skills_json:
+			input.emailReplyEnabledSkills === null
+				? null
+				: JSON.stringify([...input.emailReplyEnabledSkills]),
+		invoice_enabled_skills_json:
+			input.invoiceEnabledSkills === null
+				? null
+				: JSON.stringify([...input.invoiceEnabledSkills]),
+		updated_at: Date.now(),
+	};
 }
 
 // ── Rules helpers (module-private) ───────────────────────────────────
