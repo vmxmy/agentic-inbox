@@ -6,9 +6,14 @@
 POLICY_AUD=
 TEAM_DOMAIN=
 
-# Shared secret for internal worker-to-worker calls (e.g. inbound email →
-# auto-draft) and for signing mailbox invite tokens. Generate any
-# high-entropy string. In production set via:
+# REQUIRED. Shared secret used to sign all internal-trust envelopes:
+#   1. Signed auth-context JWT minted at the Hono → Durable Object hop for
+#      `/mcp` and `/agents/*`. Without it, those endpoints return 500 — chat
+#      and the MCP server stop working.
+#   2. `x-internal-system` worker-to-worker header used by the inbound email
+#      → auto-draft path.
+#   3. Mailbox invite tokens.
+# Generate any high-entropy string. In production set via:
 #   wrangler secret put INTERNAL_SECRET
 INTERNAL_SECRET=dev-secret-change-me
 

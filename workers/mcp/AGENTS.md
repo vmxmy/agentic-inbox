@@ -4,13 +4,13 @@
 # mcp
 
 ## Purpose
-The `EmailMCP` Durable Object — exposes the email tool surface over the Model Context Protocol at `/mcp`. External AI tools (Claude Code, Cursor, etc.) connect after passing Cloudflare Access; the worker injects the authenticated user's email so the DO can enforce per-mailbox ACL inside each tool handler.
+The `EmailMCP` Durable Object — exposes the email tool surface over the Model Context Protocol at `/mcp`. External AI tools (Claude Code, Cursor, etc.) connect after passing the Worker auth middleware; the worker injects a signed internal auth-context JWT carrying the full caller identity (id, email, role, system?) so the DO can enforce per-mailbox ACL — including admin-only paths — inside each tool handler without re-querying D1.
 
 ## Key Files
 
 | File | Description |
 |------|-------------|
-| `index.ts` | `EmailMCP extends McpAgent<Env>` with an `McpServer` named `agentic-inbox` v1.0.0. `fetch` overrides set `currentUserEmail` from `INTERNAL_USER_HEADER` (DOs serialise on the fetch boundary, so the field is safe per-request). `init` registers tools that wrap `workers/lib/tools.ts`, `workers/lib/auth.ts`, and `workers/lib/agent-config.ts` impls and uses helpers `mcpText`/`mcpError`/`mcpResult` to format responses. Two ACL gates: `verifyMailbox` (access) and `verifyOwner` (owner-only, for ACL / invite operations) |
+| `index.ts` | `EmailMCP extends McpAgent<Env>` with an `McpServer` named `agentic-inbox` v1.0.0. `fetch` decodes the signed `INTERNAL_AUTH_CONTEXT_HEADER` via `readInternalAuthContextHeader` into `currentUser: AuthUser \| null` (DOs serialise on the fetch boundary, so the field is safe per-request — no D1 round-trip needed for role). `init` registers tools that wrap `workers/lib/tools.ts`, `workers/lib/auth.ts`, and `workers/lib/agent-config.ts` impls and uses helpers `mcpText`/`mcpError`/`mcpResult` to format responses. Two ACL gates: `verifyMailbox` (access) and `verifyOwner` (owner-only, for ACL / invite operations) |
 
 ## Tool Categories
 
@@ -31,7 +31,7 @@ The `EmailMCP` Durable Object — exposes the email tool surface over the Model 
 ## For AI Agents
 
 ### Working In This Directory
-- **Authenticated user comes from `INTERNAL_USER_HEADER`.** `workers/app.ts` strips any client-supplied value and re-injects the email decoded from the verified Access JWT. **Never** trust this header inside the DO without that upstream filter.
+- **Authenticated user comes from a signed internal auth-context JWT** (`INTERNAL_AUTH_CONTEXT_HEADER`). `workers/app.ts` strips any client-supplied value and re-injects a token signed with `INTERNAL_SECRET` carrying the caller's verified `{id, email, role, system?}`. **Never** trust this header inside the DO without that upstream strip-and-resign step. The legacy email-only header is also stripped at the Worker boundary during the rollout.
 - **Every mailbox-scoped tool must check ACL.** The `requireMailboxForUser(mailboxId)` pattern (see top of `init`) returns an MCP error response if the current user lacks access — call it before invoking the tool helper.
 - **Tools come from `workers/lib/tools.ts`, `workers/lib/auth.ts`, and `workers/lib/agent-config.ts`.** Do not duplicate tool logic here. The MCP wrapper just (1) validates input via Zod, (2) checks ACL, (3) calls the helper, (4) wraps the result with `mcpResult` so `{ error: ... }` returns map to MCP errors.
 - **ACL matches the HTTP API.** Access-level tools call `verifyMailbox` (owner or member). Owner-only operations (`add_member`, `remove_member`, `create_invite`) call `verifyOwner`, which delegates to `assertMailboxOwner`. `accept_invite` bypasses both — the token itself is the grant — and adds the caller as a member. Keep new tools aligned with the HTTP route's ACL choice or explain why they diverge.

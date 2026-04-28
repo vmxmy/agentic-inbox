@@ -54,10 +54,11 @@ export function register<I, O>(cap: Capability<I, O>): void {
 	// CapabilityContext when one is available:
 	//   - rule-action: rule-triggered calls bypass the owner gate (rules were
 	//     authored under PUT-time fingerprint checks).
-	//   - agent-tool: workers/agent/index.ts:EmailAgent reads
-	//     INTERNAL_USER_HEADER in fetch() and forwards `user` to invoke().
-	//   - mcp-tool: workers/mcp/index.ts does the same with admin-role
-	//     preservation via D1 lookup.
+	//   - agent-tool: workers/agent/index.ts:EmailAgent decodes the signed
+	//     INTERNAL_AUTH_CONTEXT_HEADER in fetch() and forwards `user` to
+	//     invoke().
+	//   - mcp-tool: workers/mcp/index.ts does the same — admin role is
+	//     carried inside the signed token so no D1 round-trip is needed.
 	// System-triggered agent dispatch (auto-draft from receiveEmail) leaves
 	// `user` null — owner-only capabilities will deny in that path, which
 	// is intentional (the system isn't authorised to invoke owner power).

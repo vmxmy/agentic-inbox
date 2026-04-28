@@ -24,8 +24,7 @@ import {
 	get as getCapability,
 	invoke as invokeCapability,
 } from "../lib/capabilities";
-import { INTERNAL_USER_HEADER, normalizeEmail, type AuthUser } from "../lib/auth";
-import { findUserByEmail } from "../lib/users";
+import { readInternalAuthContextHeader, type AuthUser } from "../lib/auth";
 import type { Env } from "../types";
 
 // AI SDK v6 changed tool() overloads significantly. We define tools as plain
@@ -173,8 +172,8 @@ function createEmailTools(
 // SEND_EMAIL binding shape and the AIChatAgent constraint.  The actual env
 // is fully typed inside the tools via the closure.
 export class EmailAgent extends AIChatAgent<any> {
-	/** Per-request authenticated user. Populated by {@link fetch} from the
-	 *  internal header set by the Hono layer (`workers/app.ts:/agents/*`).
+	/** Per-request authenticated user, decoded from the signed internal
+	 *  auth-context JWT injected by the Hono layer (`workers/app.ts:/agents/*`).
 	 *  DOs serialise requests on the fetch boundary, so reading this field
 	 *  inside `onChatMessage` is safe for the current request. Null for
 	 *  system-triggered paths (auto-draft `onNewEmail`) — the registry's
@@ -182,16 +181,10 @@ export class EmailAgent extends AIChatAgent<any> {
 	private currentUser: AuthUser | null = null;
 
 	override async fetch(request: Request): Promise<Response> {
-		const hdr = request.headers.get(INTERNAL_USER_HEADER);
-		if (hdr) {
-			const email = normalizeEmail(hdr);
-			const record = await findUserByEmail(this.env as Env, email);
-			this.currentUser = record
-				? { id: record.id, email: record.email, role: record.role }
-				: null;
-		} else {
-			this.currentUser = null;
-		}
+		this.currentUser = await readInternalAuthContextHeader(
+			request,
+			this.env as Env,
+		);
 		return super.fetch(request);
 	}
 

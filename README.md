@@ -73,6 +73,16 @@ npm run dev
 
 1. Set your domain in `wrangler.jsonc`
 2. Create an R2 bucket named `agentic-inbox`: `wrangler r2 bucket create agentic-inbox`
+3. **Required secret — `INTERNAL_SECRET`.** Used to sign the internal
+   auth-context JWT that the Worker forwards to the agent and MCP Durable
+   Objects (and to authenticate the inbound-email auto-draft path and
+   mailbox invite tokens). Without it, `/mcp` and `/agents/*` return 500.
+   Generate any high-entropy string and set it as a Worker secret:
+   ```bash
+   wrangler secret put INTERNAL_SECRET
+   ```
+   For local dev, copy `.dev.vars.example` to `.dev.vars` and replace the
+   placeholder value.
 
 ### Deploy
 
