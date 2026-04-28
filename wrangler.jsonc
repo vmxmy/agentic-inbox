@@ -33,11 +33,6 @@
 		// the LLM_BASE_URL endpoint's /v1/models list.
 		"LLM_DEFAULT_MODEL": "glm-5.1",
 		// LLM_API_KEY is a secret — set via `wrangler secret put LLM_API_KEY`.
-		// Rules engine storage backend. "d1" routes reads/writes through the
-		// per-mailbox MailboxDO SQLite (with version CAS + history); legacy
-		// R2 settings.rules is kept as a lazy backfill source on first read.
-		// Set to "r2" to keep using the legacy R2-only path.
-		"RULES_SOURCE": "d1"
 	},
 	"d1_databases": [
 		{

@@ -373,14 +373,14 @@ app.get("/api/v1/mailboxes/:mailboxId/capabilities", async (c) => {
 
 // ── Rules CRUD endpoints ──────────────────────────────────────────────
 //
-// New surface for the per-mailbox rules engine. Reads/writes branch on
-// RULES_SOURCE (see workers/lib/rules-store.ts):
-//   - "d1": authoritative MailboxDO SQLite, version-CAS, history
-//   - default: legacy R2 settings.rules JSON (no real CAS)
+// Surface for the per-mailbox rules engine. Reads/writes route through the
+// MailboxDO SQLite (version-CAS, history) — the legacy R2 settings.rules
+// path is read only as a one-shot lazy backfill on first read after the
+// second-wave cutover.
 //
 // During the bridge phase the legacy PUT /api/v1/mailboxes/:id route still
 // accepts rules embedded in the settings document so old clients keep
-// working until the d1 cutover.
+// working until settings.tsx switches to the dedicated /rules endpoints.
 
 const RuleInputSchema = z.object({
 	id: z.string().optional(),
@@ -564,10 +564,10 @@ app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 		await stub.updateMailboxSettings(agentSettingsPatchFromRaw(agentPatch));
 	}
 
-	// Transitional bridge: in d1 mode, mirror the legacy rules payload into
-	// the DO so the inbound-email pipeline (which reads D1) stays in sync
-	// with the settings UI (which still saves through this legacy endpoint).
-	// No-op in r2 mode; remove once settings.tsx switches to /rules.
+	// Transitional bridge: mirror the legacy rules payload into the DO so the
+	// inbound-email pipeline stays in sync with the settings UI (which still
+	// saves through this legacy endpoint). Remove once settings.tsx switches
+	// to /rules.
 	if ("rules" in clientClean) {
 		await mirrorLegacyRulesToD1(c.env, mailboxId, clientClean.rules, user.email);
 	}
