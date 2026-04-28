@@ -703,13 +703,16 @@ app.post("/api/v1/admin/mailbox-directory/backfill", async (c) => {
 		try {
 			const acl = await getMailboxAcl(c.env, id);
 			if (!acl) continue;
-			await upsertMailboxRecord(c.env, id, acl.owner ?? null);
+			// Strict mode so D1 errors propagate to the outer try/catch and
+			// land in `errors` instead of silently inflating the counters.
+			await upsertMailboxRecord(c.env, id, acl.owner ?? null, { strict: true });
 			mailboxesUpserted += 1;
 			await replaceMembersRecord(
 				c.env,
 				id,
 				acl.members.map((email) => ({ email })),
 				user.system ? null : user.id,
+				{ strict: true },
 			);
 			membersWritten += acl.members.length;
 		} catch (e) {

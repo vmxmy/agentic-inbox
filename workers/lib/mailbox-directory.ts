@@ -136,11 +136,20 @@ export async function listAllMailboxRecords(
 
 // ── Writes (best-effort dual-write companions to R2 ACL ops) ──────
 
-/** Upsert a mailboxes row. Used by the create / claim / set-owner paths. */
+/**
+ * Upsert a mailboxes row. Used by the create / claim / set-owner paths.
+ *
+ * Default behavior is log-and-swallow so an unrelated D1 hiccup never breaks
+ * an R2-side ACL op during the dual-write phase. Pass `{ strict: true }`
+ * from contexts that need to surface failures to the caller — the admin
+ * backfill endpoint relies on this to avoid inflating its success counters
+ * when a write silently dropped.
+ */
 export async function upsertMailboxRecord(
 	env: Env,
 	mailboxId: string,
 	ownerEmail: string | null,
+	options: { strict?: boolean } = {},
 ): Promise<void> {
 	const id = normalize(mailboxId);
 	const ownerEmailNorm = ownerEmail ? normalize(ownerEmail) : null;
@@ -163,6 +172,7 @@ export async function upsertMailboxRecord(
 				set: { ownerUserId, ownerEmail: ownerEmailNorm, updatedAt: ts },
 			});
 	} catch (e) {
+		if (options.strict) throw e;
 		logFailure("upsertMailboxRecord", id, e);
 	}
 }
@@ -234,12 +244,17 @@ export async function removeMemberRecord(
  * Replace the full member roster for a mailbox in one shot. Used by the
  * backfill endpoint where the R2 blob is the source of truth — anything in
  * D1 that isn't in R2 should disappear.
+ *
+ * Default behavior is log-and-swallow (parity with the other dual-write
+ * helpers). Pass `{ strict: true }` from the backfill endpoint so partial
+ * failures get reported rather than silently inflating the success counters.
  */
 export async function replaceMembersRecord(
 	env: Env,
 	mailboxId: string,
 	members: { email: string; userId?: string | null }[],
 	addedByUserId: string | null,
+	options: { strict?: boolean } = {},
 ): Promise<void> {
 	const id = normalize(mailboxId);
 	const ts = now();
@@ -264,6 +279,7 @@ export async function replaceMembersRecord(
 		);
 		await db(env).insert(mailboxMembers).values(values);
 	} catch (e) {
+		if (options.strict) throw e;
 		logFailure("replaceMembersRecord", id, e);
 	}
 }

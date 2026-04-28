@@ -279,9 +279,16 @@ export async function setMailboxOwner(
 	const members = [...memberSet];
 	const next = { ...settings, owner, members };
 	await env.BUCKET.put(key, JSON.stringify(next));
-	// PR 3 dual-write: shadow new owner + the demoted previous owner (now
-	// a member) into D1.
+	// PR 3 dual-write: mirror the R2 set logic exactly so the D1 shadow
+	// does not diverge.
+	//   1. Promote the new owner.
+	//   2. Drop the new owner from `mailbox_members` if they were a
+	//      previous member — R2 filters them out above; D1 must too,
+	//      otherwise the joined "owner OR member" view double-counts.
+	//   3. Demote the previous owner into `mailbox_members` (R2 adds
+	//      them to the members set).
 	await upsertMailboxRecord(env, mailboxId, owner);
+	await removeMemberRecord(env, mailboxId, owner);
 	if (acl.owner && acl.owner !== owner) {
 		await addMemberRecord(env, mailboxId, acl.owner, null);
 	}
