@@ -47,9 +47,10 @@ import {
 } from "../lib/auth";
 import {
 	getAgentConfig,
-	setRules,
 	updateAgentConfig,
 } from "../lib/agent-config";
+import { replaceRules } from "../lib/rules-store";
+import { parseRulesLoose } from "../lib/rules";
 import { listLlmModels } from "../lib/llm-models";
 import {
 	AGENT_CONFIG_FIELDS,
@@ -631,7 +632,17 @@ export class EmailMCP extends McpAgent<Env> {
 				const denied = await verifyMailbox(mailboxId);
 				if (denied) return denied;
 				try {
-					const saved = await setRules(env, mailboxId, rules);
+					const parsed = parseRulesLoose({ rules } as Record<string, unknown>);
+					const saved = await replaceRules(env, mailboxId, {
+						rules: parsed.map((r) => ({
+							name: r.name ?? null,
+							enabled: r.enabled,
+							if: r.if,
+							then: r.then,
+						})),
+						expectedVersions: {},
+						actor: currentUser()?.email ?? "mcp",
+					});
 					return mcpText({ rules: saved });
 				} catch (e) {
 					return mcpError((e as Error).message);
