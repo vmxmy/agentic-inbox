@@ -5,26 +5,25 @@
 /**
  * Mailbox-level Agent configuration.
  *
- * After PR 5 + PR 6 of the first-wave architecture migration, the agent-config
- * slice (autoDraft, system prompts, model overrides, enabled-skill allowlists,
- * invoice-source domains) lives in the per-mailbox MailboxDO `mailbox_settings`
- * table. Reads go DO-first; the legacy R2 settings blob is consulted only as
- * a self-healing fallback for un-backfilled legacy mailboxes. Writes go to
- * the DO exclusively.
+ * The agent-config slice (autoDraft, system prompts, model overrides,
+ * enabled-skill allowlists, invoice-source domains) lives in the per-mailbox
+ * MailboxDO `mailbox_settings` table. Reads and writes both route through the
+ * DO. The legacy R2 settings blob is no longer consulted — by the time PR 8
+ * lands, PR 5/6's lazy-backfill has run for at least one production cycle and
+ * `mailbox_settings` is the sole authoritative source.
  *
- * Rules continue to load through `rules-store.loadRulesForEvaluation` (already
- * D1-backed, with its own R2 backfill bridge).
+ * Rules continue to load through `rules-store.loadRulesForEvaluation`
+ * (D1-backed, with its own one-shot R2 backfill).
  */
 import type { Env } from "../types";
 import {
 	DEFAULT_INVOICE_SOURCE_DOMAINS,
 	isValidInvoiceSourceDomain,
 } from "./invoice-link-scanner";
-import { RulesSchema, type Rule } from "./rules";
+import type { Rule } from "./rules";
 import { loadRulesForEvaluation } from "./rules-store";
 import { getMailboxStub } from "./email-helpers";
 import type {
-	MailboxSettingsInput,
 	MailboxSettingsPatch,
 	MailboxSettingsRow,
 } from "../durableObject";
@@ -127,7 +126,6 @@ export async function getAgentConfig(env: Env, mailboxId: string): Promise<Agent
 	// does not touch the R2 settings blob just to read rules.
 	const rules = await loadRulesForEvaluation(env, mailboxId, null);
 
-	// PR 5 read path: DO-first.
 	let doRow: MailboxSettingsRow | null = null;
 	try {
 		doRow = await stub.getMailboxSettings();
@@ -135,29 +133,7 @@ export async function getAgentConfig(env: Env, mailboxId: string): Promise<Agent
 		doRow = null;
 	}
 	if (doRow) return buildAgentConfigFromDoRow(doRow, rules, env);
-
-	// R2 fallback for un-backfilled legacy mailboxes. Self-heals the DO.
-	let r2Settings: Record<string, unknown> | null = null;
-	try {
-		const obj = await env.BUCKET.get(`mailboxes/${mailboxId}.json`);
-		if (obj) r2Settings = (await obj.json()) as Record<string, unknown>;
-	} catch {
-		r2Settings = null;
-	}
-	if (!r2Settings) return { ...defaults(env), rules };
-
-	console.warn(
-		`[agent-config] DO mailbox_settings missing for "${mailboxId}" — self-healing from R2. The next save (or an admin replay) finishes the migration.`,
-	);
-	const lazyInput = r2SettingsToDoInput(r2Settings);
-	try {
-		await stub.replaceMailboxSettings(lazyInput);
-	} catch (e) {
-		console.warn(
-			`[agent-config] DO self-heal write failed for "${mailboxId}": ${e instanceof Error ? e.message : String(e)}`,
-		);
-	}
-	return buildAgentConfigFromR2(r2Settings, rules, env);
+	return { ...defaults(env), rules };
 }
 
 // ── DO ↔ AgentConfig adapters ──────────────────────────────────────
@@ -190,69 +166,11 @@ function buildAgentConfigFromDoRow(
 	};
 }
 
-function buildAgentConfigFromR2(
-	settings: Record<string, unknown>,
-	rules: Rule[],
-	env: Env,
-): AgentConfig {
-	return {
-		autoDraft: settings.autoDraft !== false,
-		model: coerceModel(settings.agentModel, env),
-		emailReplyModel: coerceOptionalModel(settings.emailReplyModel),
-		invoiceModel: coerceOptionalModel(settings.invoiceModel),
-		customSystemPrompt:
-			typeof settings.agentSystemPrompt === "string" && settings.agentSystemPrompt.trim()
-				? settings.agentSystemPrompt
-				: null,
-		rules,
-		invoiceSourceDomains: coerceInvoiceSourceDomains(settings.invoiceSourceDomains),
-		invoiceAgentSystemPrompt:
-			typeof settings.invoiceAgentSystemPrompt === "string" &&
-			settings.invoiceAgentSystemPrompt.trim()
-				? settings.invoiceAgentSystemPrompt
-				: null,
-		emailReplyEnabledSkills: coerceSkills(settings.emailReplyEnabledSkills),
-		invoiceEnabledSkills: coerceSkills(settings.invoiceEnabledSkills),
-	};
-}
-
-function r2SettingsToDoInput(settings: Record<string, unknown>): MailboxSettingsInput {
-	return {
-		autoDraft:
-			settings.autoDraft === true || settings.autoDraft === false
-				? (settings.autoDraft as boolean)
-				: null,
-		agentModel: typeof settings.agentModel === "string" ? settings.agentModel : null,
-		emailReplyModel:
-			typeof settings.emailReplyModel === "string" ? settings.emailReplyModel : null,
-		invoiceModel:
-			typeof settings.invoiceModel === "string" ? settings.invoiceModel : null,
-		agentSystemPrompt:
-			typeof settings.agentSystemPrompt === "string" ? settings.agentSystemPrompt : null,
-		invoiceAgentSystemPrompt:
-			typeof settings.invoiceAgentSystemPrompt === "string"
-				? settings.invoiceAgentSystemPrompt
-				: null,
-		invoiceSourceDomains: stringArrayOrNull(settings.invoiceSourceDomains),
-		emailReplyEnabledSkills: stringArrayOrNull(settings.emailReplyEnabledSkills),
-		invoiceEnabledSkills: stringArrayOrNull(settings.invoiceEnabledSkills),
-	};
-}
-
-function stringArrayOrNull(raw: unknown): readonly string[] | null {
-	if (!Array.isArray(raw)) return null;
-	const out: string[] = [];
-	for (const entry of raw) {
-		if (typeof entry === "string") out.push(entry);
-	}
-	return out;
-}
-
 /**
- * R2 settings keys that PR 5/6 moved into the MailboxDO `mailbox_settings`
- * row. Worker entrypoints (HTTP `PUT /api/v1/mailboxes/:id`, MCP
- * `update_mailbox_settings`) split these off the R2 write payload and route
- * them through `updateMailboxSettings` instead.
+ * Settings keys that live in the MailboxDO `mailbox_settings` row. Worker
+ * entrypoints (HTTP `PUT /api/v1/mailboxes/:id`, MCP `update_mailbox_settings`)
+ * split these off any client-supplied payload and route them through
+ * `updateMailboxSettings` instead of the legacy R2 settings blob.
  */
 export const AGENT_CONFIG_FIELDS = [
 	"autoDraft",
@@ -413,32 +331,11 @@ export interface AgentConfigUpdate {
 	invoiceEnabledSkills?: readonly string[] | null;
 }
 
-function settingsKey(mailboxId: string): string {
-	return `mailboxes/${mailboxId}.json`;
-}
-
-async function readSettings(
-	env: Env,
-	mailboxId: string,
-): Promise<Record<string, unknown>> {
-	const obj = await env.BUCKET.get(settingsKey(mailboxId));
-	if (!obj) throw new Error(`Mailbox "${mailboxId}" not found`);
-	return (await obj.json()) as Record<string, unknown>;
-}
-
-async function writeSettings(
-	env: Env,
-	mailboxId: string,
-	settings: Record<string, unknown>,
-): Promise<void> {
-	await env.BUCKET.put(settingsKey(mailboxId), JSON.stringify(settings));
-}
-
 /**
  * Patch agent-config fields into the MailboxDO `mailbox_settings` row. Unknown
  * model values are rejected up-front; absent fields leave the current value
  * untouched. R2 is no longer mutated here — agent-config writes are
- * MailboxDO-owned (PR 6 cutover).
+ * MailboxDO-owned.
  */
 export async function updateAgentConfig(
 	env: Env,
@@ -483,18 +380,3 @@ export async function updateAgentConfig(
 	return getAgentConfig(env, mailboxId);
 }
 
-/**
- * Replace the rules array on the R2 settings blob. Runs `RulesSchema.parse`
- * so malformed rules are rejected before storage.
- */
-export async function setRules(
-	env: Env,
-	mailboxId: string,
-	rawRules: unknown,
-): Promise<Rule[]> {
-	const rules = RulesSchema.parse(rawRules);
-	const settings = await readSettings(env, mailboxId);
-	settings.rules = rules;
-	await writeSettings(env, mailboxId, settings);
-	return rules;
-}
