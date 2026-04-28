@@ -1,0 +1,40 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel in-flight CI runs for the same branch when a newer commit arrives.
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck-and-test:
+    name: typecheck + vitest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      # Typecheck is intentionally not blocking yet — the frontend tree
+      # carries pre-existing `@phosphor-icons/react` IconProps errors that
+      # are unrelated to the worker code under active migration. Once those
+      # are cleared, promote this step out of `continue-on-error` so a
+      # regression is a hard CI failure.
+      - name: Typecheck (advisory)
+        run: npm run typecheck
+        continue-on-error: true
