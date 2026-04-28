@@ -40,6 +40,7 @@ import {
 import { findUserByEmail, findUserById, listUsers, setRole } from "./lib/users";
 import {
 	deleteMailboxRecord,
+	getMailboxRecord,
 	reconcileUserIds,
 	replaceMembersRecord,
 	upsertMailboxRecord,
@@ -49,6 +50,8 @@ import {
 	agentSettingsPatchFromRaw,
 	getAgentConfig,
 	mailboxSettingsRowToR2Shape,
+	nonAgentSettingsFromRaw,
+	readUnifiedMailboxSettings,
 } from "./lib/agent-config";
 import {
 	issueApiKey,
@@ -261,26 +264,45 @@ async function createMailboxForOwner(
 	if (allowedAddresses.length > 0 && !allowedAddresses.map((a) => a.toLowerCase()).includes(email)) {
 		return c.json({ error: "Mailbox creation is restricted to configured EMAIL_ADDRESSES" }, 403);
 	}
-	const key = `mailboxes/${email}.json`;
-	if (await c.env.BUCKET.head(key)) return c.json({ error: "Mailbox already exists" }, 409);
-	const defaultSettings = { fromName: name, forwarding: { enabled: false, email: "" }, signature: { enabled: false, text: "" }, autoReply: { enabled: false, subject: "", message: "" } };
+	if (await getMailboxRecord(c.env, email)) {
+		return c.json({ error: "Mailbox already exists" }, 409);
+	}
 	// Strip any ACL fields the client may have supplied — ACL is owned by the
 	// server and seeded from the authenticated user's identity.
 	const { owner: _ignoredOwner, members: _ignoredMembers, ...cleanSettings } =
 		(settings ?? {}) as Record<string, unknown>;
 	const ownerNorm = ownerEmail ? normalizeEmail(ownerEmail) : null;
-	const finalSettings = {
-		...defaultSettings,
-		...cleanSettings,
+
+	// D1 mailbox-directory is the existence record. Insert before seeding the
+	// DO so a half-completed mailbox cannot be discovered by ACL queries.
+	await upsertMailboxRecord(c.env, email, ownerNorm, { strict: true });
+
+	// Seed MailboxDO settings: agent fields default-empty, non-agent fields
+	// seeded with the same defaults the legacy R2 blob used to carry plus
+	// any client-supplied overrides (after stripping agent-config keys, which
+	// route through `updateMailboxSettings` instead).
+	const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(email));
+	await stub.getFolders();
+	const defaultNonAgent: Record<string, unknown> = {
+		fromName: name,
+		forwarding: { enabled: false, email: "" },
+		signature: { enabled: false, text: "" },
+		autoReply: { enabled: false, subject: "", message: "" },
+	};
+	const seedNonAgent = { ...defaultNonAgent, ...nonAgentSettingsFromRaw(cleanSettings) };
+	const seedAgent: Record<string, unknown> = {};
+	for (const [k, v] of Object.entries(cleanSettings)) {
+		if ((AGENT_CONFIG_FIELDS as readonly string[]).includes(k)) seedAgent[k] = v;
+	}
+	const seedPatch = agentSettingsPatchFromRaw(seedAgent);
+	seedPatch.nonAgentSettings = seedNonAgent;
+	const doRow = await stub.updateMailboxSettings(seedPatch);
+
+	const finalSettings: Record<string, unknown> = {
+		...mailboxSettingsRowToR2Shape(doRow),
 		owner: ownerNorm ?? undefined,
 		members: [] as string[],
 	};
-	await c.env.BUCKET.put(key, JSON.stringify(finalSettings));
-	// PR 3 dual-write: shadow the new mailbox into D1. Failures are logged
-	// inside the helper; the admin backfill endpoint reconciles drift.
-	await upsertMailboxRecord(c.env, email, ownerNorm);
-	const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(email));
-	await stub.getFolders();
 	return c.json({ id: email, email, name, settings: finalSettings }, 201);
 }
 
@@ -325,20 +347,11 @@ app.get("/api/v1/mailboxes/:mailboxId", async (c) => {
 	let user;
 	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
 	try { await assertMailboxAccess(c.env, mailboxId, user); } catch (e) { return handleAuthz(c, e); }
-	// Unified settings shape: legacy non-agent UI fields + ACL stay on R2;
-	// agent-config slice lives in MailboxDO. Both reads are independent —
-	// fire them in parallel so the settings page does not pay sequential
-	// round-trip latency.
-	const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(mailboxId));
-	const [obj, doRow] = await Promise.all([
-		c.env.BUCKET.get(`mailboxes/${mailboxId}.json`),
-		stub.getMailboxSettings().catch(() => null),
-	]);
-	if (!obj) return c.json({ error: "Not found" }, 404);
-	const r2Settings = (await obj.json()) as Record<string, unknown>;
-	const settings = doRow
-		? { ...r2Settings, ...mailboxSettingsRowToR2Shape(doRow) }
-		: r2Settings;
+	// Settings are read entirely from MailboxDO. Non-agent UI fields lazy-
+	// backfill from the legacy R2 blob on first read after the cutover; the
+	// helper short-circuits once the DO row is fully populated.
+	const doRow = await readUnifiedMailboxSettings(c.env, mailboxId);
+	const settings = doRow ? mailboxSettingsRowToR2Shape(doRow) : {};
 	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings });
 });
 
@@ -511,58 +524,40 @@ app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
 	try { await assertMailboxAccess(c.env, mailboxId, user); } catch (e) { return handleAuthz(c, e); }
 	const { settings } = (await c.req.json()) as { settings: Record<string, unknown> };
-	const key = `mailboxes/${mailboxId}.json`;
-	const existing = await c.env.BUCKET.get(key);
-	if (!existing) return c.json({ error: "Not found" }, 404);
-	// Strip ACL fields from client input — ACL is managed via dedicated endpoints.
-	// Preserve the existing owner/members from R2.
+	// Strip ACL fields from client input — ACL is managed via dedicated
+	// endpoints; owner/members come from the D1 mailbox-directory.
 	const { owner: _o, members: _m, ...clientClean } = settings;
-	const prev = (await existing.json()) as Record<string, unknown>;
+
+	// Pull existing settings (with lazy non-agent backfill from R2) so the
+	// webhook fingerprint comparison and the rule mirror have prior context
+	// without touching the R2 blob themselves.
+	const prevRow = await readUnifiedMailboxSettings(c.env, mailboxId);
+	const prevShape = prevRow ? mailboxSettingsRowToR2Shape(prevRow) : {};
 
 	// Webhook actions are integration-level power (outbound HTTP). Adding,
 	// removing, or modifying any `core:webhook` action requires the mailbox
-	// owner — ordinary members can still edit other rules. We compare a stable
-	// fingerprint instead of just looking for "any webhook present" so an owner
-	// who set up a webhook does not lock members out of editing the rest of the
-	// rules afterwards.
+	// owner — ordinary members can still edit other rules. We compare a
+	// stable fingerprint so an owner who set up a webhook does not lock
+	// members out of editing the rest of the rules afterwards.
 	const incomingWebhooks = webhookActionsFingerprint(clientClean.rules);
-	const existingWebhooks = webhookActionsFingerprint(prev.rules);
+	const existingWebhooks = webhookActionsFingerprint(prevShape.rules);
 	if (incomingWebhooks !== existingWebhooks) {
 		try { await assertMailboxOwner(c.env, mailboxId, user); } catch (e) { return handleAuthz(c, e); }
 	}
 
-	// Split agent-config fields off the R2 write path — they belong to the
-	// DO's `mailbox_settings` row after PR 6.
+	// Split agent-config fields, non-agent fields, and rules. Everything
+	// settles in the MailboxDO `mailbox_settings` row; the legacy R2 blob is
+	// no longer written.
 	const agentPatch: Record<string, unknown> = {};
-	const r2Clean: Record<string, unknown> = {};
 	for (const [k, v] of Object.entries(clientClean)) {
 		if ((AGENT_CONFIG_FIELDS as readonly string[]).includes(k)) {
 			agentPatch[k] = v;
-		} else {
-			r2Clean[k] = v;
 		}
 	}
-	// Drop any leftover agent-config fields that the legacy R2 blob still
-	// carries from before PR 6 — once the DO is the source of truth, those
-	// columns must not coexist with their R2 cousins or downstream readers
-	// see stale values during the cutover window.
-	const r2Pruned: Record<string, unknown> = { ...prev };
-	for (const k of AGENT_CONFIG_FIELDS) delete r2Pruned[k];
-	const merged: Record<string, unknown> = {
-		...r2Pruned,
-		...r2Clean,
-		owner: prev.owner,
-		members: Array.isArray(prev.members) ? prev.members : [],
-	};
-	await c.env.BUCKET.put(key, JSON.stringify(merged));
-
-	// Route the agent-config slice into the DO. Skip the call entirely when
-	// the client did not touch any of those fields so we do not no-op the
-	// updated_at column.
-	if (Object.keys(agentPatch).length > 0) {
-		const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(mailboxId));
-		await stub.updateMailboxSettings(agentSettingsPatchFromRaw(agentPatch));
-	}
+	const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(mailboxId));
+	const patch = agentSettingsPatchFromRaw(agentPatch);
+	patch.nonAgentSettings = nonAgentSettingsFromRaw(clientClean);
+	const doRow = await stub.updateMailboxSettings(patch);
 
 	// Transitional bridge: mirror the legacy rules payload into the DO so the
 	// inbound-email pipeline stays in sync with the settings UI (which still
@@ -572,14 +567,12 @@ app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 		await mirrorLegacyRulesToD1(c.env, mailboxId, clientClean.rules, user.email);
 	}
 
-	// Surface the unified settings shape — R2 non-agent fields merged with
-	// the freshly-written DO row — so the client sees what the next GET
-	// would return without paying a round-trip.
-	const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(mailboxId));
-	const doRow = await stub.getMailboxSettings().catch(() => null);
-	const unified = doRow
-		? { ...merged, ...mailboxSettingsRowToR2Shape(doRow) }
-		: merged;
+	const acl = await getMailboxAcl(c.env, mailboxId);
+	const unified: Record<string, unknown> = {
+		...mailboxSettingsRowToR2Shape(doRow),
+		owner: acl?.owner,
+		members: acl?.members ?? [],
+	};
 	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings: unified });
 });
 
@@ -589,12 +582,18 @@ app.delete("/api/v1/mailboxes/:mailboxId", async (c) => {
 	let user;
 	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
 	try { await assertMailboxOwner(c.env, mailboxId, user); } catch (e) { return handleAuthz(c, e); }
-	const key = `mailboxes/${mailboxId}.json`;
-	if (!(await c.env.BUCKET.head(key))) return c.json({ error: "Not found" }, 404);
-	await c.env.BUCKET.delete(key); // TODO: also delete DO data and R2 attachment blobs
-	// PR 3 dual-write: drop the directory + membership rows so D1 does not
-	// retain orphaned ACL records.
+	// `assertMailboxOwner` already 404s when the D1 record is missing, so by
+	// the time we get here the mailbox exists.
 	await deleteMailboxRecord(c.env, mailboxId);
+	// Best-effort cleanup of the legacy R2 omnibus blob. Idempotent: BUCKET.delete
+	// silently no-ops when the key is absent (mailboxes created after the
+	// non-agent-settings cutover never had one). TODO: also delete DO data and
+	// R2 attachment blobs.
+	try {
+		await c.env.BUCKET.delete(`mailboxes/${mailboxId}.json`);
+	} catch (e) {
+		console.warn(`[mailbox] orphan R2 blob delete failed for "${mailboxId}":`, e);
+	}
 	return c.body(null, 204);
 });
 
