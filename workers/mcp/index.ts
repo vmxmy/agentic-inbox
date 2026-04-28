@@ -51,6 +51,11 @@ import {
 	updateAgentConfig,
 } from "../lib/agent-config";
 import { listLlmModels } from "../lib/llm-models";
+import {
+	AGENT_CONFIG_FIELDS,
+	agentSettingsPatchFromRaw,
+	mailboxSettingsRowToR2Shape,
+} from "../lib/agent-config";
 import type { Env } from "../types";
 
 /** Wrap a plain result object into MCP content format. */
@@ -468,7 +473,15 @@ export class EmailMCP extends McpAgent<Env> {
 				if (denied) return denied;
 				const obj = await env.BUCKET.get(`mailboxes/${mailboxId}.json`);
 				if (!obj) return mcpError("Mailbox not found");
-				const settings = (await obj.json()) as Record<string, unknown>;
+				const r2Settings = (await obj.json()) as Record<string, unknown>;
+				// PR 6 cutover: agent-config fields live on the DO. Merge so
+				// MCP clients see the same unified shape the HTTP GET returns.
+				const doRow = await mailboxStub(mailboxId)
+					.getMailboxSettings()
+					.catch(() => null);
+				const settings = doRow
+					? { ...r2Settings, ...mailboxSettingsRowToR2Shape(doRow) }
+					: r2Settings;
 				return mcpText({ id: mailboxId, email: mailboxId, settings });
 			},
 		);
@@ -489,13 +502,41 @@ export class EmailMCP extends McpAgent<Env> {
 				if (!existing) return mcpError("Mailbox not found");
 				const prev = (await existing.json()) as Record<string, unknown>;
 				const { owner: _o, members: _m, ...clientClean } = settings;
+				// PR 6 cutover: agent-config fields no longer live on R2. Pull
+				// them out of the client payload and route them into the DO via
+				// the same updateMailboxSettings RPC the HTTP PUT uses.
+				const agentPatch: Record<string, unknown> = {};
+				const r2Clean: Record<string, unknown> = {};
+				for (const [k, v] of Object.entries(clientClean)) {
+					if ((AGENT_CONFIG_FIELDS as readonly string[]).includes(k)) {
+						agentPatch[k] = v;
+					} else {
+						r2Clean[k] = v;
+					}
+				}
+				// Strip stale agent-config remnants that the legacy R2 blob
+				// might still carry from before PR 6.
+				const r2Pruned: Record<string, unknown> = { ...prev };
+				for (const k of AGENT_CONFIG_FIELDS) delete r2Pruned[k];
 				const merged: Record<string, unknown> = {
-					...clientClean,
+					...r2Pruned,
+					...r2Clean,
 					owner: prev.owner,
 					members: Array.isArray(prev.members) ? prev.members : [],
 				};
 				await env.BUCKET.put(key, JSON.stringify(merged));
-				return mcpText({ id: mailboxId, email: mailboxId, settings: merged });
+				if (Object.keys(agentPatch).length > 0) {
+					await mailboxStub(mailboxId).updateMailboxSettings(
+						agentSettingsPatchFromRaw(agentPatch),
+					);
+				}
+				const doRow = await mailboxStub(mailboxId)
+					.getMailboxSettings()
+					.catch(() => null);
+				const unified = doRow
+					? { ...merged, ...mailboxSettingsRowToR2Shape(doRow) }
+					: merged;
+				return mcpText({ id: mailboxId, email: mailboxId, settings: unified });
 			},
 		);
 

@@ -312,4 +312,29 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX IF NOT EXISTS idx_history_rule ON rule_history(rule_id, seq DESC);
         `,
 	},
+	{
+		// PR 5 + PR 6 of the first-wave architecture migration. Carries the
+		// agent-config slice that previously lived in the R2 settings blob
+		// (`mailboxes/<id>.json`). Singleton row keyed by `id = 'settings'`
+		// because every column applies mailbox-wide; array fields are
+		// JSON-serialised text. `auto_draft` is nullable on purpose — the
+		// agent-config layer treats NULL as "unset" and coalesces to TRUE
+		// for backward compatibility.
+		name: "15_add_mailbox_settings",
+		sql: `
+            CREATE TABLE IF NOT EXISTS mailbox_settings (
+                id TEXT PRIMARY KEY,
+                auto_draft INTEGER,
+                agent_model TEXT,
+                email_reply_model TEXT,
+                invoice_model TEXT,
+                agent_system_prompt TEXT,
+                invoice_agent_system_prompt TEXT,
+                invoice_source_domains_json TEXT,
+                email_reply_enabled_skills_json TEXT,
+                invoice_enabled_skills_json TEXT,
+                updated_at INTEGER NOT NULL
+            );
+        `,
+	},
 ];

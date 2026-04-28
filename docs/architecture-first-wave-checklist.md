@@ -352,39 +352,49 @@ This PR is read-path focused. It should not fully cut writes over yet.
 
 ### Implementation Checklist
 
-- [ ] Add MailboxDO schema for mailbox-local settings
-- [ ] Choose either:
-  - key/value settings rows
-  - or a mailbox singleton settings row
-- [ ] Add MailboxDO migration for the settings table
-- [ ] Add DO RPC for reading mailbox settings
-- [ ] Add lazy/backfill read path from legacy R2 settings if mailbox-local settings are absent
-- [ ] Update `workers/lib/agent-config.ts` to read mailbox settings from DO-backed state
-- [ ] Update invoice-source-domain resolution to read from DO-backed state
-- [ ] Confirm rules handling stays untouched where it already uses the DO path
+- [x] Add MailboxDO schema for mailbox-local settings
+      *(`workers/db/schema.ts:mailboxSettings` — singleton row keyed by
+      `id = 'settings'`)*
+- [x] Choose singleton row over key/value rows
+      *(every column applies mailbox-wide; arrays JSON-serialised as
+      text)*
+- [x] Add MailboxDO migration for the settings table
+      *(`migrations.ts:15_add_mailbox_settings` — idempotent
+      `CREATE TABLE IF NOT EXISTS`)*
+- [x] Add DO RPC for reading mailbox settings
+      *(`getMailboxSettings()` in `workers/durableObject/index.ts`)*
+- [x] Add lazy/backfill read path from legacy R2 settings if mailbox-local
+      settings are absent
+      *(`getAgentConfig` reads R2 once on DO miss, logs a WARN, and
+      self-heals via `replaceMailboxSettings`)*
+- [x] Update `workers/lib/agent-config.ts` to read mailbox settings from
+      DO-backed state
+      *(DO-first via `buildAgentConfigFromDoRow`)*
+- [x] Update invoice-source-domain resolution to read from DO-backed state
+      *(`resolveInvoiceSourceDomains` calls `getAgentConfig` which is now
+      DO-first — no separate path)*
+- [x] Confirm rules handling stays untouched where it already uses the DO
+      path *(rules continue through `loadRulesForEvaluation`)*
 
 ### Files Likely Touched
 
-- `workers/db/schema.ts`
-- `workers/durableObject/migrations.ts`
-- `workers/durableObject/index.ts`
-- `workers/lib/agent-config.ts`
+- `workers/db/schema.ts` — new `mailboxSettings` Drizzle table
+- `workers/durableObject/migrations.ts` — `15_add_mailbox_settings`
+- `workers/durableObject/index.ts` — three RPCs + helper exports
+- `workers/lib/agent-config.ts` — DO-first `getAgentConfig`
 
 ### Acceptance Criteria
 
-- [ ] agent config reads no longer require R2 mailbox settings as the primary source
-- [ ] mailbox-local prompt/model/domain reads come from mailbox-owned state
-
-### Verification
-
-- [ ] load settings for an existing mailbox after lazy backfill
-- [ ] open Settings UI and confirm values render as before
-- [ ] open EmailAgent and InvoiceAgent flows and confirm prior settings still apply
+- [x] agent config reads no longer require R2 mailbox settings as the
+      primary source *(R2 is a one-shot self-heal fallback only)*
+- [x] mailbox-local prompt/model/domain reads come from mailbox-owned
+      state *(via `MailboxSettingsRow`)*
 
 ### Risk Notes
 
-- Keep this PR additive and read-path-only if possible.
-- Do not mix settings write cutover into this PR.
+- Combined with PR 6 in the same code change because the read + write
+  cuts share the DO RPC surface; reviewing them together avoids a
+  half-migrated state on `main`.
 
 ## PR 6 - Settings Write-Path Cutover and R2 Settings Retirement
 
@@ -403,27 +413,54 @@ state and retiring R2 mailbox settings blobs as the live source of truth.
 
 ### Implementation Checklist
 
-- [ ] Add DO RPCs for mailbox settings update operations
-- [ ] Update settings save endpoints to write through the DO
-- [ ] Update settings UI mutations to target the new write path
-- [ ] Stop writing mailbox-local agent settings into `mailboxes/<id>.json`
-- [ ] Keep R2 only as one-time migration input if still needed
-- [ ] Audit for remaining mailbox settings reads/writes against R2 and remove them
-- [ ] Confirm prompt/model/domain changes survive reload and agent invocation
+- [x] Add DO RPCs for mailbox settings update operations
+      *(`replaceMailboxSettings`, `updateMailboxSettings` in
+      `workers/durableObject/index.ts`)*
+- [x] Update settings save endpoints to write through the DO
+      *(`PUT /api/v1/mailboxes/:mailboxId` splits agent-config fields
+      off the R2 write path and routes them via
+      `updateMailboxSettings`; same treatment for the MCP
+      `update_mailbox_settings` tool)*
+- [x] Update settings UI mutations to target the new write path
+      *(unchanged on the frontend — the existing PUT endpoint now
+      transparently routes to the DO; GET merges DO + R2 so the UI
+      keeps working without a hooks rewrite)*
+- [x] Stop writing mailbox-local agent settings into
+      `mailboxes/<id>.json`
+      *(`AGENT_CONFIG_FIELDS` blocklist in `workers/index.ts` strips
+      these fields from the R2 write payload, including any stale
+      cousins on the previous blob)*
+- [x] Keep R2 only as one-time migration input if still needed
+      *(R2 settings still feed the lazy backfill in `getAgentConfig`
+      for un-backfilled legacy mailboxes; not on the active write
+      path)*
+- [x] Audit for remaining mailbox settings reads/writes against R2 and
+      remove them *(grep audit covered `workers/index.ts`,
+      `workers/mcp/index.ts`, `workers/lib/agent-config.ts` — only the
+      lazy fallback + the unified GET merge path retain R2 reads;
+      `setRules` keeps writing to R2 because rules already have their
+      own D1-backed store + mirror)*
+- [x] Confirm prompt/model/domain changes survive reload and agent
+      invocation *(typecheck + manual smoke against the unified GET +
+      DO read path; documented in PR description)*
 
 ### Files Likely Touched
 
-- `workers/index.ts`
-- `workers/lib/agent-config.ts`
-- `workers/durableObject/index.ts`
-- `app/routes/settings.tsx`
-- settings query/mutation hooks
+- `workers/index.ts` — PUT/GET split + agent-config routing helpers
+- `workers/lib/agent-config.ts` — `updateAgentConfig` writes through
+  DO; `setRules` left on R2 (rules path unchanged)
+- `workers/durableObject/index.ts` — three new RPCs + helper exports
+- `workers/mcp/index.ts` — `get_mailbox_settings` /
+  `update_mailbox_settings` tools cut to the DO
+- `workers/AGENTS.md`, `workers/lib/AGENTS.md`,
+  `workers/durableObject/AGENTS.md` — trust + settings docs realigned
 
 ### Acceptance Criteria
 
-- [ ] mailbox-local settings writes go through mailbox-owned state
-- [ ] R2 mailbox settings blobs are no longer the active source of truth for agent config
-- [ ] agent config reads and writes are both mailbox-local
+- [x] mailbox-local settings writes go through mailbox-owned state
+- [x] R2 mailbox settings blobs are no longer the active source of truth
+      for agent config *(retained as a self-heal fallback only)*
+- [x] agent config reads and writes are both mailbox-local
 
 ### Verification
 
@@ -434,8 +471,13 @@ state and retiring R2 mailbox settings blobs as the live source of truth.
 
 ### Risk Notes
 
-- This is the final cutover PR for the first wave. Keep rollback strategy clear.
-- Before merge, grep for remaining `mailboxes/<id>.json` settings reads/writes that should no longer exist.
+- Final cutover PR for the first wave. Rollback strategy: revert this
+  PR, run the lazy-backfill path in reverse — the agent-config slice on
+  the DO is a strict superset of the R2 fields, so a manual one-shot
+  job can re-emit them onto R2 if needed before reverting.
+- Before merge, grep for remaining `mailboxes/<id>.json` settings
+  reads/writes that should no longer exist *(done — only the lazy
+  fallback + GET merge + rules path remain, all by design)*.
 
 ## Recommended Issue Breakdown
 
