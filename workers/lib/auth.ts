@@ -5,14 +5,14 @@
 /**
  * Per-mailbox authorization layer + identity types.
  *
- * Identity now comes from the native auth system (cookie session backed by
- * D1 — see workers/lib/session.ts and workers/routes/auth.ts). Cloudflare
- * Access JWTs are still honored as a fallback for backward compatibility:
- * if POLICY_AUD/TEAM_DOMAIN are set, the middleware in workers/app.ts will
- * mint a session for the JWT's email so existing Access-only users stay
- * logged in.
+ * Identity comes from the native auth system (cookie session backed by D1 —
+ * see workers/lib/session.ts and workers/routes/auth.ts). Cloudflare Access
+ * JWTs are still honored as a fallback for backward compatibility: if
+ * POLICY_AUD/TEAM_DOMAIN are set, the middleware in workers/app.ts will mint
+ * a session for the JWT's email so existing Access-only users stay logged in.
  *
- * Mailbox ACL still keys off `email`, so R2 blobs need no migration.
+ * Mailbox ACL is sourced from the D1 mailbox-directory tables. R2 is no
+ * longer consulted — second-wave PR 9 retired the legacy self-heal fallback.
  */
 import { SignJWT, jwtVerify } from "jose";
 import type { Context } from "hono";
@@ -23,7 +23,6 @@ import {
 	listMailboxIdsForUser,
 	listMailboxMembers,
 	removeMemberRecord,
-	replaceMembersRecord,
 	upsertMailboxRecord,
 } from "./mailbox-directory";
 import type { Env } from "../types";
@@ -107,70 +106,26 @@ export class AuthzError extends Error {
 	}
 }
 
-async function readSettings(
-	env: Env,
-	mailboxId: string,
-): Promise<Record<string, unknown> | null> {
-	const obj = await env.BUCKET.get(settingsKey(mailboxId));
-	if (!obj) return null;
-	return (await obj.json()) as Record<string, unknown>;
-}
-
-function settingsKey(mailboxId: string): string {
-	return `mailboxes/${mailboxId}.json`;
-}
-
-function extractAcl(settings: Record<string, unknown>): MailboxAcl {
-	const rawOwner = settings.owner;
-	const rawMembers = settings.members;
-	return {
-		owner: typeof rawOwner === "string" && rawOwner ? normalizeEmail(rawOwner) : undefined,
-		members: Array.isArray(rawMembers)
-			? (rawMembers as unknown[])
-					.filter((m): m is string => typeof m === "string" && m.length > 0)
-					.map(normalizeEmail)
-			: [],
-	};
-}
-
 /**
  * Fetch ACL for a mailbox. Returns null if the mailbox does not exist.
  *
- * D1 mailbox-directory is now the source of truth (PR 4 cutover).
- * For un-backfilled legacy mailboxes that exist only as `mailboxes/<id>.json`
- * in R2, fall back once and self-heal D1 from R2 so subsequent reads are
- * D1-only. The R2 fallback is the safety net — running
- * `POST /api/v1/admin/mailbox-directory/backfill` makes it unnecessary.
+ * D1 mailbox-directory is the sole source of truth (PR 9 retired the R2
+ * self-heal fallback). Any mailbox that still exists only as a legacy
+ * `mailboxes/<id>.json` blob in R2 must be backfilled into D1 via
+ * `POST /api/v1/admin/mailbox-directory/backfill` — the auth layer no longer
+ * resurrects them on-the-fly.
  */
 export async function getMailboxAcl(
 	env: Env,
 	mailboxId: string,
 ): Promise<MailboxAcl | null> {
 	const record = await getMailboxRecord(env, mailboxId);
-	if (record) {
-		const memberRows = await listMailboxMembers(env, mailboxId);
-		return {
-			owner: record.ownerEmail ?? undefined,
-			members: memberRows.map((r) => r.email),
-		};
-	}
-	// R2 fallback. Detect un-backfilled legacy mailbox, then self-heal.
-	const settings = await readSettings(env, mailboxId);
-	if (!settings) return null;
-	const acl = extractAcl(settings);
-	console.warn(
-		`[mailbox-acl] D1 has no row for "${mailboxId}" but R2 settings exist — self-healing. Run POST /api/v1/admin/mailbox-directory/backfill to migrate the rest.`,
-	);
-	await upsertMailboxRecord(env, mailboxId, acl.owner ?? null);
-	if (acl.members.length > 0) {
-		await replaceMembersRecord(
-			env,
-			mailboxId,
-			acl.members.map((email) => ({ email })),
-			null,
-		);
-	}
-	return acl;
+	if (!record) return null;
+	const memberRows = await listMailboxMembers(env, mailboxId);
+	return {
+		owner: record.ownerEmail ?? undefined,
+		members: memberRows.map((r) => r.email),
+	};
 }
 
 /** Pure predicate: does this user have rw access given the ACL? */
@@ -236,44 +191,34 @@ export async function assertMailboxOwner(
 	}
 }
 
-/** Atomically (read-modify-write) stamp an owner onto a mailbox that has none. */
+/** Stamp an owner onto a mailbox that has none. D1 row is the sole authority;
+ *  if the row is missing the mailbox does not exist. Idempotent: if another
+ *  caller wrote an owner first, this is a no-op rather than an overwrite. */
 export async function claimMailbox(
 	env: Env,
 	mailboxId: string,
 	ownerEmail: string,
 ): Promise<void> {
-	const key = settingsKey(mailboxId);
-	const obj = await env.BUCKET.get(key);
-	if (!obj) throw new AuthzError(404, "Mailbox not found");
-	const settings = (await obj.json()) as Record<string, unknown>;
-	if (typeof settings.owner === "string" && settings.owner) return; // lost the race
-	const ownerNorm = normalizeEmail(ownerEmail);
-	const next = {
-		...settings,
-		owner: ownerNorm,
-		members: Array.isArray(settings.members) ? settings.members : [],
-	};
-	await env.BUCKET.put(key, JSON.stringify(next));
-	// PR 3 dual-write: shadow the new owner into D1. Failures are logged
-	// inside upsertMailboxRecord; backfill reconciles drift.
-	await upsertMailboxRecord(env, mailboxId, ownerNorm);
+	const record = await getMailboxRecord(env, mailboxId);
+	if (!record) throw new AuthzError(404, "Mailbox not found");
+	if (record.ownerEmail) return; // lost the race
+	await upsertMailboxRecord(env, mailboxId, normalizeEmail(ownerEmail), {
+		strict: true,
+	});
 }
 
 /**
  * List mailboxes this user can see.
  *
- * Now answered from the D1 mailbox-directory (PR 4 cutover):
+ * Answered entirely from the D1 mailbox-directory:
  * - Privileged callers (admin / system) get every mailbox row, including
- *   ownerless ones, so they can route or repair them. We additionally
- *   surface any R2-only legacy mailbox not yet in D1 — the directory
- *   admin endpoint backfills these on demand, but the admin UI should
- *   not silently hide them in the meantime.
+ *   ownerless ones, so they can route or repair them.
  * - Normal users see only mailboxes where they are owner or explicit
  *   member. Ownerless legacy mailboxes are hidden — they are not
  *   claimable by browsing.
  *
- * `BUCKET.list("mailboxes/")` is no longer the hot path. It only runs in
- * the privileged branch as a stale-detection fallback.
+ * R2 is no longer consulted. Any mailbox missing from D1 must be backfilled
+ * via `POST /api/v1/admin/mailbox-directory/backfill`.
  */
 export async function listUserMailboxes(
 	env: Env,
@@ -282,26 +227,10 @@ export async function listUserMailboxes(
 	const isPrivileged = user.system || isAdmin(env, user);
 	if (isPrivileged) {
 		const records = await listAllMailboxRecords(env);
-		const seen = new Set(records.map((r) => r.id));
-		// Stale-detection: pick up any R2-only mailbox not yet in D1.
-		// Cheap because BUCKET.list returns metadata only and runs only on
-		// the admin / system path.
-		const r2List = await env.BUCKET.list({ prefix: "mailboxes/" });
-		for (const entry of r2List.objects) {
-			const id = entry.key.replace("mailboxes/", "").replace(".json", "");
-			if (!seen.has(id)) {
-				console.warn(
-					`[mailbox-acl] mailbox "${id}" exists in R2 but not in D1 — run POST /api/v1/admin/mailbox-directory/backfill`,
-				);
-				seen.add(id);
-			}
-		}
-		return [...seen].map((id) => ({ id, email: id }));
+		return records.map((r) => ({ id: r.id, email: r.id }));
 	}
 	const ids = await listMailboxIdsForUser(env, user);
-	// Hide ownerless mailboxes for normal users — same policy as before.
-	// One D1 round-trip per id; cheap because the result set is bounded
-	// by the user's actual membership.
+	// Hide ownerless mailboxes for normal users.
 	const results: { id: string; email: string }[] = [];
 	for (const id of ids) {
 		const record = await getMailboxRecord(env, id);
@@ -323,55 +252,45 @@ export async function setMailboxOwner(
 	mailboxId: string,
 	newOwnerEmail: string,
 ): Promise<MailboxAcl> {
-	const key = settingsKey(mailboxId);
-	const obj = await env.BUCKET.get(key);
-	if (!obj) throw new AuthzError(404, "Mailbox not found");
-	const settings = (await obj.json()) as Record<string, unknown>;
-	const acl = extractAcl(settings);
+	const record = await getMailboxRecord(env, mailboxId);
+	if (!record) throw new AuthzError(404, "Mailbox not found");
+	const memberRows = await listMailboxMembers(env, mailboxId);
 	const owner = normalizeEmail(newOwnerEmail);
-	const memberSet = new Set(acl.members.filter((m) => m !== owner));
-	if (acl.owner && acl.owner !== owner) memberSet.add(acl.owner);
-	const members = [...memberSet];
-	const next = { ...settings, owner, members };
-	await env.BUCKET.put(key, JSON.stringify(next));
-	// PR 3 dual-write: mirror the R2 set logic exactly so the D1 shadow
-	// does not diverge.
-	//   1. Promote the new owner.
-	//   2. Drop the new owner from `mailbox_members` if they were a
-	//      previous member — R2 filters them out above; D1 must too,
-	//      otherwise the joined "owner OR member" view double-counts.
-	//   3. Demote the previous owner into `mailbox_members` (R2 adds
-	//      them to the members set).
-	await upsertMailboxRecord(env, mailboxId, owner);
+	const previousOwner = record.ownerEmail ?? undefined;
+	const memberSet = new Set(memberRows.map((r) => r.email).filter((m) => m !== owner));
+	if (previousOwner && previousOwner !== owner) memberSet.add(previousOwner);
+	// 1. Promote the new owner.
+	// 2. Drop the new owner from `mailbox_members` if they had been a member —
+	//    otherwise the joined "owner OR member" view double-counts.
+	// 3. Demote the previous owner into `mailbox_members`.
+	await upsertMailboxRecord(env, mailboxId, owner, { strict: true });
 	await removeMemberRecord(env, mailboxId, owner);
-	if (acl.owner && acl.owner !== owner) {
-		await addMemberRecord(env, mailboxId, acl.owner, null);
+	if (previousOwner && previousOwner !== owner) {
+		await addMemberRecord(env, mailboxId, previousOwner, null);
 	}
-	return { owner, members };
+	return { owner, members: [...memberSet] };
 }
 
-/** Owner-only: add a member. Idempotent. */
+/** Owner-only: add a member. Idempotent. addedByUserId is left null because
+ *  the auth-layer helpers do not yet carry caller identity context; the
+ *  mailbox-directory backfill ties the row to a user when the email later
+ *  registers in `users`. */
 export async function addMailboxMember(
 	env: Env,
 	mailboxId: string,
 	memberEmail: string,
 ): Promise<MailboxAcl> {
-	const key = settingsKey(mailboxId);
-	const obj = await env.BUCKET.get(key);
-	if (!obj) throw new AuthzError(404, "Mailbox not found");
-	const settings = (await obj.json()) as Record<string, unknown>;
-	const acl = extractAcl(settings);
+	const record = await getMailboxRecord(env, mailboxId);
+	if (!record) throw new AuthzError(404, "Mailbox not found");
 	const normalized = normalizeEmail(memberEmail);
-	if (acl.owner === normalized || acl.members.includes(normalized)) return acl;
-	const members = [...acl.members, normalized];
-	const next = { ...settings, members };
-	await env.BUCKET.put(key, JSON.stringify(next));
-	// PR 3 dual-write. addedByUserId left null here because the helper has
-	// no caller identity context — `workers/index.ts` could pass it in a
-	// follow-up; the directory backfill still ties the row to a user when
-	// the email later registers.
+	const owner = record.ownerEmail ?? undefined;
+	if (owner === normalized) {
+		const memberRows = await listMailboxMembers(env, mailboxId);
+		return { owner, members: memberRows.map((r) => r.email) };
+	}
 	await addMemberRecord(env, mailboxId, normalized, null);
-	return { owner: acl.owner, members };
+	const memberRows = await listMailboxMembers(env, mailboxId);
+	return { owner, members: memberRows.map((r) => r.email) };
 }
 
 /** Owner-only: remove a member. Idempotent. */
@@ -380,19 +299,14 @@ export async function removeMailboxMember(
 	mailboxId: string,
 	memberEmail: string,
 ): Promise<MailboxAcl> {
-	const key = settingsKey(mailboxId);
-	const obj = await env.BUCKET.get(key);
-	if (!obj) throw new AuthzError(404, "Mailbox not found");
-	const settings = (await obj.json()) as Record<string, unknown>;
-	const acl = extractAcl(settings);
-	const normalized = normalizeEmail(memberEmail);
-	const members = acl.members.filter((m) => m !== normalized);
-	if (members.length === acl.members.length) return acl;
-	const next = { ...settings, members };
-	await env.BUCKET.put(key, JSON.stringify(next));
-	// PR 3 dual-write.
-	await removeMemberRecord(env, mailboxId, normalized);
-	return { owner: acl.owner, members };
+	const record = await getMailboxRecord(env, mailboxId);
+	if (!record) throw new AuthzError(404, "Mailbox not found");
+	await removeMemberRecord(env, mailboxId, normalizeEmail(memberEmail));
+	const memberRows = await listMailboxMembers(env, mailboxId);
+	return {
+		owner: record.ownerEmail ?? undefined,
+		members: memberRows.map((r) => r.email),
+	};
 }
 
 /** Bootstrap-admin email set, used to promote new accounts on creation. */
