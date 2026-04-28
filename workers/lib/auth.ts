@@ -18,7 +18,12 @@ import { SignJWT, jwtVerify } from "jose";
 import type { Context } from "hono";
 import {
 	addMemberRecord,
+	getMailboxRecord,
+	listAllMailboxRecords,
+	listMailboxIdsForUser,
+	listMailboxMembers,
 	removeMemberRecord,
+	replaceMembersRecord,
 	upsertMailboxRecord,
 } from "./mailbox-directory";
 import type { Env } from "../types";
@@ -128,14 +133,44 @@ function extractAcl(settings: Record<string, unknown>): MailboxAcl {
 	};
 }
 
-/** Fetch ACL for a mailbox. Returns null if the mailbox does not exist. */
+/**
+ * Fetch ACL for a mailbox. Returns null if the mailbox does not exist.
+ *
+ * D1 mailbox-directory is now the source of truth (PR 4 cutover).
+ * For un-backfilled legacy mailboxes that exist only as `mailboxes/<id>.json`
+ * in R2, fall back once and self-heal D1 from R2 so subsequent reads are
+ * D1-only. The R2 fallback is the safety net — running
+ * `POST /api/v1/admin/mailbox-directory/backfill` makes it unnecessary.
+ */
 export async function getMailboxAcl(
 	env: Env,
 	mailboxId: string,
 ): Promise<MailboxAcl | null> {
+	const record = await getMailboxRecord(env, mailboxId);
+	if (record) {
+		const memberRows = await listMailboxMembers(env, mailboxId);
+		return {
+			owner: record.ownerEmail ?? undefined,
+			members: memberRows.map((r) => r.email),
+		};
+	}
+	// R2 fallback. Detect un-backfilled legacy mailbox, then self-heal.
 	const settings = await readSettings(env, mailboxId);
 	if (!settings) return null;
-	return extractAcl(settings);
+	const acl = extractAcl(settings);
+	console.warn(
+		`[mailbox-acl] D1 has no row for "${mailboxId}" but R2 settings exist — self-healing. Run POST /api/v1/admin/mailbox-directory/backfill to migrate the rest.`,
+	);
+	await upsertMailboxRecord(env, mailboxId, acl.owner ?? null);
+	if (acl.members.length > 0) {
+		await replaceMembersRecord(
+			env,
+			mailboxId,
+			acl.members.map((email) => ({ email })),
+			null,
+		);
+	}
+	return acl;
 }
 
 /** Pure predicate: does this user have rw access given the ACL? */
@@ -161,13 +196,14 @@ export async function assertMailboxAccess(
 	mailboxId: string,
 	user: AuthUser,
 ): Promise<void> {
-	const settings = await readSettings(env, mailboxId);
-	if (!settings) throw new AuthzError(404, "Mailbox not found");
+	// D1-first existence + ACL check. `getMailboxAcl` self-heals from R2 if a
+	// legacy un-backfilled mailbox is encountered.
+	const acl = await getMailboxAcl(env, mailboxId);
+	if (!acl) throw new AuthzError(404, "Mailbox not found");
 
 	if (user.system) return;
 	if (isAdmin(env, user)) return;
 
-	const acl = extractAcl(settings);
 	if (!acl.owner) {
 		throw new AuthzError(
 			403,
@@ -225,34 +261,53 @@ export async function claimMailbox(
 
 /**
  * List mailboxes this user can see.
- * - Admins (and system callers) see every mailbox, including legacy ownerless
- *   ones, so they can route or repair them.
- * - Normal users see only mailboxes where they are explicitly owner or member.
- *   Legacy ownerless mailboxes are hidden — they are not claimable by browsing.
+ *
+ * Now answered from the D1 mailbox-directory (PR 4 cutover):
+ * - Privileged callers (admin / system) get every mailbox row, including
+ *   ownerless ones, so they can route or repair them. We additionally
+ *   surface any R2-only legacy mailbox not yet in D1 — the directory
+ *   admin endpoint backfills these on demand, but the admin UI should
+ *   not silently hide them in the meantime.
+ * - Normal users see only mailboxes where they are owner or explicit
+ *   member. Ownerless legacy mailboxes are hidden — they are not
+ *   claimable by browsing.
+ *
+ * `BUCKET.list("mailboxes/")` is no longer the hot path. It only runs in
+ * the privileged branch as a stale-detection fallback.
  */
 export async function listUserMailboxes(
 	env: Env,
 	user: AuthUser,
 ): Promise<{ id: string; email: string }[]> {
-	const list = await env.BUCKET.list({ prefix: "mailboxes/" });
-	const results: { id: string; email: string }[] = [];
 	const isPrivileged = user.system || isAdmin(env, user);
-	await Promise.all(
-		list.objects.map(async (entry) => {
-			const obj = await env.BUCKET.get(entry.key);
-			if (!obj) return;
-			const settings = (await obj.json()) as Record<string, unknown>;
-			const acl = extractAcl(settings);
+	if (isPrivileged) {
+		const records = await listAllMailboxRecords(env);
+		const seen = new Set(records.map((r) => r.id));
+		// Stale-detection: pick up any R2-only mailbox not yet in D1.
+		// Cheap because BUCKET.list returns metadata only and runs only on
+		// the admin / system path.
+		const r2List = await env.BUCKET.list({ prefix: "mailboxes/" });
+		for (const entry of r2List.objects) {
 			const id = entry.key.replace("mailboxes/", "").replace(".json", "");
-			if (isPrivileged) {
-				results.push({ id, email: id });
-				return;
+			if (!seen.has(id)) {
+				console.warn(
+					`[mailbox-acl] mailbox "${id}" exists in R2 but not in D1 — run POST /api/v1/admin/mailbox-directory/backfill`,
+				);
+				seen.add(id);
 			}
-			if (acl.owner && hasMailboxAccess(acl, user)) {
-				results.push({ id, email: id });
-			}
-		}),
-	);
+		}
+		return [...seen].map((id) => ({ id, email: id }));
+	}
+	const ids = await listMailboxIdsForUser(env, user);
+	// Hide ownerless mailboxes for normal users — same policy as before.
+	// One D1 round-trip per id; cheap because the result set is bounded
+	// by the user's actual membership.
+	const results: { id: string; email: string }[] = [];
+	for (const id of ids) {
+		const record = await getMailboxRecord(env, id);
+		if (!record?.ownerEmail) continue;
+		results.push({ id, email: id });
+	}
 	return results;
 }
 

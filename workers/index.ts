@@ -735,7 +735,10 @@ app.get("/api/v1/admin/mailboxes", async (c) => {
 	let user;
 	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
 	if (!isAdmin(c.env, user)) return c.json({ error: "Admin access required" }, 403);
-	const entries = await listMailboxes(c.env.BUCKET);
+	// D1-backed enumeration via the same helper user-facing list uses, so
+	// admin visibility stays aligned with the D1 source of truth and any
+	// R2-only legacy mailbox surfaces consistently.
+	const entries = await listUserMailboxes(c.env, user);
 	const detailed = await Promise.all(entries.map(async ({ id }) => {
 		const acl = await getMailboxAcl(c.env, id);
 		let inboxCount: number | null = null;
