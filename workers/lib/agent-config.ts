@@ -250,14 +250,16 @@ export function agentSettingsPatchFromRaw(
 }
 
 /**
- * Project a DO settings row into the R2-shape settings keys the legacy
- * settings UI expects. Null DO columns are omitted so the merged payload
- * does not advertise a value the user never set.
+ * Project a DO settings row into the flat settings shape the UI and MCP
+ * clients expect: agent-config columns + the opaque non-agent JSON object.
+ * Null DO columns are omitted so the payload does not advertise a value the
+ * user never set. Non-agent fields (fromName / forwarding / signature /
+ * autoReply / etc.) come straight from the JSON column.
  */
 export function mailboxSettingsRowToR2Shape(
 	row: MailboxSettingsRow,
 ): Record<string, unknown> {
-	const out: Record<string, unknown> = {};
+	const out: Record<string, unknown> = { ...(row.nonAgentSettings ?? {}) };
 	if (row.autoDraft !== null) out.autoDraft = row.autoDraft;
 	if (row.agentModel !== null) out.agentModel = row.agentModel;
 	if (row.emailReplyModel !== null) out.emailReplyModel = row.emailReplyModel;
@@ -276,6 +278,81 @@ export function mailboxSettingsRowToR2Shape(
 		out.invoiceEnabledSkills = [...row.invoiceEnabledSkills];
 	}
 	return out;
+}
+
+/**
+ * Pick the non-agent UI fields out of a flat settings PUT payload. Agent
+ * config fields and server-managed ACL keys (owner / members) are filtered
+ * out — what remains is the opaque JSON object that goes into the
+ * `non_agent_settings_json` column. Forward-compatible: any future UI-only
+ * field added to the settings PUT body comes through unchanged.
+ */
+export function nonAgentSettingsFromRaw(
+	raw: Record<string, unknown>,
+): Record<string, unknown> {
+	const out: Record<string, unknown> = {};
+	for (const [k, v] of Object.entries(raw)) {
+		if ((AGENT_CONFIG_FIELDS as readonly string[]).includes(k)) continue;
+		if (k === "owner" || k === "members") continue;
+		out[k] = v;
+	}
+	return out;
+}
+
+/**
+ * Fetch the MailboxDO settings row, lazy-backfilling non-agent fields from
+ * the legacy R2 blob on first read after the cutover. Returns the row (or
+ * null when the DO has no settings yet *and* R2 had nothing to copy).
+ *
+ * The backfill is one-shot per mailbox: once `non_agent_settings_json` is
+ * non-null in the DO, R2 is never consulted again. Callers should treat the
+ * R2 blob as legacy bytes only.
+ */
+export async function readUnifiedMailboxSettings(
+	env: Env,
+	mailboxId: string,
+): Promise<MailboxSettingsRow | null> {
+	const stub = getMailboxStub(env, mailboxId);
+	const initial: MailboxSettingsRow | null = await readDoSettings(stub);
+	if (initial && initial.nonAgentSettings !== null) return initial;
+
+	// Either no DO row at all (un-backfilled mailbox) or the row has no
+	// non-agent slice yet. Try R2 once.
+	let r2: Record<string, unknown> | null = null;
+	try {
+		const obj = await env.BUCKET.get(`mailboxes/${mailboxId}.json`);
+		if (obj) r2 = (await obj.json()) as Record<string, unknown>;
+	} catch (e) {
+		console.warn(
+			`[agent-config] R2 read failed during non-agent backfill for "${mailboxId}":`,
+			e,
+		);
+	}
+	if (!r2) return initial;
+
+	const nonAgent = nonAgentSettingsFromRaw(r2);
+	if (Object.keys(nonAgent).length === 0) return initial;
+
+	try {
+		await stub.updateMailboxSettings({ nonAgentSettings: nonAgent });
+		return await readDoSettings(stub);
+	} catch (e) {
+		console.warn(
+			`[agent-config] DO non-agent backfill write failed for "${mailboxId}":`,
+			e,
+		);
+	}
+	return initial;
+}
+
+async function readDoSettings(
+	stub: ReturnType<typeof getMailboxStub>,
+): Promise<MailboxSettingsRow | null> {
+	try {
+		return await stub.getMailboxSettings();
+	} catch {
+		return null;
+	}
 }
 
 function defaults(env: Env): AgentConfig {

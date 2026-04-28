@@ -1740,6 +1740,7 @@ export class MailboxDO extends DurableObject<Env> {
 					invoice_source_domains_json: row.invoice_source_domains_json,
 					email_reply_enabled_skills_json: row.email_reply_enabled_skills_json,
 					invoice_enabled_skills_json: row.invoice_enabled_skills_json,
+					non_agent_settings_json: row.non_agent_settings_json,
 					updated_at: row.updated_at,
 				},
 			})
@@ -1787,6 +1788,10 @@ export class MailboxDO extends DurableObject<Env> {
 				patch.invoiceEnabledSkills !== undefined
 					? patch.invoiceEnabledSkills
 					: existing?.invoiceEnabledSkills ?? null,
+			nonAgentSettings:
+				patch.nonAgentSettings !== undefined
+					? patch.nonAgentSettings
+					: existing?.nonAgentSettings ?? null,
 		};
 		return this.replaceMailboxSettings(merged);
 	}
@@ -1806,6 +1811,10 @@ export interface MailboxSettingsRow {
 	invoiceSourceDomains: readonly string[] | null;
 	emailReplyEnabledSkills: readonly string[] | null;
 	invoiceEnabledSkills: readonly string[] | null;
+	/** Opaque JSON object: fromName / forwarding / signature / autoReply / etc.
+	 *  The DO does not introspect this — it is round-tripped between the
+	 *  settings UI and the API as-is. */
+	nonAgentSettings: Record<string, unknown> | null;
 	updatedAt: number;
 }
 
@@ -1819,6 +1828,7 @@ export interface MailboxSettingsInput {
 	invoiceSourceDomains: readonly string[] | null;
 	emailReplyEnabledSkills: readonly string[] | null;
 	invoiceEnabledSkills: readonly string[] | null;
+	nonAgentSettings: Record<string, unknown> | null;
 }
 
 /** Partial update — undefined skips, null clears, value writes. */
@@ -1832,6 +1842,7 @@ export interface MailboxSettingsPatch {
 	invoiceSourceDomains?: readonly string[] | null;
 	emailReplyEnabledSkills?: readonly string[] | null;
 	invoiceEnabledSkills?: readonly string[] | null;
+	nonAgentSettings?: Record<string, unknown> | null;
 }
 
 interface MailboxSettingsRawRow {
@@ -1845,6 +1856,7 @@ interface MailboxSettingsRawRow {
 	invoice_source_domains_json: string | null;
 	email_reply_enabled_skills_json: string | null;
 	invoice_enabled_skills_json: string | null;
+	non_agent_settings_json: string | null;
 	updated_at: number;
 }
 
@@ -1859,6 +1871,13 @@ function parseStringArrayJson(raw: string | null): readonly string[] | null {
 	return out;
 }
 
+function parseObjectJson(raw: string | null): Record<string, unknown> | null {
+	if (raw === null) return null;
+	const parsed = safeJsonParse(raw);
+	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+	return parsed as Record<string, unknown>;
+}
+
 function rowToMailboxSettings(row: MailboxSettingsRawRow): MailboxSettingsRow {
 	return {
 		autoDraft: row.auto_draft === null ? null : row.auto_draft !== 0,
@@ -1870,6 +1889,7 @@ function rowToMailboxSettings(row: MailboxSettingsRawRow): MailboxSettingsRow {
 		invoiceSourceDomains: parseStringArrayJson(row.invoice_source_domains_json),
 		emailReplyEnabledSkills: parseStringArrayJson(row.email_reply_enabled_skills_json),
 		invoiceEnabledSkills: parseStringArrayJson(row.invoice_enabled_skills_json),
+		nonAgentSettings: parseObjectJson(row.non_agent_settings_json),
 		updatedAt: row.updated_at,
 	};
 }
@@ -1897,6 +1917,8 @@ function mailboxSettingsInputToColumns(
 			input.invoiceEnabledSkills === null
 				? null
 				: JSON.stringify([...input.invoiceEnabledSkills]),
+		non_agent_settings_json:
+			input.nonAgentSettings === null ? null : JSON.stringify(input.nonAgentSettings),
 		updated_at: Date.now(),
 	};
 }

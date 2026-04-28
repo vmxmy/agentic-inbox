@@ -337,4 +337,16 @@ export const mailboxMigrations: Migration[] = [
             );
         `,
 	},
+	{
+		// Carries the non-agent UI fields that previously lived alongside ACL
+		// in the legacy R2 settings blob (`mailboxes/<id>.json`):
+		// `fromName`, `forwarding`, `signature`, `autoReply`, plus any future
+		// UI-only knobs. Stored as a single opaque JSON object so additional
+		// fields do not require a schema migration. NULL means "no row yet" /
+		// use defaults.
+		name: "16_add_mailbox_settings_non_agent",
+		sql: `
+            ALTER TABLE mailbox_settings ADD COLUMN non_agent_settings_json TEXT;
+        `,
+	},
 ];

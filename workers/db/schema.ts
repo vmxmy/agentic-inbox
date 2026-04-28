@@ -193,5 +193,12 @@ export const mailboxSettings = sqliteTable("mailbox_settings", {
 	invoice_source_domains_json: text("invoice_source_domains_json"),
 	email_reply_enabled_skills_json: text("email_reply_enabled_skills_json"),
 	invoice_enabled_skills_json: text("invoice_enabled_skills_json"),
+	/**
+	 * Opaque JSON object holding the non-agent UI settings that previously
+	 * lived in the R2 omnibus blob: `fromName`, `forwarding`, `signature`,
+	 * `autoReply`. Stored as a single column so future UI-only fields can be
+	 * added without a schema migration.
+	 */
+	non_agent_settings_json: text("non_agent_settings_json"),
 	updated_at: integer("updated_at").notNull(),
 });
