@@ -39,6 +39,12 @@ import {
 } from "./lib/auth";
 import { findUserByEmail, findUserById, listUsers, setRole } from "./lib/users";
 import {
+	deleteMailboxRecord,
+	reconcileUserIds,
+	replaceMembersRecord,
+	upsertMailboxRecord,
+} from "./lib/mailbox-directory";
+import {
 	issueApiKey,
 	listApiKeys,
 	revokeApiKey,
@@ -257,13 +263,17 @@ async function createMailboxForOwner(
 	// server and seeded from the authenticated user's identity.
 	const { owner: _ignoredOwner, members: _ignoredMembers, ...cleanSettings } =
 		(settings ?? {}) as Record<string, unknown>;
+	const ownerNorm = ownerEmail ? normalizeEmail(ownerEmail) : null;
 	const finalSettings = {
 		...defaultSettings,
 		...cleanSettings,
-		owner: ownerEmail ? normalizeEmail(ownerEmail) : undefined,
+		owner: ownerNorm ?? undefined,
 		members: [] as string[],
 	};
 	await c.env.BUCKET.put(key, JSON.stringify(finalSettings));
+	// PR 3 dual-write: shadow the new mailbox into D1. Failures are logged
+	// inside the helper; the admin backfill endpoint reconciles drift.
+	await upsertMailboxRecord(c.env, email, ownerNorm);
 	const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(email));
 	await stub.getFolders();
 	return c.json({ id: email, email, name, settings: finalSettings }, 201);
@@ -528,6 +538,9 @@ app.delete("/api/v1/mailboxes/:mailboxId", async (c) => {
 	const key = `mailboxes/${mailboxId}.json`;
 	if (!(await c.env.BUCKET.head(key))) return c.json({ error: "Not found" }, 404);
 	await c.env.BUCKET.delete(key); // TODO: also delete DO data and R2 attachment blobs
+	// PR 3 dual-write: drop the directory + membership rows so D1 does not
+	// retain orphaned ACL records.
+	await deleteMailboxRecord(c.env, mailboxId);
 	return c.body(null, 204);
 });
 
@@ -669,6 +682,53 @@ app.post("/api/v1/admin/mailboxes/:mailboxId/owner", async (c) => {
 		const acl = await setMailboxOwner(c.env, mailboxId, targetEmail);
 		return c.json({ id: mailboxId, owner: acl.owner ?? null, members: acl.members });
 	} catch (e) { return handleAuthz(c, e); }
+});
+
+// Reconcile the D1 mailbox directory + membership index against the
+// authoritative R2 ACL blobs. Use case during the dual-write phase (PR 3):
+// - new mailbox/member writes occasionally fail to shadow into D1 if the
+//   D1 binding is briefly unavailable; this endpoint walks every R2
+//   `mailboxes/<id>.json` and re-writes the matching D1 rows.
+// - any prior mailbox created before PR 3 has no D1 row at all; this
+//   endpoint is the one-shot bootstrap.
+app.post("/api/v1/admin/mailbox-directory/backfill", async (c) => {
+	let user;
+	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
+	if (!isAdmin(c.env, user)) return c.json({ error: "Admin access required" }, 403);
+	const entries = await listMailboxes(c.env.BUCKET);
+	let mailboxesUpserted = 0;
+	let membersWritten = 0;
+	const errors: { mailboxId: string; message: string }[] = [];
+	for (const { id } of entries) {
+		try {
+			const acl = await getMailboxAcl(c.env, id);
+			if (!acl) continue;
+			// Strict mode so D1 errors propagate to the outer try/catch and
+			// land in `errors` instead of silently inflating the counters.
+			await upsertMailboxRecord(c.env, id, acl.owner ?? null, { strict: true });
+			mailboxesUpserted += 1;
+			await replaceMembersRecord(
+				c.env,
+				id,
+				acl.members.map((email) => ({ email })),
+				user.system ? null : user.id,
+				{ strict: true },
+			);
+			membersWritten += acl.members.length;
+		} catch (e) {
+			errors.push({
+				mailboxId: id,
+				message: e instanceof Error ? e.message : String(e),
+			});
+		}
+	}
+	const reconciled = await reconcileUserIds(c.env);
+	return c.json({
+		mailboxesUpserted,
+		membersWritten,
+		userIdsReconciled: reconciled.updated,
+		errors,
+	});
 });
 
 app.get("/api/v1/admin/mailboxes", async (c) => {
