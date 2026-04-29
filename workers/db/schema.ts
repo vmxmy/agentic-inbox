@@ -242,3 +242,25 @@ export const mcpConnections = sqliteTable("mcp_connections", {
 	last_error: text("last_error"),
 	enabled_tools_json: text("enabled_tools_json"),
 });
+
+/**
+ * Append-only audit log for external MCP tool invocations (Phase 5 of the L4
+ * MCP Client integration). One row per call from `EmailAgent` /
+ * `InvoiceAgent`, regardless of success or failure.
+ *
+ * `result_flagged_injection` is the integer mirror of the Phase 5
+ * prompt-injection screen (1 if `isPromptInjection` flagged the result text,
+ * 0 otherwise). `args_json` is the JSON-stringified tool input; `error` is
+ * NULL on success and carries the captured error message on failure. Indices
+ * support time-range and per-connection queries from the future Phase 6 UI.
+ */
+export const mcpAuditLog = sqliteTable("mcp_audit_log", {
+	id: text("id").primaryKey(),
+	conn_id: text("conn_id").notNull(),
+	tool_name: text("tool_name").notNull(),
+	started_at: integer("started_at").notNull(),
+	ended_at: integer("ended_at").notNull(),
+	args_json: text("args_json").notNull(),
+	error: text("error"),
+	result_flagged_injection: integer("result_flagged_injection").notNull().default(0),
+});

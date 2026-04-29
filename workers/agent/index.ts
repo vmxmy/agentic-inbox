@@ -34,6 +34,11 @@ import {
 } from "../lib/mcp-connections";
 import { MailboxBoundOAuthProvider } from "../lib/mcp-oauth-provider";
 import { parseSdkToolKey, namespaceTool } from "../lib/mcp-tool-namespace";
+import {
+	MCP_INJECTION_WARNING,
+	wrapExternalTool,
+	type ExternalToolLike,
+} from "../lib/mcp-audit";
 import type { Env } from "../types";
 
 // AI SDK v6 changed tool() overloads significantly. We define tools as plain
@@ -209,21 +214,51 @@ export class EmailAgent extends AIChatAgent<any> {
 		const modelId = pickModel(catalog, config.emailReplyModel ?? config.model, cfg.defaultModel);
 
 		let externalNamespaced: ToolSet = {};
-		if (isL4McpEnabled(env)) {
+		const l4Enabled = isL4McpEnabled(env);
+		if (l4Enabled) {
 			const externalRaw = this.mcp.getAITools();
-			const conns = await getMailboxStub(env, this.name).listMcpConnections();
+			const stub = getMailboxStub(env, this.name);
+			const conns = await stub.listMcpConnections();
 			const knownConnIds = conns.map((c) => c.id);
+			const connById = new Map(conns.map((c) => [c.id, c]));
+			const screener = (text: string) => isPromptInjection(env.AI, text);
 			for (const [sdkKey, tool] of Object.entries(externalRaw)) {
 				const parsed = parseSdkToolKey(sdkKey, knownConnIds);
 				if (!parsed) continue;
-				externalNamespaced[namespaceTool(parsed.connId, parsed.toolName)] = tool;
+				const conn = connById.get(parsed.connId);
+				if (!conn) continue;
+				// `enabledTools === null` means "no allowlist — every tool flows
+				// through". An array (including empty) means the owner explicitly
+				// chose the surface — only listed tools are exposed.
+				if (
+					conn.enabledTools !== null &&
+					!conn.enabledTools.includes(parsed.toolName)
+				) {
+					continue;
+				}
+				const wrapped = wrapExternalTool({
+					tool: tool as ExternalToolLike,
+					connId: parsed.connId,
+					toolName: parsed.toolName,
+					appendMcpAudit: (row) => stub.appendMcpAudit(row),
+					screener,
+					now: () => Date.now(),
+					newId: () => crypto.randomUUID(),
+				});
+				externalNamespaced[namespaceTool(parsed.connId, parsed.toolName)] = wrapped as ToolSet[string];
 			}
 		}
 		const tools: ToolSet = { ...internalTools, ...externalNamespaced };
+		// Append the untrusted-content warning whenever the L4 surface is on,
+		// not only when at least one external tool merged — the warning is
+		// preventative against future merges within the same chat.
+		const finalSystemPrompt = l4Enabled
+			? systemPrompt + MCP_INJECTION_WARNING
+			: systemPrompt;
 
 		const result = streamText({
 			model: provider(modelId),
-			system: systemPrompt,
+			system: finalSystemPrompt,
 			messages: await convertToModelMessages(this.messages),
 			tools,
 			stopWhen: stepCountIs(5),

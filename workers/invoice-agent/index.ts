@@ -27,6 +27,12 @@ import {
 import { getMailboxStub } from "../lib/email-helpers";
 import { isL4McpEnabled } from "../lib/mcp-connections";
 import { parseSdkToolKey, namespaceTool } from "../lib/mcp-tool-namespace";
+import { isPromptInjection } from "../lib/ai";
+import {
+	MCP_INJECTION_WARNING,
+	wrapExternalTool,
+	type ExternalToolLike,
+} from "../lib/mcp-audit";
 import type { Env } from "../types";
 
 interface OnNewEmailPayload {
@@ -289,23 +295,49 @@ export class InvoiceAgent extends AIChatAgent<any> {
 		const modelId = pickModel(catalog, config.invoiceModel ?? config.model, cfg.defaultModel);
 
 		// MIRROR: workers/agent/index.ts onChatMessage external-MCP merge.
-		// If you change either site, change both.
+		// If you change either site, change both. The wrap helper +
+		// MCP_INJECTION_WARNING constant are shared so the two agents cannot
+		// drift on audit / screen / system-prompt behaviour.
 		let externalNamespaced: ToolSet = {};
-		if (isL4McpEnabled(env)) {
+		const l4Enabled = isL4McpEnabled(env);
+		if (l4Enabled) {
 			const externalRaw = this.mcp.getAITools();
-			const conns = await getMailboxStub(env, this.name).listMcpConnections();
+			const stub = getMailboxStub(env, this.name);
+			const conns = await stub.listMcpConnections();
 			const knownConnIds = conns.map((c) => c.id);
+			const connById = new Map(conns.map((c) => [c.id, c]));
+			const screener = (text: string) => isPromptInjection(env.AI, text);
 			for (const [sdkKey, tool] of Object.entries(externalRaw)) {
 				const parsed = parseSdkToolKey(sdkKey, knownConnIds);
 				if (!parsed) continue;
-				externalNamespaced[namespaceTool(parsed.connId, parsed.toolName)] = tool;
+				const conn = connById.get(parsed.connId);
+				if (!conn) continue;
+				if (
+					conn.enabledTools !== null &&
+					!conn.enabledTools.includes(parsed.toolName)
+				) {
+					continue;
+				}
+				const wrapped = wrapExternalTool({
+					tool: tool as ExternalToolLike,
+					connId: parsed.connId,
+					toolName: parsed.toolName,
+					appendMcpAudit: (row) => stub.appendMcpAudit(row),
+					screener,
+					now: () => Date.now(),
+					newId: () => crypto.randomUUID(),
+				});
+				externalNamespaced[namespaceTool(parsed.connId, parsed.toolName)] = wrapped as ToolSet[string];
 			}
 		}
 		const tools: ToolSet = { ...internalTools, ...externalNamespaced };
+		const finalSystemPrompt = l4Enabled
+			? systemPrompt + MCP_INJECTION_WARNING
+			: systemPrompt;
 
 		const result = streamText({
 			model: provider(modelId),
-			system: systemPrompt,
+			system: finalSystemPrompt,
 			messages: await convertToModelMessages(this.messages),
 			tools,
 			stopWhen: stepCountIs(5),
