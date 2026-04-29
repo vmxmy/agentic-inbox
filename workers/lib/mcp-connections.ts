@@ -185,3 +185,78 @@ export function isMcpConnectionState(
 export function isMcpTransportType(value: unknown): value is McpTransportType {
 	return McpTransportTypeSchema.safeParse(value).success;
 }
+
+// ── Phase 2 ─────────────────────────────────────────────────────────────────
+
+/**
+ * Compile-time-safe check for the `L4_MCP_ENABLED` feature flag.
+ *
+ * Once the flag is declared in `wrangler.jsonc` vars, the wrangler-generated
+ * `Cloudflare.Env` type narrows it to its literal default value (e.g.
+ * `"false"`), which would trip `TS2367` on a direct `=== "true"` comparison.
+ * Wrapping the read in `String(...)` widens the result to `string`, so the
+ * helper survives every possible flag state across deploys without an
+ * `as` cast or `@ts-expect-error`.
+ *
+ * Plan reference: §118-138 ("Feature Flag Strategy"). Phase 1 is unconditional;
+ * Phase 2-5 every externally-reachable code path must guard with this helper;
+ * Phase 6 flips the wrangler default to `"true"`.
+ */
+export function isL4McpEnabled(env: { L4_MCP_ENABLED?: string }): boolean {
+	return String(env.L4_MCP_ENABLED) === "true";
+}
+
+/**
+ * Narrowed shape of `Agent.addMcpServer` return values consumed by Phase 2's
+ * EmailAgent RPC. The Cloudflare SDK actually returns one of two discriminated
+ * objects; we type-erase the discriminant to a plain `string` so
+ * {@link buildConnectionFromSdkResult} stays a pure function testable in the
+ * Node runtime without re-importing the SDK enum.
+ */
+export interface SdkAddResult {
+	id: string;
+	state: string;
+	authUrl?: string;
+}
+
+/**
+ * Translate a successful `Agent.addMcpServer` response plus owner metadata
+ * into an {@link McpConnectionInput} ready for `MailboxDO.upsertMcpConnection`.
+ *
+ * Splitting the add flow into "SDK call → build input → DO upsert" keeps
+ * the build step a pure function unit-testable in Node. Unknown SDK state
+ * strings collapse to `"error"` so the metadata layer never persists a state
+ * value the rest of the codebase cannot narrow.
+ */
+export function buildConnectionFromSdkResult(args: {
+	serverName: string;
+	serverUrl: string;
+	displayName?: string;
+	addedByUserId: string;
+	addedAt: number;
+	sdk: SdkAddResult;
+}): McpConnectionInput {
+	return {
+		id: args.sdk.id,
+		serverName: args.serverName,
+		displayName: args.displayName ?? args.serverName,
+		serverUrl: args.serverUrl,
+		transportType: null,
+		addedByUserId: args.addedByUserId,
+		addedAt: args.addedAt,
+		lastState: isMcpConnectionState(args.sdk.state) ? args.sdk.state : "error",
+		enabledTools: null,
+	};
+}
+
+/**
+ * Discriminated outcome of `EmailAgent.addExternalMcpServer`.
+ *
+ * Phase 3 routes consume the `authenticating` variant to redirect the
+ * browser to `authUrl`, and the `ready` variant to confirm immediate
+ * success. Both variants carry the persisted {@link McpConnection} so the
+ * UI can render the row before live state catches up.
+ */
+export type AddExternalMcpServerResult =
+	| { state: "ready"; connection: McpConnection }
+	| { state: "authenticating"; connection: McpConnection; authUrl: string };

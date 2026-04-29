@@ -3,6 +3,8 @@ import {
 	MCP_CONNECTION_STATES,
 	MCP_TRANSPORT_TYPES,
 	McpConnectionSerializationError,
+	buildConnectionFromSdkResult,
+	isL4McpEnabled,
 	isMcpConnectionState,
 	isMcpTransportType,
 	mcpConnectionToRow,
@@ -261,5 +263,121 @@ describe("isMcpTransportType", () => {
 	it("rejects non-string inputs", () => {
 		expect(isMcpTransportType(undefined)).toBe(false);
 		expect(isMcpTransportType(null)).toBe(false);
+	});
+});
+
+describe("isL4McpEnabled (Phase 2)", () => {
+	it("returns true only for the literal string 'true'", () => {
+		// #given the flag explicitly enabled
+		expect(isL4McpEnabled({ L4_MCP_ENABLED: "true" })).toBe(true);
+	});
+
+	it("returns false when the flag is missing entirely", () => {
+		// #given an env where wrangler.jsonc has not declared the var yet
+		// #when checked
+		// #then the helper defaults to disabled (matching plan §123 default)
+		expect(isL4McpEnabled({})).toBe(false);
+	});
+
+	it("returns false for the literal string 'false'", () => {
+		expect(isL4McpEnabled({ L4_MCP_ENABLED: "false" })).toBe(false);
+	});
+
+	it("returns false for truthy-looking but non-'true' values", () => {
+		// #given runtime nonsense that string-coerces awkwardly
+		// #then we never let the flag flip on by accident
+		expect(isL4McpEnabled({ L4_MCP_ENABLED: "TRUE" })).toBe(false);
+		expect(isL4McpEnabled({ L4_MCP_ENABLED: "1" })).toBe(false);
+		expect(isL4McpEnabled({ L4_MCP_ENABLED: "" })).toBe(false);
+	});
+
+	it("returns false when the value is undefined", () => {
+		// `String(undefined)` produces 'undefined' — must not equal 'true'
+		expect(isL4McpEnabled({ L4_MCP_ENABLED: undefined })).toBe(false);
+	});
+});
+
+describe("buildConnectionFromSdkResult (Phase 2)", () => {
+	const baseArgs = {
+		serverName: "github",
+		serverUrl: "https://mcp.github.com/sse",
+		addedByUserId: "user-42",
+		addedAt: 1714389600000,
+	} as const;
+
+	it("maps a 'ready' SDK response to McpConnectionInput", () => {
+		// #given a successful immediate connection
+		const input = buildConnectionFromSdkResult({
+			...baseArgs,
+			sdk: { id: "abc-123", state: "ready" },
+		});
+		// #then every field is wired and lastState narrows to 'ready'
+		expect(input.id).toBe("abc-123");
+		expect(input.serverName).toBe("github");
+		expect(input.serverUrl).toBe("https://mcp.github.com/sse");
+		expect(input.lastState).toBe("ready");
+		expect(input.addedByUserId).toBe("user-42");
+		expect(input.addedAt).toBe(1714389600000);
+		expect(input.transportType).toBeNull();
+		expect(input.enabledTools).toBeNull();
+	});
+
+	it("maps an 'authenticating' SDK response with authUrl present", () => {
+		// #given an OAuth-required connection (authUrl ignored by the input shape)
+		const input = buildConnectionFromSdkResult({
+			...baseArgs,
+			sdk: {
+				id: "def-456",
+				state: "authenticating",
+				authUrl: "https://github.com/login/oauth/authorize?...",
+			},
+		});
+		expect(input.lastState).toBe("authenticating");
+		// authUrl is consumed by EmailAgent's discriminated return type, not by
+		// the McpConnectionInput; ensure the build helper does not leak it
+		expect(input).not.toHaveProperty("authUrl");
+	});
+
+	it("collapses unknown SDK state strings to 'error'", () => {
+		// #given an SDK that returns a state outside our narrowed enum
+		const input = buildConnectionFromSdkResult({
+			...baseArgs,
+			sdk: { id: "ghi-789", state: "connecting" },
+		});
+		// #then we persist 'error' rather than a string the rest of the
+		// codebase cannot narrow — fail-safe principle
+		expect(input.lastState).toBe("error");
+	});
+
+	it("defaults displayName to serverName when omitted", () => {
+		const input = buildConnectionFromSdkResult({
+			...baseArgs,
+			sdk: { id: "x", state: "ready" },
+		});
+		expect(input.displayName).toBe("github");
+	});
+
+	it("uses an explicit displayName when provided", () => {
+		const input = buildConnectionFromSdkResult({
+			...baseArgs,
+			displayName: "GitHub Issues (Org)",
+			sdk: { id: "x", state: "ready" },
+		});
+		expect(input.displayName).toBe("GitHub Issues (Org)");
+	});
+
+	it("round-trips through mcpConnectionToRow + rowToMcpConnection", () => {
+		// #given the helper output is consumed by the existing P1 helpers
+		const input = buildConnectionFromSdkResult({
+			...baseArgs,
+			sdk: { id: "abc-123", state: "ready" },
+		});
+		// #when serialised and re-read
+		const back = rowToMcpConnection(mcpConnectionToRow(input));
+		// #then nothing is lost (lastError defaults to null on the input shape)
+		expect(back).toEqual({
+			...input,
+			lastError: null,
+		} satisfies McpConnection);
 	});
 });
