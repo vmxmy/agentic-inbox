@@ -2,9 +2,16 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { Badge, Button, Input, Loader, useKumoToastManager } from "@cloudflare/kumo";
+import {
+	Badge,
+	Button,
+	Input,
+	Loader,
+	Radio,
+	useKumoToastManager,
+} from "@cloudflare/kumo";
 import { LinkIcon, PlugIcon, TrashIcon } from "@phosphor-icons/react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { ApiError } from "~/services/api";
 import {
 	useAddMcpConnection,
@@ -13,6 +20,8 @@ import {
 	type AddMcpConnectionResult,
 	type McpConnectionDto,
 } from "~/queries/mcp-connections";
+
+type AuthType = "oauth" | "bearer";
 
 interface ConnectedAppsProps {
 	mailboxId: string;
@@ -40,6 +49,9 @@ export default function ConnectedApps({ mailboxId, isOwner }: ConnectedAppsProps
 
 	const [name, setName] = useState("");
 	const [serverUrl, setServerUrl] = useState("");
+	const [authType, setAuthType] = useState<AuthType>("oauth");
+	const bearerTokenRef = useRef("");
+	const bearerTokenInputRef = useRef<HTMLInputElement | null>(null);
 	const [pendingAuth, setPendingAuth] = useState<{
 		connectionId: string;
 		authUrl: string;
@@ -49,9 +61,20 @@ export default function ConnectedApps({ mailboxId, isOwner }: ConnectedAppsProps
 
 	const connections: McpConnectionDto[] = data?.connections ?? [];
 
+	const clearBearerToken = () => {
+		bearerTokenRef.current = "";
+		if (bearerTokenInputRef.current) bearerTokenInputRef.current.value = "";
+	};
+
+	const handleAuthTypeChange = (value: AuthType) => {
+		setAuthType(value);
+		if (value === "oauth") clearBearerToken();
+	};
+
 	const handleAdd = async () => {
 		const trimmedName = name.trim();
 		const trimmedUrl = serverUrl.trim();
+		const selectedAuthType = authType;
 		if (!trimmedName) {
 			toastManager.add({ title: "Enter a connection name", variant: "error" });
 			return;
@@ -60,10 +83,23 @@ export default function ConnectedApps({ mailboxId, isOwner }: ConnectedAppsProps
 			toastManager.add({ title: "Enter a server URL", variant: "error" });
 			return;
 		}
+		const bearerToken = bearerTokenRef.current.trim();
+		if (selectedAuthType === "bearer" && !bearerToken) {
+			toastManager.add({ title: "Enter a Bearer token", variant: "error" });
+			return;
+		}
 		try {
 			const result: AddMcpConnectionResult = await addMutation.mutateAsync({
 				mailboxId,
-				input: { name: trimmedName, url: trimmedUrl },
+				input:
+					selectedAuthType === "bearer"
+						? {
+								authType: "bearer",
+								name: trimmedName,
+								url: trimmedUrl,
+								bearerToken,
+							}
+						: { authType: "oauth", name: trimmedName, url: trimmedUrl },
 			});
 			setName("");
 			setServerUrl("");
@@ -79,11 +115,10 @@ export default function ConnectedApps({ mailboxId, isOwner }: ConnectedAppsProps
 				toastManager.add({ title: `Connected ${result.connection.serverName}` });
 			}
 		} catch (e) {
-			const message =
-				e instanceof ApiError && e.status === 503
-					? "MCP connections are disabled in this environment"
-					: "Failed to add connection";
+			const message = addErrorMessage(e, selectedAuthType);
 			toastManager.add({ title: message, variant: "error" });
+		} finally {
+			if (selectedAuthType === "bearer") clearBearerToken();
 		}
 	};
 
@@ -147,14 +182,37 @@ export default function ConnectedApps({ mailboxId, isOwner }: ConnectedAppsProps
 				<AddConnectionForm
 					name={name}
 					serverUrl={serverUrl}
+					authType={authType}
+					bearerTokenInputRef={bearerTokenInputRef}
 					onNameChange={setName}
 					onUrlChange={setServerUrl}
+					onAuthTypeChange={handleAuthTypeChange}
+					onBearerTokenChange={(value) => {
+						bearerTokenRef.current = value;
+					}}
 					onSubmit={handleAdd}
 					isSubmitting={addMutation.isPending}
 				/>
 			)}
 		</div>
 	);
+}
+
+function addErrorMessage(e: unknown, authType: AuthType): string {
+	if (e instanceof ApiError) {
+		if (e.status === 503 && e.message === "bearer_feature_disabled") {
+			return "Bearer MCP connections are disabled or missing a KEK";
+		}
+		if (e.status === 503) {
+			return "MCP connections are disabled in this environment";
+		}
+		if (e.status === 400) {
+			return "Check the connection details and try again";
+		}
+	}
+	return authType === "bearer"
+		? "Failed to add Bearer connection"
+		: "Failed to add connection";
 }
 
 interface ConnectionListProps {
@@ -275,8 +333,12 @@ function stateBadgeFor(
 interface AddConnectionFormProps {
 	name: string;
 	serverUrl: string;
+	authType: AuthType;
+	bearerTokenInputRef: React.RefObject<HTMLInputElement | null>;
 	onNameChange: (value: string) => void;
 	onUrlChange: (value: string) => void;
+	onAuthTypeChange: (value: AuthType) => void;
+	onBearerTokenChange: (value: string) => void;
 	onSubmit: () => void;
 	isSubmitting: boolean;
 }
@@ -284,8 +346,12 @@ interface AddConnectionFormProps {
 function AddConnectionForm({
 	name,
 	serverUrl,
+	authType,
+	bearerTokenInputRef,
 	onNameChange,
 	onUrlChange,
+	onAuthTypeChange,
+	onBearerTokenChange,
 	onSubmit,
 	isSubmitting,
 }: AddConnectionFormProps) {
@@ -293,8 +359,22 @@ function AddConnectionForm({
 		if (e.key === "Enter") onSubmit();
 	};
 	return (
-		<div className="border-t border-kumo-line pt-3">
-			<div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+		<div className="border-t border-kumo-line pt-3 space-y-3">
+			<Radio.Group
+				legend="Authentication method"
+				orientation="horizontal"
+				value={authType}
+				onValueChange={(value) =>
+					onAuthTypeChange(value === "bearer" ? "bearer" : "oauth")
+				}
+				disabled={isSubmitting}
+				description="Use OAuth when the provider supports it. Use Bearer for static-token MCP servers."
+			>
+				<Radio.Item label="OAuth" value="oauth" />
+				<Radio.Item label="Bearer token" value="bearer" />
+			</Radio.Group>
+
+			<div className="flex flex-col gap-2 sm:flex-row">
 				<div className="flex-1">
 					<Input
 						label="Connection name"
@@ -302,24 +382,50 @@ function AddConnectionForm({
 						value={name}
 						onChange={(e) => onNameChange(e.target.value)}
 						onKeyDown={handleEnter}
+						disabled={isSubmitting}
 					/>
 				</div>
 				<div className="flex-1">
 					<Input
 						label="Server URL"
-						placeholder="https://mcp.example.com/sse"
+						placeholder={
+							authType === "bearer"
+								? "https://mcp.example.com/mcp"
+								: "https://mcp.example.com/sse"
+						}
 						value={serverUrl}
 						onChange={(e) => onUrlChange(e.target.value)}
 						onKeyDown={handleEnter}
 						type="url"
 						inputMode="url"
+						disabled={isSubmitting}
 					/>
 				</div>
+			</div>
+
+			{authType === "bearer" && (
+				<div className="rounded border border-kumo-line bg-kumo-recessed p-3">
+					<Input
+						ref={bearerTokenInputRef}
+						label="Bearer token"
+						placeholder="Paste the server token"
+						type="password"
+						autoComplete="off"
+						spellCheck={false}
+						maxLength={8192}
+						onChange={(e) => onBearerTokenChange(e.target.value)}
+						onKeyDown={handleEnter}
+						disabled={isSubmitting}
+						description="The token is sent once, encrypted at rest, and cleared from this form after submit."
+					/>
+				</div>
+			)}
+
+			<div className="flex justify-end">
 				<Button
 					variant="secondary"
 					onClick={onSubmit}
 					loading={isSubmitting}
-					className="self-end"
 				>
 					Add connection
 				</Button>
