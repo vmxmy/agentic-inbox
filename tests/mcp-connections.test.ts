@@ -30,6 +30,12 @@ const sampleRow: McpConnectionRow = {
 	last_state: "ready",
 	last_error: null,
 	enabled_tools_json: JSON.stringify(["create_issue"]),
+	auth_type: "oauth",
+	encrypted_token_b64: null,
+	token_iv_b64: null,
+	token_salt_b64: null,
+	token_envelope_version: null,
+	token_kek_version: null,
 };
 
 const sampleConn: McpConnection = {
@@ -43,6 +49,12 @@ const sampleConn: McpConnection = {
 	lastState: "ready",
 	lastError: null,
 	enabledTools: ["create_issue"],
+	authType: "oauth",
+	encryptedTokenB64: null,
+	tokenIvB64: null,
+	tokenSaltB64: null,
+	tokenEnvelopeVersion: null,
+	tokenKekVersion: null,
 };
 
 describe("constants", () => {
@@ -205,6 +217,12 @@ describe("mcpConnectionToRow", () => {
 			addedAt: 0,
 			lastState: "ready",
 			enabledTools: null,
+			authType: "oauth",
+			encryptedTokenB64: null,
+			tokenIvB64: null,
+			tokenSaltB64: null,
+			tokenEnvelopeVersion: null,
+			tokenKekVersion: null,
 			// lastError intentionally omitted
 		};
 		// #when serialised

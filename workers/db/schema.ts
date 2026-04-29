@@ -241,6 +241,15 @@ export const mcpConnections = sqliteTable("mcp_connections", {
 	last_state: text("last_state").notNull(),
 	last_error: text("last_error"),
 	enabled_tools_json: text("enabled_tools_json"),
+	// L4 P8 — Bearer auth additions (migration 19). Defaults to 'oauth' for
+	// rows persisted before P8 cutover; the encrypted-blob columns are only
+	// populated when auth_type='bearer'.
+	auth_type: text("auth_type").notNull().default("oauth"),
+	encrypted_token_b64: text("encrypted_token_b64"),
+	token_iv_b64: text("token_iv_b64"),
+	token_salt_b64: text("token_salt_b64"),
+	token_envelope_version: integer("token_envelope_version"),
+	token_kek_version: integer("token_kek_version"),
 });
 
 /**
