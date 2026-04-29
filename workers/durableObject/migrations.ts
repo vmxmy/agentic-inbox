@@ -349,4 +349,40 @@ export const mailboxMigrations: Migration[] = [
             ALTER TABLE mailbox_settings ADD COLUMN non_agent_settings_json TEXT;
         `,
 	},
+	{
+		// Phase 1 of the L4 (MCP Client) integration. Per-mailbox metadata for
+		// external MCP server connections — the user-facing display layer the
+		// owner manages from Settings → Connected Apps. The Cloudflare Agents
+		// SDK runs its own MCPClientManager-controlled tables for live
+		// connection state + OAuth tokens; this table only stores the
+		// owner-supplied display fields, audit trail, and an optional per-server
+		// tool allowlist that gates Phase 4 streamText merging.
+		//
+		// `id` matches the `serverId` returned by `Agent.addMcpServer`; using
+		// the SDK's id keeps the join with `getMcpServers()` trivial.
+		// `last_state` mirrors the SDK MCPConnectionState at the moment of the
+		// last user-initiated mutation, NOT the live runtime state — read live
+		// state via `Agent.getMcpServers()`.
+		// `enabled_tools_json` is JSON-serialised string[]; NULL means
+		// "expose all tools the server publishes" (default).
+		// `transport_type` filled lazily once the SDK confirms which transport
+		// negotiated successfully (`streamable-http` | `sse`).
+		name: "17_add_mcp_connections",
+		sql: `
+            CREATE TABLE IF NOT EXISTS mcp_connections (
+                id TEXT PRIMARY KEY,
+                server_name TEXT NOT NULL UNIQUE,
+                display_name TEXT,
+                server_url TEXT NOT NULL,
+                transport_type TEXT,
+                added_by_user_id TEXT NOT NULL,
+                added_at INTEGER NOT NULL,
+                last_state TEXT NOT NULL,
+                last_error TEXT,
+                enabled_tools_json TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_mcp_connections_state ON mcp_connections(last_state);
+        `,
+	},
 ];

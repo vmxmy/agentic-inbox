@@ -202,3 +202,43 @@ export const mailboxSettings = sqliteTable("mailbox_settings", {
 	non_agent_settings_json: text("non_agent_settings_json"),
 	updated_at: integer("updated_at").notNull(),
 });
+
+/**
+ * External MCP server connections (Phase 1 of the L4 MCP Client integration).
+ *
+ * Each row is an external MCP server the mailbox owner attached via
+ * Settings → Connected Apps. The Cloudflare Agents SDK already maintains its
+ * own MCPClientManager-controlled tables for live connection state + OAuth
+ * tokens — this table only carries user-facing metadata + owner audit trail
+ * + an optional per-server tool allowlist consumed by Phase 4 streamText
+ * merging.
+ *
+ * `id` is kept identical to the `serverId` returned by `Agent.addMcpServer`
+ * so cross-references with `Agent.getMcpServers()` need no extra mapping.
+ *
+ * `last_state` mirrors the SDK MCPConnectionState recorded at the moment of
+ * the last user-initiated mutation (add / remove / refresh) — it is *not*
+ * authoritative live state. The live state lives in
+ * `Agent.getMcpServers().servers[id].state` and must be queried directly.
+ *
+ * `enabled_tools_json` is a JSON-serialised `string[]`. `NULL` means
+ * "expose every tool the server publishes" (default). An empty array means
+ * "expose nothing" — a kill-switch that keeps the connection healthy but
+ * hides every tool from the LLM.
+ *
+ * `transport_type` is filled lazily once the SDK negotiates a transport
+ * (`streamable-http` or `sse`); it stays `NULL` until the first successful
+ * connection.
+ */
+export const mcpConnections = sqliteTable("mcp_connections", {
+	id: text("id").primaryKey(),
+	server_name: text("server_name").notNull().unique(),
+	display_name: text("display_name"),
+	server_url: text("server_url").notNull(),
+	transport_type: text("transport_type"),
+	added_by_user_id: text("added_by_user_id").notNull(),
+	added_at: integer("added_at").notNull(),
+	last_state: text("last_state").notNull(),
+	last_error: text("last_error"),
+	enabled_tools_json: text("enabled_tools_json"),
+});
