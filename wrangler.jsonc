@@ -33,6 +33,11 @@
 		// the LLM_BASE_URL endpoint's /v1/models list.
 		"LLM_DEFAULT_MODEL": "glm-5.1",
 		// LLM_API_KEY is a secret — set via `wrangler secret put LLM_API_KEY`.
+		// L4 (MCP Client integration) feature flag. String literal, not a
+		// boolean — `isL4McpEnabled()` reads it as `String(env.L4_MCP_ENABLED) === "true"`.
+		// Phase 6 lands the Settings UI dormant with the flag at "false";
+		// the cutover commit flips it to "true".
+		"L4_MCP_ENABLED": "false",
 	},
 	"d1_databases": [
 		{

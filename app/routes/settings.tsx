@@ -11,6 +11,7 @@ import {
 	KeyIcon,
 	LinkIcon,
 	LockKeyIcon,
+	PlugIcon,
 	PlusIcon,
 	RobotIcon,
 	TrashIcon,
@@ -26,6 +27,7 @@ import { useWhoami } from "~/queries/identity";
 import { useCapabilities, type CapabilityDescriptor } from "~/queries/capabilities";
 import { useModels } from "~/queries/models";
 import CapabilityActionEditor from "~/components/CapabilityActionEditor";
+import ConnectedApps from "~/components/settings/ConnectedApps";
 import { useFolders } from "~/queries/folders";
 import { useMailbox, useUpdateMailbox } from "~/queries/mailboxes";
 import {
@@ -36,7 +38,7 @@ import {
 } from "~/queries/members";
 import api, { ApiError } from "~/services/api";
 
-type SettingsTab = "account" | "agents" | "rules" | "members" | "system";
+type SettingsTab = "account" | "agents" | "rules" | "members" | "connections" | "system";
 
 interface SettingsTabDef {
 	id: SettingsTab;
@@ -47,11 +49,12 @@ interface SettingsTabDef {
 }
 
 const SETTINGS_TABS: SettingsTabDef[] = [
-	{ id: "account", label: "Account", icon: UserIcon },
-	{ id: "agents",  label: "Agents",  icon: RobotIcon },
-	{ id: "rules",   label: "Rules",   icon: FunnelIcon },
-	{ id: "members", label: "Members", icon: UsersIcon },
-	{ id: "system",  label: "System",  icon: GearSixIcon, adminOnly: true },
+	{ id: "account",     label: "Account",      icon: UserIcon },
+	{ id: "agents",      label: "Agents",       icon: RobotIcon },
+	{ id: "rules",       label: "Rules",        icon: FunnelIcon },
+	{ id: "members",     label: "Members",      icon: UsersIcon },
+	{ id: "connections", label: "Connections",  icon: PlugIcon },
+	{ id: "system",      label: "System",       icon: GearSixIcon, adminOnly: true },
 ];
 
 // Model dropdown is populated dynamically from `GET /api/v1/models`
@@ -721,11 +724,16 @@ export default function SettingsRoute() {
 				{/* ── Members tab ── */}
 				{activeTab === "members" && mailboxId && <MembersCard mailboxId={mailboxId} />}
 
+				{/* ── Connections tab (L4 MCP Client) ── */}
+				{activeTab === "connections" && mailboxId && (
+					<ConnectionsTabPanel mailboxId={mailboxId} />
+				)}
+
 				{/* ── System tab (admin-only) ── */}
 				{activeTab === "system" && isAdminUser && <LlmProvidersCard />}
 
-				{/* Save (covers Account / Agents / Rules — Members + System have their own actions) */}
-				{activeTab !== "members" && activeTab !== "system" && (
+				{/* Save (covers Account / Agents / Rules — Members / Connections / System manage their own actions) */}
+				{activeTab !== "members" && activeTab !== "connections" && activeTab !== "system" && (
 					<div className="flex justify-end">
 						<Button variant="primary" onClick={handleSave} loading={isSaving}>
 							Save Changes
@@ -735,6 +743,21 @@ export default function SettingsRoute() {
 			</div>
 		</div>
 	);
+}
+
+// ── ConnectionsTabPanel ───────────────────────────────────────────
+//
+// Thin wrapper around <ConnectedApps /> that resolves the owner flag
+// using the same `whoami.email === members.owner` shape as the
+// Members tab — keeps the role-gating logic single-source-of-truth at
+// the route level rather than duplicating it inside the leaf
+// component.
+
+function ConnectionsTabPanel({ mailboxId }: { mailboxId: string }) {
+	const { data: whoami } = useWhoami();
+	const { data: members } = useMembers(mailboxId);
+	const isOwner = !!(whoami?.email && members?.owner && members.owner === whoami.email);
+	return <ConnectedApps mailboxId={mailboxId} isOwner={isOwner} />;
 }
 
 // ── MembersCard ────────────────────────────────────────────────────
