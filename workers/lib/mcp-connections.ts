@@ -227,6 +227,30 @@ export function toPublicMcpConnection(
 	};
 }
 
+export function bearerEnvelopeFromConnection(
+	connection: McpConnection,
+): EnvelopeV1 | null {
+	if (connection.authType !== "bearer") return null;
+	if (
+		connection.encryptedTokenB64 === null ||
+		connection.tokenIvB64 === null ||
+		connection.tokenSaltB64 === null ||
+		connection.tokenEnvelopeVersion !== 1 ||
+		connection.tokenKekVersion === null
+	) {
+		throw new McpConnectionSerializationError(
+			`Bearer connection ${connection.id} is missing encrypted token envelope fields`,
+		);
+	}
+	return {
+		version: 1,
+		kekVersion: connection.tokenKekVersion,
+		ivB64: connection.tokenIvB64,
+		saltB64: connection.tokenSaltB64,
+		ciphertextB64: connection.encryptedTokenB64,
+	};
+}
+
 export function mcpConnectionToRow(
 	input: McpConnectionInput,
 ): McpConnectionRow {

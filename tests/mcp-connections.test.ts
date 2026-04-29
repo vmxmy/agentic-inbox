@@ -4,6 +4,7 @@ import {
 	MCP_TRANSPORT_TYPES,
 	McpConnectionSerializationError,
 	applyBoundFields,
+	bearerEnvelopeFromConnection,
 	buildConnectionFromSdkResult,
 	isL4BearerEnabled,
 	isL4McpEnabled,
@@ -489,6 +490,46 @@ describe("toPublicMcpConnection", () => {
 		expect(publicConn).not.toHaveProperty("tokenSaltB64");
 		expect(publicConn).not.toHaveProperty("tokenEnvelopeVersion");
 		expect(publicConn).not.toHaveProperty("tokenKekVersion");
+	});
+});
+
+describe("bearerEnvelopeFromConnection (Phase 3)", () => {
+	it("reconstructs the decryptable envelope from a complete Bearer row", () => {
+		const envelope = bearerEnvelopeFromConnection({
+			...sampleConn,
+			authType: "bearer",
+			encryptedTokenB64: "ciphertext",
+			tokenIvB64: "iv",
+			tokenSaltB64: "salt",
+			tokenEnvelopeVersion: 1,
+			tokenKekVersion: 2,
+		});
+
+		expect(envelope).toEqual({
+			version: 1,
+			kekVersion: 2,
+			ivB64: "iv",
+			saltB64: "salt",
+			ciphertextB64: "ciphertext",
+		});
+	});
+
+	it("returns null for OAuth rows", () => {
+		expect(bearerEnvelopeFromConnection(sampleConn)).toBeNull();
+	});
+
+	it("rejects incomplete Bearer rows before decrypt", () => {
+		expect(() =>
+			bearerEnvelopeFromConnection({
+				...sampleConn,
+				authType: "bearer",
+				encryptedTokenB64: "ciphertext",
+				tokenIvB64: null,
+				tokenSaltB64: "salt",
+				tokenEnvelopeVersion: 1,
+				tokenKekVersion: 2,
+			}),
+		).toThrow(McpConnectionSerializationError);
 	});
 });
 

@@ -6,7 +6,7 @@ import { describe, it, expect } from "vitest";
 import {
 	buildBearerFetch,
 	buildBearerTransport,
-	registerBearerMcpServer,
+	connectBearerMcpServer,
 	type BearerMcpManager,
 } from "../workers/lib/mcp-bearer-transport";
 
@@ -82,106 +82,88 @@ describe("buildBearerTransport", () => {
 	});
 });
 
-describe("registerBearerMcpServer", () => {
+describe("connectBearerMcpServer", () => {
 	function makeManager(opts?: {
-		connect?: Awaited<ReturnType<BearerMcpManager["connectToServer"]>>;
-		discovery?: Awaited<ReturnType<BearerMcpManager["discoverIfConnected"]>>;
+		connect?: Awaited<ReturnType<BearerMcpManager["connect"]>>;
+		connectError?: Error;
 	}) {
-		const registered: Array<{
-			id: string;
-			options: Parameters<BearerMcpManager["registerServer"]>[1];
+		const connected: Array<{
+			url: string;
+			options: Parameters<BearerMcpManager["connect"]>[1];
 		}> = [];
 		const removed: string[] = [];
 		const manager: BearerMcpManager = {
-			async registerServer(id, options) {
-				registered.push({ id, options });
-				return id;
-			},
-			async connectToServer() {
-				return opts?.connect ?? { state: "connected" };
-			},
-			async discoverIfConnected() {
-				return opts?.discovery ?? { success: true, state: "ready" };
+			async connect(url, options) {
+				if (opts?.connectError) throw opts.connectError;
+				connected.push({ url, options });
+				return opts?.connect ?? { id: options.reconnect.id };
 			},
 			async removeServer(id) {
 				removed.push(id);
 			},
 		};
-		return { manager, registered, removed };
+		return { manager, connected, removed };
 	}
 
-	it("uses the low-level SDK register path so fetch reaches the live transport but not server_options", async () => {
+	it("uses the non-persistent SDK connect path so fetch reaches the live transport", async () => {
 		const plaintext = "ghp_plaintext_token";
 		const bearerFetch = buildBearerFetch(
 			() => "conn-bearer",
 			() => plaintext,
 			async () => new Response("ok"),
 		);
-		const { manager, registered } = makeManager();
+		const { manager, connected } = makeManager();
 
-		const result = await registerBearerMcpServer({
+		const result = await connectBearerMcpServer({
 			manager,
 			id: "conn-bearer",
-			serverName: "github",
 			url: "https://mcp.example.test/mcp",
 			bearerFetch,
 		});
 
 		expect(result).toEqual({ id: "conn-bearer", state: "ready" });
-		expect(registered).toHaveLength(1);
-		expect(registered[0]!.options.transport.fetch).toBe(bearerFetch);
-		const sdkServerOptions = JSON.stringify({
-			client: undefined,
-			transport: registered[0]!.options.transport,
-			retry: undefined,
-		});
-		expect(sdkServerOptions).toBe(
-			'{"transport":{"type":"streamable-http"}}',
+		expect(connected).toHaveLength(1);
+		expect(connected[0]!.url).toBe("https://mcp.example.test/mcp");
+		expect(connected[0]!.options.reconnect.id).toBe("conn-bearer");
+		expect(connected[0]!.options.transport.fetch).toBe(bearerFetch);
+		expect(JSON.stringify(connected[0]!.options.transport)).not.toContain(
+			plaintext,
 		);
-		expect(sdkServerOptions).not.toContain(plaintext);
 	});
 
-	it("removes the SDK row when connect fails before metadata persistence", async () => {
+	it("closes the live SDK connection when connect fails before metadata persistence", async () => {
 		const { manager, removed } = makeManager({
-			connect: { state: "failed", error: "401 Unauthorized" },
+			connectError: new Error("401 Unauthorized"),
 		});
 
 		await expect(
-			registerBearerMcpServer({
+			connectBearerMcpServer({
 				manager,
 				id: "conn-fail",
-				serverName: "github",
 				url: "https://mcp.example.test/mcp",
 				bearerFetch: async () => new Response("ok"),
 			}),
-		).rejects.toThrow(
-			"Failed to connect to MCP server at https://mcp.example.test/mcp: 401 Unauthorized",
-		);
+		).rejects.toThrow("401 Unauthorized");
 
 		expect(removed).toEqual(["conn-fail"]);
 	});
 
-	it("removes the SDK row when capability discovery fails", async () => {
+	it("treats an OAuth redirect request as a Bearer connection failure", async () => {
 		const { manager, removed } = makeManager({
-			discovery: {
-				success: false,
-				state: "connected",
-				error: "listTools failed",
-			},
+			connect: { id: "conn-oauth", authUrl: "https://oauth.example.test" },
 		});
 
 		await expect(
-			registerBearerMcpServer({
+			connectBearerMcpServer({
 				manager,
-				id: "conn-discovery-fail",
-				serverName: "github",
+				id: "conn-oauth",
 				url: "https://mcp.example.test/mcp",
 				bearerFetch: async () => new Response("ok"),
 			}),
 		).rejects.toThrow(
-			"Failed to discover MCP server capabilities: listTools failed",
+			"Bearer MCP server unexpectedly requested OAuth authentication",
 		);
 
-		expect(removed).toEqual(["conn-discovery-fail"]);
+		expect(removed).toEqual(["conn-oauth"]);
 	});
 });
