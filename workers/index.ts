@@ -1427,6 +1427,103 @@ app.get("/api/v1/mailboxes/:mailboxId/emails/:emailId/attachments/:attachmentId"
 	return new Response(obj.body, { headers });
 });
 
+// -- L4 (MCP Client) external connection management -----------------
+//
+// Owner-only POST/DELETE, member-readable GET. Each handler forwards
+// to the EmailAgent DO via its RPC stub; the EmailAgent enforces the
+// `L4_MCP_ENABLED` feature flag before doing any SDK or storage work.
+// The DO RPC has no inbound HTTP request, so we derive `callbackHost`
+// from the route's request URL and pass it explicitly — Cloudflare's
+// SDK uses this to construct the OAuth callback URL the user's
+// browser will hit.
+//
+// OAuth callback (`/agents/email-agent/:mailboxId/callback`) is
+// handled in `workers/app.ts` because it sits under the agent
+// forwarding boundary, not the API surface.
+
+const PostMcpConnectionBody = z.object({
+	url: z.string().url(),
+	name: z.string().min(1).max(64),
+	displayName: z.string().min(1).max(128).optional(),
+});
+
+app.post("/api/v1/mailboxes/:mailboxId/mcp-connections", async (c) => {
+	const mailboxId = c.req.param("mailboxId")!;
+	let user;
+	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
+	try { await assertMailboxOwner(c.env, mailboxId, user); } catch (e) { return handleAuthz(c, e); }
+
+	const parsed = PostMcpConnectionBody.safeParse(await c.req.json().catch(() => ({})));
+	if (!parsed.success) {
+		return c.json({ error: "invalid_body", details: parsed.error.message }, 400);
+	}
+
+	const reqUrl = new URL(c.req.url);
+	const callbackHost = `${reqUrl.protocol}//${reqUrl.host}`;
+	const id = c.env.EMAIL_AGENT.idFromName(mailboxId);
+	const stub = c.env.EMAIL_AGENT.get(id);
+	try {
+		const result = await stub.addExternalMcpServer({
+			serverName: parsed.data.name,
+			url: parsed.data.url,
+			displayName: parsed.data.displayName,
+			addedByUserId: user.id,
+			callbackHost,
+		});
+		return c.json(result);
+	} catch (e) {
+		const msg = (e as Error).message;
+		if (msg === "L4 MCP feature disabled") {
+			return c.json({ error: "feature_disabled" }, 503);
+		}
+		return c.json({ error: "add_failed", message: msg }, 500);
+	}
+});
+
+app.delete("/api/v1/mailboxes/:mailboxId/mcp-connections/:connId", async (c) => {
+	const mailboxId = c.req.param("mailboxId")!;
+	const connId = c.req.param("connId")!;
+	let user;
+	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
+	try { await assertMailboxOwner(c.env, mailboxId, user); } catch (e) { return handleAuthz(c, e); }
+
+	const id = c.env.EMAIL_AGENT.idFromName(mailboxId);
+	const stub = c.env.EMAIL_AGENT.get(id);
+	try {
+		await stub.removeExternalMcpServer(connId);
+		return c.json({ ok: true });
+	} catch (e) {
+		const msg = (e as Error).message;
+		if (msg === "L4 MCP feature disabled") {
+			return c.json({ error: "feature_disabled" }, 503);
+		}
+		return c.json({ error: "remove_failed", message: msg }, 500);
+	}
+});
+
+app.get("/api/v1/mailboxes/:mailboxId/mcp-connections", async (c) => {
+	const mailboxId = c.req.param("mailboxId")!;
+	let user;
+	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
+	try { await assertMailboxAccess(c.env, mailboxId, user); } catch (e) { return handleAuthz(c, e); }
+
+	const id = c.env.EMAIL_AGENT.idFromName(mailboxId);
+	const stub = c.env.EMAIL_AGENT.get(id);
+	try {
+		const connections = await stub.listExternalMcpServers();
+		return c.json({ connections });
+	} catch (e) {
+		const msg = (e as Error).message;
+		if (msg === "L4 MCP feature disabled") {
+			// Read path is forgiving so the UI can render the empty state
+			// without surfacing a 503 — the absence of features is itself
+			// the kill-switch user signal.
+			return c.json({ connections: [] });
+		}
+		return c.json({ error: "list_failed", message: msg }, 500);
+	}
+});
+
 // -- Receive inbound email ------------------------------------------
 
 const MAX_EMAIL_SIZE = 25 * 1024 * 1024;

@@ -3,6 +3,7 @@ import {
 	MCP_CONNECTION_STATES,
 	MCP_TRANSPORT_TYPES,
 	McpConnectionSerializationError,
+	applyBoundFields,
 	buildConnectionFromSdkResult,
 	isL4McpEnabled,
 	isMcpConnectionState,
@@ -11,6 +12,8 @@ import {
 	parseEnabledTools,
 	rowToMcpConnection,
 	serializeEnabledTools,
+	validateBoundState,
+	type BoundStateRow,
 	type McpConnection,
 	type McpConnectionInput,
 	type McpConnectionRow,
@@ -379,5 +382,116 @@ describe("buildConnectionFromSdkResult (Phase 2)", () => {
 			...input,
 			lastError: null,
 		} satisfies McpConnection);
+	});
+});
+
+describe("applyBoundFields (Phase 3)", () => {
+	const sdkBaseRow = {
+		nonce: "n0nc3",
+		serverId: "srv-abc",
+		createdAt: 1714389600000,
+	};
+
+	it("layers mailboxId + userId on top of the SDK base row", () => {
+		// #given the row the SDK base writes during state()
+		// #when the subclass augments it with the binding fields
+		const out = applyBoundFields(sdkBaseRow, {
+			mailboxId: "mb-1",
+			userId: "user-7",
+		});
+		// #then both binding fields are present alongside the SDK fields
+		expect(out).toEqual({
+			nonce: "n0nc3",
+			serverId: "srv-abc",
+			createdAt: 1714389600000,
+			mailboxId: "mb-1",
+			userId: "user-7",
+		});
+	});
+
+	it("never mutates the input row", () => {
+		// #given a frozen-style sdkBaseRow we re-use across tests
+		const before = JSON.stringify(sdkBaseRow);
+		// #when augmented
+		applyBoundFields(sdkBaseRow, { mailboxId: "x", userId: "y" });
+		// #then the original is unchanged — pure function discipline
+		expect(JSON.stringify(sdkBaseRow)).toBe(before);
+	});
+
+	it("overrides existing mailboxId/userId fields if present", () => {
+		// #given a row that already carries (stale) binding fields
+		const stale = { ...sdkBaseRow, mailboxId: "old", userId: "old" };
+		// #when augmented with fresh binding
+		const out = applyBoundFields(stale, {
+			mailboxId: "new-mb",
+			userId: "new-user",
+		});
+		// #then the new fields win — the helper is "set", not "merge"
+		expect(out.mailboxId).toBe("new-mb");
+		expect(out.userId).toBe("new-user");
+	});
+});
+
+describe("validateBoundState (Phase 3)", () => {
+	const stored: Pick<BoundStateRow, "mailboxId" | "userId"> = {
+		mailboxId: "mb-1",
+		userId: "user-7",
+	};
+
+	it("returns valid:true when both bindings match", () => {
+		// #given a stored row whose bindings match the current request
+		// #when validated
+		const result = validateBoundState(stored, {
+			mailboxId: "mb-1",
+			userId: "user-7",
+		});
+		// #then the SDK base validation result wins (we return valid:true here)
+		expect(result).toEqual({ valid: true });
+	});
+
+	it("rejects with 'state row vanished' when stored is null", () => {
+		// #given the storage GET miss case (TTL eviction or never-written)
+		const result = validateBoundState(null, {
+			mailboxId: "mb-1",
+			userId: "user-7",
+		});
+		expect(result).toEqual({ valid: false, error: "state row vanished" });
+	});
+
+	it("rejects with 'state row vanished' when stored is undefined", () => {
+		// #given the storage GET undefined case (Cloudflare default)
+		const result = validateBoundState(undefined, {
+			mailboxId: "mb-1",
+			userId: "user-7",
+		});
+		expect(result).toEqual({ valid: false, error: "state row vanished" });
+	});
+
+	it("rejects with 'mailbox mismatch' when mailboxId differs", () => {
+		// #given a stored row from a different mailbox (cross-mailbox replay)
+		const result = validateBoundState(stored, {
+			mailboxId: "mb-other",
+			userId: "user-7",
+		});
+		expect(result).toEqual({ valid: false, error: "mailbox mismatch" });
+	});
+
+	it("rejects with 'user mismatch' when userId differs", () => {
+		// #given a stored row from a different user (cross-user replay)
+		const result = validateBoundState(stored, {
+			mailboxId: "mb-1",
+			userId: "user-other",
+		});
+		expect(result).toEqual({ valid: false, error: "user mismatch" });
+	});
+
+	it("evaluates mailboxId before userId when both differ", () => {
+		// #given both bindings differ — the more "structural" mismatch
+		// (mailbox) should be reported first so the audit log makes sense
+		const result = validateBoundState(stored, {
+			mailboxId: "mb-other",
+			userId: "user-other",
+		});
+		expect(result).toEqual({ valid: false, error: "mailbox mismatch" });
 	});
 });

@@ -260,3 +260,75 @@ export function buildConnectionFromSdkResult(args: {
 export type AddExternalMcpServerResult =
 	| { state: "ready"; connection: McpConnection }
 	| { state: "authenticating"; connection: McpConnection; authUrl: string };
+
+// ── Phase 3 ─────────────────────────────────────────────────────────────────
+
+/**
+ * Storage row written by the SDK base `state()` then augmented by
+ * {@link MailboxBoundOAuthProvider}. The SDK base persists `nonce`,
+ * `serverId`, and `createdAt`; the subclass writes `mailboxId` and
+ * `userId` on top.
+ *
+ * Persisted under `OAuthProvider.stateKey(nonce)` in the EmailAgent's
+ * DO storage. Lifetime is bounded by the SDK's `STATE_EXPIRATION_MS`
+ * constant — we never delete bound rows ourselves; SDK's
+ * `consumeState()` does.
+ */
+export interface BoundStateRow {
+	nonce: string;
+	serverId: string;
+	createdAt: number;
+	mailboxId: string;
+	userId: string;
+}
+
+/**
+ * Pure builder used by {@link MailboxBoundOAuthProvider#state} to layer
+ * the binding fields on top of the SDK-written storage row. Pulled out
+ * of the subclass so the augmentation contract is unit-testable in
+ * Node without a `DurableObjectStorage`.
+ *
+ * Returns a NEW object — never mutates `stored` — so callers may freely
+ * reuse the input.
+ */
+export function applyBoundFields<T extends Record<string, unknown>>(
+	stored: T,
+	binding: { mailboxId: string; userId: string },
+): T & { mailboxId: string; userId: string } {
+	return {
+		...stored,
+		mailboxId: binding.mailboxId,
+		userId: binding.userId,
+	};
+}
+
+/**
+ * Pure validator used by {@link MailboxBoundOAuthProvider#checkState}
+ * after the SDK base validation passes. Returns a discriminated result
+ * with one of three failure reasons or `valid: true`.
+ *
+ * Phase 3 binding (Pre-mortem #1; plan §289).
+ */
+export type BoundStateValidationError =
+	| "state row vanished"
+	| "mailbox mismatch"
+	| "user mismatch";
+
+export function validateBoundState(
+	stored:
+		| Pick<BoundStateRow, "mailboxId" | "userId">
+		| undefined
+		| null,
+	current: { mailboxId: string; userId: string },
+):
+	| { valid: true }
+	| { valid: false; error: BoundStateValidationError } {
+	if (!stored) return { valid: false, error: "state row vanished" };
+	if (stored.mailboxId !== current.mailboxId) {
+		return { valid: false, error: "mailbox mismatch" };
+	}
+	if (stored.userId !== current.userId) {
+		return { valid: false, error: "user mismatch" };
+	}
+	return { valid: true };
+}
