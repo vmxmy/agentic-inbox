@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Demo-only sample data for Agentic Inbox docs. Not a legal tax invoice. -->
+<Invoice>
+  <InvoiceNumber>DEMO-2026-0001</InvoiceNumber>
+  <InvoiceCode>DEMO</InvoiceCode>
+  <InvoiceTypeName>Demo vendor invoice</InvoiceTypeName>
+  <IssueTime>2026-04-29</IssueTime>
+  <SellerName>Example Vendor Ltd.</SellerName>
+  <SellerIdNum>DEMOSELLER123456789</SellerIdNum>
+  <BuyerName>Example Finance Team</BuyerName>
+  <BuyerIdNum>DEMOBUYER987654321</BuyerIdNum>
+  <TotalAmWithoutTax>1000.00</TotalAmWithoutTax>
+  <TotalTaxAm>60.00</TotalTaxAm>
+  <TotalTax-includedAmount>1060.00</TotalTax-includedAmount>
+  <Remark>Demo invoice for Agentic Inbox finance workflow.</Remark>
+  <DetailList>
+    <Item>
+      <ItemName>Cloud service subscription</ItemName>
+      <Spec>Monthly</Spec>
+      <Unit>month</Unit>
+      <Quantity>1</Quantity>
+      <UnPrice>1000.00</UnPrice>
+      <Amount>1000.00</Amount>
+      <TaxRate>0.06</TaxRate>
+      <TaxAmount>60.00</TaxAmount>
+    </Item>
+  </DetailList>
+</Invoice>

@@ -1,14 +1,61 @@
 <div align="center">
   <h1>Agentic Inbox</h1>
-  <p><em>A self-hosted email client with an AI agent, running entirely on Cloudflare Workers</em></p>
+  <p><em>Open-source agent-native mailboxes for durable workflows, running entirely on Cloudflare Workers</em></p>
 </div>
 
-Agentic Inbox lets you send, receive, and manage emails through a modern web interface -- all powered by your own Cloudflare account. Incoming emails arrive via [Cloudflare Email Routing](https://developers.cloudflare.com/email-routing/), each mailbox is isolated in its own [Durable Object](https://developers.cloudflare.com/durable-objects/) with a SQLite database, and attachments are stored in [R2](https://developers.cloudflare.com/r2/).
+Agentic Inbox turns shared role mailboxes into agent-native workspaces. It runs
+entirely in your Cloudflare account: incoming emails arrive through
+[Cloudflare Email Routing](https://developers.cloudflare.com/email-routing/),
+each mailbox is isolated in a [Durable Object](https://developers.cloudflare.com/durable-objects/)
+with SQLite state, and attachments are persisted in [R2](https://developers.cloudflare.com/r2/).
 
-An **AI-powered Email Agent** can read your inbox, search conversations, and draft replies -- built with the [Cloudflare Agents SDK](https://developers.cloudflare.com/agents/) and [Workers AI](https://developers.cloudflare.com/workers-ai/).
+The fastest way to understand the product is `finance@`: an invoice email
+arrives, the thread becomes a durable workflow session, attachments become
+artifacts, agents extract structured invoice records, and humans review
+sensitive outputs before anything external happens.
+
+![Agentic Inbox finance workflow](docs/assets/agentic-inbox-finance-workflow.svg)
+
+## Finance workflow in 90 seconds
+
+A vendor sends an invoice to `finance@`. In a normal shared inbox, the work
+fragments across downloads, spreadsheets, chat, and follow-up emails. In
+Agentic Inbox, the mailbox keeps the workflow together:
+
+1. **Email is the session** -- the invoice thread stays the durable record of
+   the request, discussion, and follow-up.
+2. **Attachments are artifacts** -- XML, OFD, PDF, ZIP, external-link downloads,
+   and manual uploads are persisted and source-linked.
+3. **Agents prepare work** -- invoice skills extract structured records, surface
+   review flags, summarize context, and draft clarification replies.
+4. **Humans stay in control** -- sending, deletion, export, and sensitive
+   integration actions require explicit authority.
+5. **MCP uses the same boundary** -- external agents can query and draft through
+   scoped API keys without bypassing mailbox ACLs.
+
+The point is not "AI writes email." The point is a role mailbox with memory,
+artifacts, skills, and policy.
+
+## What changes
+
+| Normal shared inbox | Agentic Inbox |
+| --- | --- |
+| Email is a place where work arrives | Email is the durable workflow substrate |
+| Attachments are downloaded and copied around | Attachments and derived files are persisted artifacts |
+| Agents see broad context or brittle prompts | Agents use mailbox-scoped capabilities |
+| Finance records drift away from source email | Extracted fields link back to source message and attachment ids |
+| Automation risks surprise side effects | Agents draft by default; humans approve sensitive outputs |
+
+## Try the finance demo
+
+- Walk through the canonical flow: [Finance Workflow Demo](docs/finance-workflow-demo.md)
+- Use the sample paths for a local or staging test:
+  `docs/samples/finance-demo-email.md` and `docs/samples/finance-demo-invoice.xml`
+- Read the product framing: [Product Narrative](docs/product-narrative.md)
+- Inspect the architecture: [Foundation Architecture](docs/foundation-architecture.md)
+- See the Cloudflare platform mapping: [Cloudflare Agentic Cloud Guide](docs/cloudflare-agentic-cloud-2026-guide.md)
 
 ![Agentic Inbox screenshot](./demo_app.png)
-
 
 Read the blog post to learn more about Cloudflare Email Service and how to use it with the Agents SDK, MCP, and from the Wrangler CLI: [Email for Agents](https://blog.cloudflare.com/email-for-agents/).
 
@@ -51,7 +98,8 @@ When `EMAIL_ADDRESSES` is configured (fixed-mailbox mode used for shared inboxes
 
 - **Full email client** — Send and receive emails via Cloudflare Email Routing with a rich text composer, reply/forward threading, folder organization, search, and attachments
 - **Per-mailbox isolation** — Each mailbox runs in its own Durable Object with SQLite storage and R2 for attachments
-- **Built-in AI agent** — Side panel with 9 email tools for reading, searching, drafting, and sending
+- **Agent-native workspaces** — Role mailboxes such as `support@`, `finance@`, and `ops@` carry their own members, skills, prompts, rules, and persisted artifacts
+- **Built-in AI agents** — Side panel with mailbox-scoped tools for reading, searching, drafting, extracting, and organizing work
 - **Auto-draft on new email** — Agent automatically reads inbound emails and generates draft replies, always requiring explicit confirmation before sending
 - **Configurable and persistent** — Custom system prompts per mailbox, persistent chat history, streaming markdown responses, and tool call visibility
 
