@@ -22,9 +22,10 @@ import type { RuleCondition, RuleAction } from "../lib/rules";
 import {
 	mcpConnectionToRow,
 	rowToMcpConnection,
-	type McpConnection,
 	type McpConnectionInput,
 	type McpConnectionRow,
+	toPublicMcpConnection,
+	type PublicMcpConnection,
 } from "../lib/mcp-connections";
 import type { McpAuditRow } from "../lib/mcp-audit";
 
@@ -1818,18 +1819,20 @@ export class MailboxDO extends DurableObject<Env> {
 	// Reads stay open so a future "view connections (read-only)" UI
 	// could surface dormant rows during incident response.
 
-	async listMcpConnections(): Promise<readonly McpConnection[]> {
+	async listMcpConnections(): Promise<readonly PublicMcpConnection[]> {
 		const rows = this.db
 			.select()
 			.from(schema.mcpConnections)
 			.orderBy(asc(schema.mcpConnections.added_at))
 			.all();
-		return rows.map((row) => rowToMcpConnection(row as McpConnectionRow));
+		return rows.map((row) =>
+			toPublicMcpConnection(rowToMcpConnection(row as McpConnectionRow)),
+		);
 	}
 
 	async upsertMcpConnection(
 		input: McpConnectionInput,
-	): Promise<McpConnection> {
+	): Promise<PublicMcpConnection> {
 		const row = mcpConnectionToRow(input);
 		this.db
 			.insert(schema.mcpConnections)
@@ -1846,10 +1849,16 @@ export class MailboxDO extends DurableObject<Env> {
 					last_state: row.last_state,
 					last_error: row.last_error,
 					enabled_tools_json: row.enabled_tools_json,
+					auth_type: row.auth_type,
+					encrypted_token_b64: row.encrypted_token_b64,
+					token_iv_b64: row.token_iv_b64,
+					token_salt_b64: row.token_salt_b64,
+					token_envelope_version: row.token_envelope_version,
+					token_kek_version: row.token_kek_version,
 				},
 			})
 			.run();
-		return rowToMcpConnection(row);
+		return toPublicMcpConnection(rowToMcpConnection(row));
 	}
 
 	async deleteMcpConnection(id: string): Promise<void> {

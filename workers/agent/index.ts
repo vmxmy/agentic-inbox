@@ -28,10 +28,17 @@ import {
 import { readInternalAuthContextHeader, type AuthUser } from "../lib/auth";
 import {
 	buildConnectionFromSdkResult,
+	isL4BearerEnabled,
 	isL4McpEnabled,
+	type AddExternalMcpServerInput,
 	type AddExternalMcpServerResult,
-	type McpConnection,
+	type PublicMcpConnection,
 } from "../lib/mcp-connections";
+import {
+	buildBearerFetch,
+	registerBearerMcpServer,
+} from "../lib/mcp-bearer-transport";
+import { encryptBearerToken } from "../lib/mcp-token-crypto";
 import { MailboxBoundOAuthProvider } from "../lib/mcp-oauth-provider";
 import { parseSdkToolKey, namespaceTool } from "../lib/mcp-tool-namespace";
 import {
@@ -193,6 +200,7 @@ export class EmailAgent extends AIChatAgent<any> {
 	 *  system-triggered paths (auto-draft `onNewEmail`) — the registry's
 	 *  owner-only gate denies in that case, which is intentional. */
 	private currentUser: AuthUser | null = null;
+	private bearerCache = new Map<string, string>();
 
 	override async fetch(request: Request): Promise<Response> {
 		this.currentUser = await readInternalAuthContextHeader(
@@ -552,19 +560,21 @@ Based on the email content and thread context above, draft a reply using draft_r
 		}
 	}
 
-	async addExternalMcpServer(input: {
-		serverName: string;
-		url: string;
-		displayName?: string;
-		addedByUserId: string;
-		/** Origin used to construct the OAuth callback URL (e.g.
-		 *  `https://example.com`). The SDK normally derives this from the
-		 *  inbound request URL, but Phase 3 invokes this RPC via the DO
-		 *  binding (no HTTP request context), so the route handler must
-		 *  pass an explicit value. */
-		callbackHost: string;
-	}): Promise<AddExternalMcpServerResult> {
-		this.requireL4Enabled();
+	private requireL4BearerEnabled(): void {
+		if (!isL4BearerEnabled(this.env as Env)) {
+			throw new Error("L4 MCP Bearer feature disabled");
+		}
+	}
+
+	private readBearerTokenForFetch(connId: string): string {
+		const token = this.bearerCache.get(connId) ?? "";
+		if (!token) throw new Error("bearer_cache_miss");
+		return token;
+	}
+
+	private async addExternalOAuthMcpServer(
+		input: Extract<AddExternalMcpServerInput, { authType: "oauth" }>,
+	): Promise<AddExternalMcpServerResult> {
 		const env = this.env as Env;
 		const sdk = await this.addMcpServer(input.serverName, input.url, {
 			callbackHost: input.callbackHost,
@@ -589,6 +599,58 @@ Based on the email content and thread context above, draft a reply using draft_r
 		return { state: "ready", connection };
 	}
 
+	private async addExternalBearerMcpServer(
+		input: Extract<AddExternalMcpServerInput, { authType: "bearer" }>,
+	): Promise<AddExternalMcpServerResult> {
+		this.requireL4BearerEnabled();
+		return this.ctx.blockConcurrencyWhile(async () => {
+			const env = this.env as Env;
+			const encryptedBlob = await encryptBearerToken(env, input.bearerToken);
+			const sdkId = crypto.randomUUID();
+			const bearerFetch = buildBearerFetch(
+				() => sdkId,
+				(connId) => this.readBearerTokenForFetch(connId),
+			);
+			this.bearerCache.set(sdkId, input.bearerToken);
+			try {
+				const sdk = await registerBearerMcpServer({
+					manager: this.mcp,
+					id: sdkId,
+					serverName: input.serverName,
+					url: input.url,
+					bearerFetch,
+				});
+				const connectionInput = buildConnectionFromSdkResult({
+					serverName: input.serverName,
+					serverUrl: input.url,
+					displayName: input.displayName,
+					addedByUserId: input.addedByUserId,
+					addedAt: Date.now(),
+					sdk,
+					authType: "bearer",
+					encryptedBlob,
+					transportType: "streamable-http",
+				});
+				const stub = getMailboxStub(env, this.name);
+				const connection = await stub.upsertMcpConnection(connectionInput);
+				return { state: "ready", connection };
+			} catch (err) {
+				this.bearerCache.delete(sdkId);
+				await this.mcp.removeServer(sdkId).catch(() => undefined);
+				throw err;
+			}
+		});
+	}
+
+	async addExternalMcpServer(
+		input: AddExternalMcpServerInput,
+	): Promise<AddExternalMcpServerResult> {
+		this.requireL4Enabled();
+		return input.authType === "bearer"
+			? this.addExternalBearerMcpServer(input)
+			: this.addExternalOAuthMcpServer(input);
+	}
+
 	/**
 	 * Phase 3: bind every OAuth connection's `state()` / `checkState()` to
 	 * this DO's mailboxId and the current request user. See
@@ -608,15 +670,21 @@ Based on the email content and thread context above, draft a reply using draft_r
 	async removeExternalMcpServer(id: string): Promise<void> {
 		this.requireL4Enabled();
 		await this.removeMcpServer(id);
+		this.bearerCache.delete(id);
 		const env = this.env as Env;
 		const stub = getMailboxStub(env, this.name);
 		await stub.deleteMcpConnection(id);
 	}
 
-	async listExternalMcpServers(): Promise<readonly McpConnection[]> {
+	async listExternalMcpServers(): Promise<readonly PublicMcpConnection[]> {
 		this.requireL4Enabled();
 		const env = this.env as Env;
 		const stub = getMailboxStub(env, this.name);
 		return stub.listMcpConnections();
+	}
+
+	override async destroy(): Promise<void> {
+		this.bearerCache.clear();
+		await super.destroy();
 	}
 }

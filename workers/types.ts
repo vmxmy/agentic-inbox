@@ -51,6 +51,7 @@ export interface Env extends Cloudflare.Env {
 	 * dormant; Phase 2-5 every external code path must guard with
 	 * `isL4BearerEnabled(env)` so an unset KEK never throws at runtime.
 	 */
+	L4_MCP_BEARER_ENABLED?: string;
 	MCP_BEARER_KEK_CURRENT?: string;
 	MCP_BEARER_KEK_PREVIOUS?: string;
 	MCP_BEARER_KEK_VERSION?: string;

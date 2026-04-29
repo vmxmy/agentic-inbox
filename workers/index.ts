@@ -1464,6 +1464,7 @@ app.post("/api/v1/mailboxes/:mailboxId/mcp-connections", async (c) => {
 	const stub = await getAgentByName(c.env.EMAIL_AGENT, mailboxId);
 	try {
 		const result = await stub.addExternalMcpServer({
+			authType: "oauth",
 			serverName: parsed.data.name,
 			url: parsed.data.url,
 			displayName: parsed.data.displayName,
@@ -1475,6 +1476,9 @@ app.post("/api/v1/mailboxes/:mailboxId/mcp-connections", async (c) => {
 		const msg = (e as Error).message;
 		if (msg === "L4 MCP feature disabled") {
 			return c.json({ error: "feature_disabled" }, 503);
+		}
+		if (msg === "L4 MCP Bearer feature disabled") {
+			return c.json({ error: "bearer_feature_disabled" }, 503);
 		}
 		return c.json({ error: "add_failed", message: msg }, 500);
 	}
