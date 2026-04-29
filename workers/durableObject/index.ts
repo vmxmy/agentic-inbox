@@ -26,6 +26,7 @@ import {
 	type McpConnectionInput,
 	type McpConnectionRow,
 } from "../lib/mcp-connections";
+import type { McpAuditRow } from "../lib/mcp-audit";
 
 export interface InvoiceFilters {
 	dateFrom?: string;
@@ -1859,6 +1860,17 @@ export class MailboxDO extends DurableObject<Env> {
 			.delete(schema.mcpConnections)
 			.where(eq(schema.mcpConnections.id, id))
 			.run();
+	}
+
+	// ── MCP audit log (L4 P5) ─────────────────────────────────────────
+	//
+	// Append-only sink for `mcp_audit_log`. The full row is built by
+	// `workers/lib/mcp-audit.ts#formatAuditRow` in the agent layer (so the
+	// id / timestamps / flagged bit are computed once and survive any
+	// later DO outage). This RPC just inserts. Like the connection RPCs,
+	// the gate lives one layer up in EmailAgent / InvoiceAgent.
+	async appendMcpAudit(row: McpAuditRow): Promise<void> {
+		this.db.insert(schema.mcpAuditLog).values(row).run();
 	}
 }
 

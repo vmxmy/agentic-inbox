@@ -385,4 +385,32 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX IF NOT EXISTS idx_mcp_connections_state ON mcp_connections(last_state);
         `,
 	},
+	{
+		// Phase 5 of the L4 (MCP Client) integration. Append-only audit log of
+		// every external MCP tool invocation made by `EmailAgent` /
+		// `InvoiceAgent`. One row per call regardless of success / failure.
+		// `result_flagged_injection` is the integer mirror of the Phase 5
+		// prompt-injection screen (1 if `isPromptInjection` flagged the result
+		// text, 0 otherwise) — flagged results have a `[SYSTEM: external
+		// content...]` marker prepended before the LLM sees them.
+		// `args_json` is the JSON-stringified tool input. `error` is the
+		// captured error message when the original execute threw, NULL on
+		// success.
+		name: "18_add_mcp_audit_log",
+		sql: `
+            CREATE TABLE IF NOT EXISTS mcp_audit_log (
+                id TEXT PRIMARY KEY,
+                conn_id TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                ended_at INTEGER NOT NULL,
+                args_json TEXT NOT NULL,
+                error TEXT,
+                result_flagged_injection INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_mcp_audit_started ON mcp_audit_log(started_at);
+            CREATE INDEX IF NOT EXISTS idx_mcp_audit_conn ON mcp_audit_log(conn_id);
+        `,
+	},
 ];
