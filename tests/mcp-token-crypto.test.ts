@@ -9,6 +9,7 @@ import {
 	deriveBearerKey,
 	encryptBearerToken,
 	redactToken,
+	redactTokenFromText,
 	type EnvelopeV1,
 } from "../workers/lib/mcp-token-crypto";
 
@@ -271,6 +272,19 @@ describe("redactToken", () => {
 
 	it("handles the empty string without throwing", () => {
 		expect(redactToken("")).toBe("<bearer:redacted:len=0>");
+	});
+});
+
+describe("redactTokenFromText", () => {
+	it("replaces every exact token occurrence with the fixed redaction marker", () => {
+		const text = "Authorization: Bearer ghp_secret; retry ghp_secret";
+
+		const redacted = redactTokenFromText(text, "ghp_secret");
+
+		expect(redacted).toBe(
+			"Authorization: Bearer <bearer:redacted:len=10>; retry <bearer:redacted:len=10>",
+		);
+		expect(redacted).not.toContain("ghp_secret");
 	});
 });
 

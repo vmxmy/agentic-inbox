@@ -4,6 +4,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import api, {
+	type AddMcpConnectionInput,
 	type AddMcpConnectionResult,
 	type McpConnectionDto,
 } from "~/services/api";
@@ -33,7 +34,7 @@ export function useAddMcpConnection() {
 			input,
 		}: {
 			mailboxId: string;
-			input: { name: string; url: string; displayName?: string };
+			input: AddMcpConnectionInput;
 		}): Promise<AddMcpConnectionResult> =>
 			api.addMcpConnection(mailboxId, input),
 		onSuccess: (_data, { mailboxId }) =>
@@ -56,4 +57,4 @@ export function useDeleteMcpConnection() {
 	});
 }
 
-export type { McpConnectionDto, AddMcpConnectionResult };
+export type { AddMcpConnectionInput, McpConnectionDto, AddMcpConnectionResult };

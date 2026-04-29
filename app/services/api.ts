@@ -470,7 +470,7 @@ const api = {
 		),
 	addMcpConnection: (
 		mailboxId: string,
-		input: { name: string; url: string; displayName?: string },
+		input: AddMcpConnectionInput,
 	) =>
 		post<AddMcpConnectionResult>(
 			`/api/v1/mailboxes/${mailboxId}/mcp-connections`,
@@ -499,7 +499,23 @@ export interface McpConnectionDto {
 	lastState: "authenticating" | "ready" | "error" | "discovering";
 	lastError: string | null;
 	enabledTools: readonly string[] | null;
+	authType: "oauth" | "bearer";
 }
+
+export type AddMcpConnectionInput =
+	| {
+			authType?: "oauth";
+			name: string;
+			url: string;
+			displayName?: string;
+		}
+	| {
+			authType: "bearer";
+			name: string;
+			url: string;
+			displayName?: string;
+			bearerToken: string;
+		};
 
 export type AddMcpConnectionResult =
 	| { state: "ready"; connection: McpConnectionDto }
