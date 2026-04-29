@@ -36,7 +36,8 @@ import {
 	AuthzError,
 	type AuthUser,
 } from "../../workers/lib/auth";
-import { isL4McpEnabled } from "../../workers/lib/mcp-connections";
+import { MCP_AUTH_TYPES, isL4McpEnabled } from "../../workers/lib/mcp-connections";
+import { redactTokenFromText } from "../../workers/lib/mcp-token-crypto";
 
 // ── Stub fixtures ───────────────────────────────────────────────────
 
@@ -63,6 +64,7 @@ type ConnState = "missing" | "authenticating" | "ready" | "disconnected";
 interface StubOptions {
 	flag: "true" | "false" | "unset";
 	connState: ConnState;
+	addErrorMessage?: string;
 }
 
 /**
@@ -79,15 +81,27 @@ function makeEmailAgentStub(opts: StubOptions) {
 		if (!isL4McpEnabled(env)) throw new Error("L4 MCP feature disabled");
 	};
 	return {
-		async addExternalMcpServer(_input: {
-			authType: "oauth";
+		lastAddInput: null as null | {
+			authType: "oauth" | "bearer";
 			serverName: string;
 			url: string;
 			displayName?: string;
 			addedByUserId: string;
-			callbackHost: string;
+			callbackHost?: string;
+			bearerToken?: string;
+		},
+		async addExternalMcpServer(input: {
+			authType: "oauth" | "bearer";
+			serverName: string;
+			url: string;
+			displayName?: string;
+			addedByUserId: string;
+			callbackHost?: string;
+			bearerToken?: string;
 		}) {
 			guard();
+			this.lastAddInput = input;
+			if (opts.addErrorMessage) throw new Error(opts.addErrorMessage);
 			if (opts.connState === "ready") {
 				return {
 					state: "ready" as const,
@@ -162,11 +176,31 @@ function buildHarnessApp(ctx: AppCtx) {
 		return c.json({ error: "internal" }, 500);
 	}
 
-	const PostMcpConnectionBody = z.object({
+	const McpConnectionBaseBody = {
 		url: z.string().url(),
 		name: z.string().min(1).max(64),
 		displayName: z.string().min(1).max(128).optional(),
-	});
+	};
+	const PostMcpConnectionBody = z.preprocess((value) => {
+		if (
+			value !== null &&
+			typeof value === "object" &&
+			!("authType" in value)
+		) {
+			return { ...value, authType: "oauth" };
+		}
+		return value;
+	}, z.discriminatedUnion("authType", [
+		z.object({
+			...McpConnectionBaseBody,
+			authType: z.literal(MCP_AUTH_TYPES[0]),
+		}),
+		z.object({
+			...McpConnectionBaseBody,
+			authType: z.literal(MCP_AUTH_TYPES[1]),
+			bearerToken: z.string().min(1).max(8192),
+		}),
+	]));
 
 	app.post("/api/v1/mailboxes/:mailboxId/mcp-connections", async (c) => {
 		let user;
@@ -187,19 +221,37 @@ function buildHarnessApp(ctx: AppCtx) {
 			return c.json({ error: "invalid_body" }, 400);
 		}
 		try {
-			const result = await ctx.stub.addExternalMcpServer({
-				authType: "oauth",
-				serverName: parsed.data.name,
-				url: parsed.data.url,
-				displayName: parsed.data.displayName,
-				addedByUserId: user.id,
-				callbackHost: "https://app.example.com",
-			});
+			const result = await ctx.stub.addExternalMcpServer(
+				parsed.data.authType === "bearer"
+					? {
+							authType: "bearer",
+							serverName: parsed.data.name,
+							url: parsed.data.url,
+							displayName: parsed.data.displayName,
+							addedByUserId: user.id,
+							bearerToken: parsed.data.bearerToken,
+						}
+					: {
+							authType: "oauth",
+							serverName: parsed.data.name,
+							url: parsed.data.url,
+							displayName: parsed.data.displayName,
+							addedByUserId: user.id,
+							callbackHost: "https://app.example.com",
+						},
+			);
 			return c.json(result);
 		} catch (e) {
-			const msg = (e as Error).message;
+			const rawMsg = (e as Error).message;
+			const msg =
+				parsed.data.authType === "bearer"
+					? redactTokenFromText(rawMsg, parsed.data.bearerToken)
+					: rawMsg;
 			if (msg === "L4 MCP feature disabled") {
 				return c.json({ error: "feature_disabled" }, 503);
+			}
+			if (msg === "L4 MCP Bearer feature disabled") {
+				return c.json({ error: "bearer_feature_disabled" }, 503);
 			}
 			return c.json({ error: "add_failed", message: msg }, 500);
 		}
@@ -388,5 +440,134 @@ describe("MCP connection lifecycle integration matrix (L4 Phase 7)", () => {
 
 	it("matrix size meets plan §561-570 ≥30 cases requirement", () => {
 		expect(MATRIX.length).toBeGreaterThanOrEqual(30);
+	});
+
+	it("routes Bearer add bodies to the Bearer agent RPC shape", async () => {
+		const stub = makeEmailAgentStub({ flag: "true", connState: "ready" });
+		const app = buildHarnessApp({ user: mkUser("owner"), stub });
+
+		const res = await app.request(
+			"http://harness/api/v1/mailboxes/mb-1/mcp-connections",
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					authType: "bearer",
+					url: "https://mcp.example.test/mcp",
+					name: "github",
+					bearerToken: "ghp_route_secret",
+				}),
+			},
+		);
+
+		expect(res.status).toBe(200);
+		expect(stub.lastAddInput).toMatchObject({
+			authType: "bearer",
+			serverName: "github",
+			url: "https://mcp.example.test/mcp",
+			bearerToken: "ghp_route_secret",
+		});
+		expect(stub.lastAddInput).not.toHaveProperty("callbackHost");
+	});
+
+	it("defaults legacy add bodies to OAuth", async () => {
+		const stub = makeEmailAgentStub({ flag: "true", connState: "ready" });
+		const app = buildHarnessApp({ user: mkUser("owner"), stub });
+
+		const res = await app.request(
+			"http://harness/api/v1/mailboxes/mb-1/mcp-connections",
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					url: "https://mcp.github.com/sse",
+					name: "github",
+				}),
+			},
+		);
+
+		expect(res.status).toBe(200);
+		expect(stub.lastAddInput).toMatchObject({
+			authType: "oauth",
+			callbackHost: "https://app.example.com",
+		});
+		expect(stub.lastAddInput).not.toHaveProperty("bearerToken");
+	});
+
+	it("rejects Bearer add bodies without a token at the Zod boundary", async () => {
+		const stub = makeEmailAgentStub({ flag: "true", connState: "ready" });
+		const app = buildHarnessApp({ user: mkUser("owner"), stub });
+
+		const res = await app.request(
+			"http://harness/api/v1/mailboxes/mb-1/mcp-connections",
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					authType: "bearer",
+					url: "https://mcp.example.test/mcp",
+					name: "github",
+				}),
+			},
+		);
+
+		expect(res.status).toBe(400);
+		expect(stub.lastAddInput).toBeNull();
+	});
+
+	it("redacts Bearer token echoes from add failure responses", async () => {
+		const token = "ghp_route_secret";
+		const stub = makeEmailAgentStub({
+			flag: "true",
+			connState: "ready",
+			addErrorMessage: `upstream echoed Authorization: Bearer ${token}`,
+		});
+		const app = buildHarnessApp({ user: mkUser("owner"), stub });
+
+		const res = await app.request(
+			"http://harness/api/v1/mailboxes/mb-1/mcp-connections",
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					authType: "bearer",
+					url: "https://mcp.example.test/mcp",
+					name: "github",
+					bearerToken: token,
+				}),
+			},
+		);
+		const body = await res.json() as { message: string };
+
+		expect(res.status).toBe(500);
+		expect(body.message).toContain("<bearer:redacted:len=16>");
+		expect(body.message).not.toContain(token);
+	});
+
+	it("maps the Bearer sub-flag guard to bearer_feature_disabled", async () => {
+		const stub = makeEmailAgentStub({
+			flag: "true",
+			connState: "ready",
+			addErrorMessage: "L4 MCP Bearer feature disabled",
+		});
+		const app = buildHarnessApp({ user: mkUser("owner"), stub });
+
+		const res = await app.request(
+			"http://harness/api/v1/mailboxes/mb-1/mcp-connections",
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					authType: "bearer",
+					url: "https://mcp.example.test/mcp",
+					name: "github",
+					bearerToken: "ghp_route_secret",
+				}),
+			},
+		);
+		const body = await res.json();
+
+		expect(res.status).toBe(503);
+		expect(body).toMatchObject({ error: "bearer_feature_disabled" });
 	});
 });

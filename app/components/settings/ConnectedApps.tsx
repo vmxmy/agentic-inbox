@@ -220,6 +220,7 @@ function ConnectionRow({
 					<span className="truncate font-medium">
 						{connection.displayName ?? connection.serverName}
 					</span>
+					<Badge variant="secondary">{connection.authType}</Badge>
 					<Badge variant={stateBadge.variant}>{stateBadge.label}</Badge>
 				</div>
 				<div className="text-kumo-subtle truncate">{connection.serverUrl}</div>

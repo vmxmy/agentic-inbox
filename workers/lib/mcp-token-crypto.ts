@@ -280,6 +280,11 @@ export function redactToken(plaintext: string): string {
 	return `<bearer:redacted:len=${plaintext.length}>`;
 }
 
+export function redactTokenFromText(text: string, plaintext: string): string {
+	if (!plaintext) return text;
+	return text.split(plaintext).join(redactToken(plaintext));
+}
+
 /**
  * Map an unknown SDK / network / decryption error to one of the
  * {@link CATEGORIES} codes, falling back to {@link FALLBACK_CATEGORY}

@@ -84,6 +84,8 @@ import {
 	toPublic,
 	updateProvider,
 } from "./lib/llm-providers";
+import { MCP_AUTH_TYPES } from "./lib/mcp-connections";
+import { redactTokenFromText } from "./lib/mcp-token-crypto";
 
 type AppContext = Context<MailboxContext>;
 
@@ -1442,11 +1444,32 @@ app.get("/api/v1/mailboxes/:mailboxId/emails/:emailId/attachments/:attachmentId"
 // handled in `workers/app.ts` because it sits under the agent
 // forwarding boundary, not the API surface.
 
-const PostMcpConnectionBody = z.object({
+const McpConnectionBaseBody = {
 	url: z.string().url(),
 	name: z.string().min(1).max(64),
 	displayName: z.string().min(1).max(128).optional(),
-});
+};
+
+const PostMcpConnectionBody = z.preprocess((value) => {
+	if (
+		value !== null &&
+		typeof value === "object" &&
+		!("authType" in value)
+	) {
+		return { ...value, authType: "oauth" };
+	}
+	return value;
+}, z.discriminatedUnion("authType", [
+	z.object({
+		...McpConnectionBaseBody,
+		authType: z.literal(MCP_AUTH_TYPES[0]),
+	}),
+	z.object({
+		...McpConnectionBaseBody,
+		authType: z.literal(MCP_AUTH_TYPES[1]),
+		bearerToken: z.string().min(1).max(8192),
+	}),
+]));
 
 app.post("/api/v1/mailboxes/:mailboxId/mcp-connections", async (c) => {
 	const mailboxId = c.req.param("mailboxId")!;
@@ -1463,17 +1486,32 @@ app.post("/api/v1/mailboxes/:mailboxId/mcp-connections", async (c) => {
 	const callbackHost = `${reqUrl.protocol}//${reqUrl.host}`;
 	const stub = await getAgentByName(c.env.EMAIL_AGENT, mailboxId);
 	try {
-		const result = await stub.addExternalMcpServer({
-			authType: "oauth",
-			serverName: parsed.data.name,
-			url: parsed.data.url,
-			displayName: parsed.data.displayName,
-			addedByUserId: user.id,
-			callbackHost,
-		});
+		const result = await stub.addExternalMcpServer(
+			parsed.data.authType === "bearer"
+				? {
+						authType: "bearer",
+						serverName: parsed.data.name,
+						url: parsed.data.url,
+						displayName: parsed.data.displayName,
+						addedByUserId: user.id,
+						bearerToken: parsed.data.bearerToken,
+					}
+				: {
+						authType: "oauth",
+						serverName: parsed.data.name,
+						url: parsed.data.url,
+						displayName: parsed.data.displayName,
+						addedByUserId: user.id,
+						callbackHost,
+					},
+		);
 		return c.json(result);
 	} catch (e) {
-		const msg = (e as Error).message;
+		const rawMsg = (e as Error).message;
+		const msg =
+			parsed.data.authType === "bearer"
+				? redactTokenFromText(rawMsg, parsed.data.bearerToken)
+				: rawMsg;
 		if (msg === "L4 MCP feature disabled") {
 			return c.json({ error: "feature_disabled" }, 503);
 		}
