@@ -7,6 +7,7 @@ import {
 	streamText,
 	convertToModelMessages,
 	stepCountIs,
+	type ToolSet,
 } from "ai";
 import { z } from "zod";
 import { getAgentConfig } from "../lib/agent-config";
@@ -23,6 +24,9 @@ import {
 	toolAddInvoiceToBundle,
 	toolRemoveInvoiceFromBundle,
 } from "../lib/invoice-tools";
+import { getMailboxStub } from "../lib/email-helpers";
+import { isL4McpEnabled } from "../lib/mcp-connections";
+import { parseSdkToolKey, namespaceTool } from "../lib/mcp-tool-namespace";
 import type { Env } from "../types";
 
 interface OnNewEmailPayload {
@@ -276,13 +280,28 @@ export class InvoiceAgent extends AIChatAgent<any> {
 	async onChatMessage(onFinish: any) {
 		const env = this.env as Env;
 		const mailboxId = this.name;
-		const tools = createInvoiceTools(env, mailboxId);
+		const internalTools = createInvoiceTools(env, mailboxId);
 		const config = await getAgentConfig(env, mailboxId);
 		const systemPrompt = resolveSystemPrompt(config.invoiceAgentSystemPrompt);
 		const cfg = await resolveLlmConfig(env);
 		const provider = getLlmProvider(env, cfg);
 		const catalog = await listLlmModels(env, { cfg });
 		const modelId = pickModel(catalog, config.invoiceModel ?? config.model, cfg.defaultModel);
+
+		// MIRROR: workers/agent/index.ts onChatMessage external-MCP merge.
+		// If you change either site, change both.
+		let externalNamespaced: ToolSet = {};
+		if (isL4McpEnabled(env)) {
+			const externalRaw = this.mcp.getAITools();
+			const conns = await getMailboxStub(env, this.name).listMcpConnections();
+			const knownConnIds = conns.map((c) => c.id);
+			for (const [sdkKey, tool] of Object.entries(externalRaw)) {
+				const parsed = parseSdkToolKey(sdkKey, knownConnIds);
+				if (!parsed) continue;
+				externalNamespaced[namespaceTool(parsed.connId, parsed.toolName)] = tool;
+			}
+		}
+		const tools: ToolSet = { ...internalTools, ...externalNamespaced };
 
 		const result = streamText({
 			model: provider(modelId),
