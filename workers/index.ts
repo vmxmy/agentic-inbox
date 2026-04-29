@@ -19,6 +19,7 @@ import {
 import { SendEmailRequestSchema } from "./lib/schemas";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
+import { getAgentByName } from "agents";
 import type { Env } from "./types";
 import { requireMailbox, type MailboxContext } from "./lib/mailbox";
 import {
@@ -1460,8 +1461,7 @@ app.post("/api/v1/mailboxes/:mailboxId/mcp-connections", async (c) => {
 
 	const reqUrl = new URL(c.req.url);
 	const callbackHost = `${reqUrl.protocol}//${reqUrl.host}`;
-	const id = c.env.EMAIL_AGENT.idFromName(mailboxId);
-	const stub = c.env.EMAIL_AGENT.get(id);
+	const stub = await getAgentByName(c.env.EMAIL_AGENT, mailboxId);
 	try {
 		const result = await stub.addExternalMcpServer({
 			serverName: parsed.data.name,
@@ -1487,8 +1487,7 @@ app.delete("/api/v1/mailboxes/:mailboxId/mcp-connections/:connId", async (c) => 
 	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
 	try { await assertMailboxOwner(c.env, mailboxId, user); } catch (e) { return handleAuthz(c, e); }
 
-	const id = c.env.EMAIL_AGENT.idFromName(mailboxId);
-	const stub = c.env.EMAIL_AGENT.get(id);
+	const stub = await getAgentByName(c.env.EMAIL_AGENT, mailboxId);
 	try {
 		await stub.removeExternalMcpServer(connId);
 		return c.json({ ok: true });
@@ -1507,8 +1506,7 @@ app.get("/api/v1/mailboxes/:mailboxId/mcp-connections", async (c) => {
 	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
 	try { await assertMailboxAccess(c.env, mailboxId, user); } catch (e) { return handleAuthz(c, e); }
 
-	const id = c.env.EMAIL_AGENT.idFromName(mailboxId);
-	const stub = c.env.EMAIL_AGENT.get(id);
+	const stub = await getAgentByName(c.env.EMAIL_AGENT, mailboxId);
 	try {
 		const connections = await stub.listExternalMcpServers();
 		return c.json({ connections });
