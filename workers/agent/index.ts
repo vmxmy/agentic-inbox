@@ -27,6 +27,7 @@ import {
 } from "../lib/capabilities";
 import { readInternalAuthContextHeader, type AuthUser } from "../lib/auth";
 import {
+	bearerEnvelopeFromConnection,
 	buildConnectionFromSdkResult,
 	isL4BearerEnabled,
 	isL4McpEnabled,
@@ -36,9 +37,13 @@ import {
 } from "../lib/mcp-connections";
 import {
 	buildBearerFetch,
-	registerBearerMcpServer,
+	connectBearerMcpServer,
 } from "../lib/mcp-bearer-transport";
-import { encryptBearerToken } from "../lib/mcp-token-crypto";
+import {
+	categoriseError,
+	decryptBearerToken,
+	encryptBearerToken,
+} from "../lib/mcp-token-crypto";
 import { MailboxBoundOAuthProvider } from "../lib/mcp-oauth-provider";
 import { parseSdkToolKey, namespaceTool } from "../lib/mcp-tool-namespace";
 import {
@@ -546,13 +551,13 @@ Based on the email content and thread context above, draft a reply using draft_r
 
 	// ── External MCP servers (L4 P2) ───────────────────────────────
 	//
-	// Owner-only RPC surface that wraps Cloudflare's `Agent.addMcpServer`
-	// + the `MailboxDO.upsertMcpConnection` metadata write into a single
-	// transactional pair. Phase 3 routes (`workers/app.ts`) gate caller
-	// identity via `assertMailboxOwner` before invoking these methods;
-	// the `L4_MCP_ENABLED` feature flag here is the second guard so a
-	// caller bypassing the route still cannot mutate state when the
-	// flag is off.
+	// Owner-only RPC surface that pairs SDK MCP connection setup with the
+	// `MailboxDO.upsertMcpConnection` metadata write. OAuth can use
+	// Cloudflare's high-level `Agent.addMcpServer`; Bearer uses the lower-level
+	// MCPClientManager path so the non-serializable fetch closure reaches the
+	// live transport without being written to SDK storage. Routes gate caller
+	// identity via `assertMailboxOwner`; the `L4_MCP_ENABLED` feature flag here
+	// is the second guard so a bypassing caller still cannot mutate state.
 
 	private requireL4Enabled(): void {
 		if (!isL4McpEnabled(this.env as Env)) {
@@ -570,6 +575,69 @@ Based on the email content and thread context above, draft a reply using draft_r
 		const token = this.bearerCache.get(connId) ?? "";
 		if (!token) throw new Error("bearer_cache_miss");
 		return token;
+	}
+
+	private async connectCachedBearerMcpServer(input: {
+		id: string;
+		url: string;
+		resetExisting?: boolean;
+	}): Promise<{ id: string; state: "ready" }> {
+		if (input.resetExisting) {
+			await this.mcp.removeServer(input.id).catch(() => undefined);
+		}
+		const bearerFetch = buildBearerFetch(
+			() => input.id,
+			(connId) => this.readBearerTokenForFetch(connId),
+		);
+		return connectBearerMcpServer({
+			manager: this.mcp,
+			id: input.id,
+			url: input.url,
+			bearerFetch,
+		});
+	}
+
+	private async rehydrateBearerMcpServers(): Promise<void> {
+		const env = this.env as Env;
+		if (!isL4BearerEnabled(env)) return;
+		const stub = getMailboxStub(env, this.name);
+		const connections = await stub.listBearerMcpConnectionsForRehydrate();
+		for (const connection of connections) {
+			try {
+				const envelope = bearerEnvelopeFromConnection(connection);
+				if (!envelope) continue;
+				const token = await decryptBearerToken(env, envelope);
+				this.bearerCache.set(connection.id, token);
+				await this.connectCachedBearerMcpServer({
+					id: connection.id,
+					url: connection.serverUrl,
+					resetExisting: true,
+				});
+				await stub.upsertMcpConnection({
+					...connection,
+					transportType: connection.transportType ?? "streamable-http",
+					lastState: "ready",
+					lastError: null,
+				});
+			} catch (err) {
+				const category = categoriseError(err);
+				this.bearerCache.delete(connection.id);
+				await this.mcp.removeServer(connection.id).catch(() => undefined);
+				await stub.upsertMcpConnection({
+					...connection,
+					lastState: "error",
+					lastError: category,
+				}).catch(() => undefined);
+				console.warn(
+					`Bearer MCP rehydrate failed for ${this.name}/${connection.id}: ${category}`,
+				);
+			}
+		}
+	}
+
+	override async onStart(props?: Record<string, unknown>): Promise<void> {
+		await super.onStart(props);
+		await this.rehydrateBearerMcpServers();
 	}
 
 	private async addExternalOAuthMcpServer(
@@ -607,18 +675,11 @@ Based on the email content and thread context above, draft a reply using draft_r
 			const env = this.env as Env;
 			const encryptedBlob = await encryptBearerToken(env, input.bearerToken);
 			const sdkId = crypto.randomUUID();
-			const bearerFetch = buildBearerFetch(
-				() => sdkId,
-				(connId) => this.readBearerTokenForFetch(connId),
-			);
 			this.bearerCache.set(sdkId, input.bearerToken);
 			try {
-				const sdk = await registerBearerMcpServer({
-					manager: this.mcp,
+				const sdk = await this.connectCachedBearerMcpServer({
 					id: sdkId,
-					serverName: input.serverName,
 					url: input.url,
-					bearerFetch,
 				});
 				const connectionInput = buildConnectionFromSdkResult({
 					serverName: input.serverName,

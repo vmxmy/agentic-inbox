@@ -45,77 +45,47 @@ export function buildBearerTransport(
 	};
 }
 
-type BearerMcpConnectionResult =
-	| { state: "failed"; error: string }
-	| { state: "authenticating"; authUrl: string; clientId?: string }
-	| { state: "connected" };
-
-type BearerMcpDiscoveryResult = {
-	success: boolean;
-	state: string;
-	error?: string;
-};
-
 export interface BearerMcpManager {
-	registerServer(
-		id: string,
+	connect(
+		url: string,
 		options: {
-			url: string;
-			name: string;
+			reconnect: { id: string };
 			transport: BearerTransportOptions;
 		},
-	): Promise<string>;
-	connectToServer(id: string): Promise<BearerMcpConnectionResult>;
-	discoverIfConnected(id: string): Promise<BearerMcpDiscoveryResult | undefined>;
+	): Promise<{ id: string; authUrl?: string; clientId?: string }>;
 	removeServer(id: string): Promise<void>;
 }
 
 /**
- * Register via MCPClientManager's low-level API instead of
- * Agent.addMcpServer. The high-level helper persists safely, but it also
- * normalizes HTTP transport options down to type/headers before constructing
- * the live transport, which would drop our fetch closure too early.
+ * Connect via MCPClientManager's non-persistent low-level API instead of
+ * Agent.addMcpServer. The high-level helper normalizes HTTP transport options
+ * down to type/headers before constructing the live transport, which would
+ * drop our fetch closure too early. `connect()` keeps the connection live in
+ * memory without writing an SDK server row that would later auto-restore
+ * without the non-serializable fetch closure.
  */
-export async function registerBearerMcpServer(args: {
+export async function connectBearerMcpServer(args: {
 	manager: BearerMcpManager;
 	id?: string;
-	serverName: string;
 	url: string;
 	bearerFetch: typeof fetch;
 	generateId?: () => string;
 }): Promise<{ id: string; state: "ready" }> {
 	const id = args.id ?? args.generateId?.() ?? crypto.randomUUID();
 	const transport = buildBearerTransport(args.bearerFetch);
-	let registered = false;
 	try {
-		await args.manager.registerServer(id, {
-			url: args.url,
-			name: args.serverName,
+		const result = await args.manager.connect(args.url, {
+			reconnect: { id },
 			transport,
 		});
-		registered = true;
-		const result = await args.manager.connectToServer(id);
-		if (result.state === "failed") {
-			throw new Error(
-				`Failed to connect to MCP server at ${args.url}: ${result.error}`,
-			);
-		}
-		if (result.state === "authenticating") {
+		if (result.authUrl) {
 			throw new Error(
 				"Bearer MCP server unexpectedly requested OAuth authentication",
 			);
 		}
-		const discovery = await args.manager.discoverIfConnected(id);
-		if (discovery && !discovery.success) {
-			throw new Error(
-				`Failed to discover MCP server capabilities: ${discovery.error}`,
-			);
-		}
 		return { id, state: "ready" };
 	} catch (err) {
-		if (registered) {
-			await args.manager.removeServer(id).catch(() => undefined);
-		}
+		await args.manager.removeServer(id).catch(() => undefined);
 		throw err;
 	}
 }

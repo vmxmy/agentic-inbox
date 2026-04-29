@@ -22,6 +22,7 @@ import type { RuleCondition, RuleAction } from "../lib/rules";
 import {
 	mcpConnectionToRow,
 	rowToMcpConnection,
+	type McpConnection,
 	type McpConnectionInput,
 	type McpConnectionRow,
 	toPublicMcpConnection,
@@ -1828,6 +1829,19 @@ export class MailboxDO extends DurableObject<Env> {
 		return rows.map((row) =>
 			toPublicMcpConnection(rowToMcpConnection(row as McpConnectionRow)),
 		);
+	}
+
+	// Privileged Agent-only rehydrate surface: returns encrypted Bearer
+	// envelope columns so EmailAgent can decrypt into heap-only transport
+	// closures after hibernation. Do not expose this through HTTP routes.
+	async listBearerMcpConnectionsForRehydrate(): Promise<readonly McpConnection[]> {
+		const rows = this.db
+			.select()
+			.from(schema.mcpConnections)
+			.where(eq(schema.mcpConnections.auth_type, "bearer"))
+			.orderBy(asc(schema.mcpConnections.added_at))
+			.all();
+		return rows.map((row) => rowToMcpConnection(row as McpConnectionRow));
 	}
 
 	async upsertMcpConnection(
