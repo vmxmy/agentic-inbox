@@ -21,3 +21,15 @@ INTERNAL_SECRET=dev-secret-change-me
 # magic link, password reset). Leave blank in dev — the worker will derive
 # it from the request origin.
 PUBLIC_BASE_URL=
+
+# L4 P8 Bearer auth for external MCP connections. The wrangler feature flag
+# is live, but Bearer add/rehydrate paths stay disabled until this KEK is set.
+# Generate a 32-byte base64 KEK with:
+#   openssl rand -base64 32
+# In production set via:
+#   wrangler secret put MCP_BEARER_KEK_CURRENT
+MCP_BEARER_KEK_CURRENT=
+# During rotation set PREVIOUS to the old CURRENT until every old blob has
+# either been re-entered or can be retired.
+MCP_BEARER_KEK_PREVIOUS=
+MCP_BEARER_KEK_VERSION=1

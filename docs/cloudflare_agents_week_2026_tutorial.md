@@ -53,7 +53,31 @@ Cloudflare 在 2026 年 4 月 12 日至 17 日举办了首届 **Agents Week 2026
 * **概念**：Agent 与外部世界的安全隔离墙。
 * **机制**：网络层注入凭证。API Key 和 OAuth token 在代理层注入，Agent 运行的不可信代码永远不会直接接触到这些机密信息。
 
-### 3.2 Cloudflare Mesh
+### 3.2 Agentic Inbox 的外部 MCP Bearer 支持
+Agentic Inbox 现在支持两类外部 MCP 连接：OAuth 连接继续走 Cloudflare Agents SDK 的授权回调；不支持 OAuth 的 MCP 服务可以走静态 Bearer token。Bearer token 不会写入 SDK 的 `server_options`，而是先用 `MCP_BEARER_KEK_CURRENT` 派生出的 AES-GCM key 加密后存进 mailbox Durable Object 的 SQLite，运行时再通过 `transport.fetch` 闭包注入 `Authorization: Bearer ...`。
+
+上线步骤：
+
+1. 生成 32 字节 KEK：
+   ```bash
+   openssl rand -base64 32
+   ```
+2. 写入生产 secret：
+   ```bash
+   wrangler secret put MCP_BEARER_KEK_CURRENT
+   ```
+3. 确认 `wrangler.jsonc` 中 `L4_MCP_ENABLED` 与 `L4_MCP_BEARER_ENABLED` 均为 `"true"`。
+4. 部署后，只有当 Bearer 子开关为 `"true"` 且 `MCP_BEARER_KEK_CURRENT` 存在时，Bearer add / rehydrate 路径才会运行；否则 OAuth 不受影响，Bearer 路径 fail-closed。
+
+KEK 轮换 runbook：
+
+1. 记录旧 current，生成新 KEK。
+2. 将旧值写入 `MCP_BEARER_KEK_PREVIOUS`，将新值写入 `MCP_BEARER_KEK_CURRENT`。
+3. 将 `MCP_BEARER_KEK_VERSION` 从 `1` 递增到 `2`（后续轮换继续递增）。
+4. 部署并观察 Bearer 连接 rehydrate；旧 blob 可用 previous 解密，新写入 blob 使用 current。
+5. 当旧 blob 全部淘汰或重录后，再清空 `MCP_BEARER_KEK_PREVIOUS`。
+
+### 3.3 Cloudflare Mesh
 * **概念**：Agent 的零信任私有网络。
 * **功能**：通过 `cf1:network` VPC 绑定，允许 Agent 在没有反向代理的情况下直接访问内网数据库和私有 API。
 
