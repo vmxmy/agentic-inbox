@@ -11,6 +11,7 @@ import { authApp } from "./routes/auth";
 import { EmailMCP } from "./mcp";
 import {
 	assertMailboxAccess,
+	assertMailboxOwner,
 	AuthzError,
 	INTERNAL_AUTH_CONTEXT_HEADER,
 	INTERNAL_SYSTEM_HEADER,
@@ -215,6 +216,36 @@ app.all("/mcp/*", (c) => forwardToMcp(c));
 
 // Mount the API routes
 app.route("/", apiApp);
+
+// L4 (MCP Client) OAuth callback — strictly owner-only, defense-in-depth
+// on top of `MailboxBoundOAuthProvider` storage-side state binding. The
+// path matches Cloudflare's default callback URL construction:
+// `/agents/{kebab-case class}/{instance name}/callback`
+// (see node_modules/agents/dist/index.js:2632). Registered BEFORE the
+// `/agents/*` catch-all so this more-specific handler wins. The
+// catch-all uses `assertMailboxAccess` (member-level), which is too
+// loose for OAuth callback completion — only the mailbox owner who
+// initiated the OAuth flow should be able to land the redirect.
+app.get("/agents/email-agent/:mailboxId/callback", async (c) => {
+	const user = c.var.user;
+	if (!user) return c.json({ error: "Not authenticated" }, 401);
+	const mailboxId = c.req.param("mailboxId");
+	try {
+		await assertMailboxOwner(c.env, mailboxId, user);
+	} catch (e) {
+		if (e instanceof AuthzError) return c.text(e.message, e.status);
+		throw e;
+	}
+	const headers = new Headers(c.req.raw.headers);
+	headers.delete(INTERNAL_AUTH_CONTEXT_HEADER);
+	headers.delete(INTERNAL_USER_HEADER);
+	const token = await serializeInternalAuthContext(user, c.env);
+	headers.set(INTERNAL_AUTH_CONTEXT_HEADER, token);
+	const req = new Request(c.req.raw, { headers });
+	const response = await routeAgentRequest(req, c.env);
+	if (response) return response;
+	return c.text("Agent not found", 404);
+});
 
 // Agent WebSocket routing - must be before React Router catch-all.
 // Enforce per-mailbox ACL before handing off to the Agents SDK.

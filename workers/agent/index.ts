@@ -31,6 +31,7 @@ import {
 	type AddExternalMcpServerResult,
 	type McpConnection,
 } from "../lib/mcp-connections";
+import { MailboxBoundOAuthProvider } from "../lib/mcp-oauth-provider";
 import type { Env } from "../types";
 
 // AI SDK v6 changed tool() overloads significantly. We define tools as plain
@@ -506,10 +507,18 @@ Based on the email content and thread context above, draft a reply using draft_r
 		url: string;
 		displayName?: string;
 		addedByUserId: string;
+		/** Origin used to construct the OAuth callback URL (e.g.
+		 *  `https://example.com`). The SDK normally derives this from the
+		 *  inbound request URL, but Phase 3 invokes this RPC via the DO
+		 *  binding (no HTTP request context), so the route handler must
+		 *  pass an explicit value. */
+		callbackHost: string;
 	}): Promise<AddExternalMcpServerResult> {
 		this.requireL4Enabled();
 		const env = this.env as Env;
-		const sdk = await this.addMcpServer(input.serverName, input.url);
+		const sdk = await this.addMcpServer(input.serverName, input.url, {
+			callbackHost: input.callbackHost,
+		});
 		const connectionInput = buildConnectionFromSdkResult({
 			serverName: input.serverName,
 			serverUrl: input.url,
@@ -528,6 +537,22 @@ Based on the email content and thread context above, draft a reply using draft_r
 			};
 		}
 		return { state: "ready", connection };
+	}
+
+	/**
+	 * Phase 3: bind every OAuth connection's `state()` / `checkState()` to
+	 * this DO's mailboxId and the current request user. See
+	 * `workers/lib/mcp-oauth-provider.ts` for the binding semantics, and
+	 * Pre-mortem #1 (`plan §410-423`) for the threat model.
+	 */
+	override createMcpOAuthProvider(callbackUrl: string) {
+		return new MailboxBoundOAuthProvider(
+			this.ctx.storage,
+			this.name, // clientName — anchors storage keys to this DO
+			callbackUrl,
+			this.name, // mailboxId === DO instance id
+			() => this.currentUser?.id ?? "",
+		);
 	}
 
 	async removeExternalMcpServer(id: string): Promise<void> {
