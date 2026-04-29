@@ -8,6 +8,7 @@ import {
 	generateText,
 	convertToModelMessages,
 	stepCountIs,
+	type ToolSet,
 } from "ai";
 import { getLlmProvider, listLlmModels, pickModel, resolveLlmConfig } from "../lib/llm-models";
 import { z } from "zod";
@@ -32,6 +33,7 @@ import {
 	type McpConnection,
 } from "../lib/mcp-connections";
 import { MailboxBoundOAuthProvider } from "../lib/mcp-oauth-provider";
+import { parseSdkToolKey, namespaceTool } from "../lib/mcp-tool-namespace";
 import type { Env } from "../types";
 
 // AI SDK v6 changed tool() overloads significantly. We define tools as plain
@@ -199,12 +201,25 @@ export class EmailAgent extends AIChatAgent<any> {
 		const env = this.env as Env;
 		const mailboxId = this.name;
 		const config = await getAgentConfig(env, mailboxId);
-		const tools = createEmailTools(env, mailboxId, config.emailReplyEnabledSkills, this.currentUser);
+		const internalTools = createEmailTools(env, mailboxId, config.emailReplyEnabledSkills, this.currentUser);
 		const systemPrompt = resolveSystemPrompt(config.customSystemPrompt);
 		const cfg = await resolveLlmConfig(env);
 		const provider = getLlmProvider(env, cfg);
 		const catalog = await listLlmModels(env, { cfg });
 		const modelId = pickModel(catalog, config.emailReplyModel ?? config.model, cfg.defaultModel);
+
+		let externalNamespaced: ToolSet = {};
+		if (isL4McpEnabled(env)) {
+			const externalRaw = this.mcp.getAITools();
+			const conns = await getMailboxStub(env, this.name).listMcpConnections();
+			const knownConnIds = conns.map((c) => c.id);
+			for (const [sdkKey, tool] of Object.entries(externalRaw)) {
+				const parsed = parseSdkToolKey(sdkKey, knownConnIds);
+				if (!parsed) continue;
+				externalNamespaced[namespaceTool(parsed.connId, parsed.toolName)] = tool;
+			}
+		}
+		const tools: ToolSet = { ...internalTools, ...externalNamespaced };
 
 		const result = streamText({
 			model: provider(modelId),
