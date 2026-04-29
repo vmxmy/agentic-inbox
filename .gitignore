@@ -19,3 +19,6 @@ skills-lock.json
 worker-configuration.d.ts
 .omc/
 .mcp.json
+.claude/
+.codex/
+openspec/
