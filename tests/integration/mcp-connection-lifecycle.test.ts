@@ -80,6 +80,7 @@ function makeEmailAgentStub(opts: StubOptions) {
 	};
 	return {
 		async addExternalMcpServer(_input: {
+			authType: "oauth";
 			serverName: string;
 			url: string;
 			displayName?: string;
@@ -187,6 +188,7 @@ function buildHarnessApp(ctx: AppCtx) {
 		}
 		try {
 			const result = await ctx.stub.addExternalMcpServer({
+				authType: "oauth",
 				serverName: parsed.data.name,
 				url: parsed.data.url,
 				displayName: parsed.data.displayName,

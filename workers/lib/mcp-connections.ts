@@ -21,6 +21,7 @@
  */
 
 import { z } from "zod";
+import type { EnvelopeV1 } from "./mcp-token-crypto";
 
 /**
  * The three states our metadata layer records for a connection at the
@@ -112,6 +113,23 @@ export interface McpConnection {
 	tokenKekVersion: number | null;
 }
 
+type McpConnectionSecretFields =
+	| "encryptedTokenB64"
+	| "tokenIvB64"
+	| "tokenSaltB64"
+	| "tokenEnvelopeVersion"
+	| "tokenKekVersion";
+
+/**
+ * Public / cross-DO DTO for connection lists and route responses. The
+ * encrypted Bearer envelope is intentionally absent: only the MailboxDO row
+ * writer and the future Phase 3 rehydrate RPC may handle those columns.
+ */
+export type PublicMcpConnection = Omit<
+	McpConnection,
+	McpConnectionSecretFields
+>;
+
 /**
  * Patch shape used when upserting. `lastError` is optional so the common
  * "happy path" upsert (state=ready) can omit it; everything else is
@@ -191,6 +209,24 @@ export function rowToMcpConnection(row: McpConnectionRow): McpConnection {
 	};
 }
 
+export function toPublicMcpConnection(
+	connection: McpConnection,
+): PublicMcpConnection {
+	return {
+		id: connection.id,
+		serverName: connection.serverName,
+		displayName: connection.displayName,
+		serverUrl: connection.serverUrl,
+		transportType: connection.transportType,
+		addedByUserId: connection.addedByUserId,
+		addedAt: connection.addedAt,
+		lastState: connection.lastState,
+		lastError: connection.lastError,
+		enabledTools: connection.enabledTools,
+		authType: connection.authType,
+	};
+}
+
 export function mcpConnectionToRow(
 	input: McpConnectionInput,
 ): McpConnectionRow {
@@ -256,6 +292,23 @@ export function isL4McpEnabled(env: { L4_MCP_ENABLED?: string }): boolean {
 }
 
 /**
+ * Sub-flag for the static Bearer path. It is only considered enabled when
+ * the rollout flag is exactly `"true"` AND the active KEK is present, so
+ * external code paths never call the encrypt/decrypt helpers with an unset
+ * secret at runtime.
+ */
+export function isL4BearerEnabled(env: {
+	L4_MCP_BEARER_ENABLED?: string;
+	MCP_BEARER_KEK_CURRENT?: string;
+}): boolean {
+	return (
+		String(env.L4_MCP_BEARER_ENABLED) === "true" &&
+		typeof env.MCP_BEARER_KEK_CURRENT === "string" &&
+		env.MCP_BEARER_KEK_CURRENT.length > 0
+	);
+}
+
+/**
  * Narrowed shape of `Agent.addMcpServer` return values consumed by Phase 2's
  * EmailAgent RPC. The Cloudflare SDK actually returns one of two discriminated
  * objects; we type-erase the discriminant to a plain `string` so
@@ -268,6 +321,26 @@ export interface SdkAddResult {
 	authUrl?: string;
 }
 
+type BuildConnectionBaseArgs = {
+	serverName: string;
+	serverUrl: string;
+	displayName?: string;
+	addedByUserId: string;
+	addedAt: number;
+	sdk: SdkAddResult;
+	transportType?: McpTransportType | null;
+};
+
+type BuildConnectionArgs =
+	| (BuildConnectionBaseArgs & {
+			authType?: "oauth";
+			encryptedBlob?: undefined;
+		})
+	| (BuildConnectionBaseArgs & {
+			authType: "bearer";
+			encryptedBlob: EnvelopeV1;
+		});
+
 /**
  * Translate a successful `Agent.addMcpServer` response plus owner metadata
  * into an {@link McpConnectionInput} ready for `MailboxDO.upsertMcpConnection`.
@@ -277,34 +350,48 @@ export interface SdkAddResult {
  * strings collapse to `"error"` so the metadata layer never persists a state
  * value the rest of the codebase cannot narrow.
  */
-export function buildConnectionFromSdkResult(args: {
-	serverName: string;
-	serverUrl: string;
-	displayName?: string;
-	addedByUserId: string;
-	addedAt: number;
-	sdk: SdkAddResult;
-}): McpConnectionInput {
+export function buildConnectionFromSdkResult(
+	args: BuildConnectionArgs,
+): McpConnectionInput {
+	const authType = args.authType ?? "oauth";
+	const encryptedBlob = authType === "bearer" ? args.encryptedBlob : null;
 	return {
 		id: args.sdk.id,
 		serverName: args.serverName,
 		displayName: args.displayName ?? args.serverName,
 		serverUrl: args.serverUrl,
-		transportType: null,
+		transportType:
+			args.transportType ?? (authType === "bearer" ? "streamable-http" : null),
 		addedByUserId: args.addedByUserId,
 		addedAt: args.addedAt,
 		lastState: isMcpConnectionState(args.sdk.state) ? args.sdk.state : "error",
 		enabledTools: null,
-		// OAuth flow — encrypted-blob columns stay NULL until a Bearer-typed
-		// builder lands in Phase 2.
-		authType: "oauth",
-		encryptedTokenB64: null,
-		tokenIvB64: null,
-		tokenSaltB64: null,
-		tokenEnvelopeVersion: null,
-		tokenKekVersion: null,
+		authType,
+		encryptedTokenB64: encryptedBlob?.ciphertextB64 ?? null,
+		tokenIvB64: encryptedBlob?.ivB64 ?? null,
+		tokenSaltB64: encryptedBlob?.saltB64 ?? null,
+		tokenEnvelopeVersion: encryptedBlob?.version ?? null,
+		tokenKekVersion: encryptedBlob?.kekVersion ?? null,
 	};
 }
+
+type AddExternalMcpServerBaseInput = {
+	serverName: string;
+	url: string;
+	displayName?: string;
+	addedByUserId: string;
+};
+
+export type AddExternalMcpServerInput =
+	| (AddExternalMcpServerBaseInput & {
+			authType: "oauth";
+			/** Origin used to construct the OAuth callback URL. */
+			callbackHost: string;
+		})
+	| (AddExternalMcpServerBaseInput & {
+			authType: "bearer";
+			bearerToken: string;
+		});
 
 /**
  * Discriminated outcome of `EmailAgent.addExternalMcpServer`.
@@ -315,8 +402,12 @@ export function buildConnectionFromSdkResult(args: {
  * UI can render the row before live state catches up.
  */
 export type AddExternalMcpServerResult =
-	| { state: "ready"; connection: McpConnection }
-	| { state: "authenticating"; connection: McpConnection; authUrl: string };
+	| { state: "ready"; connection: PublicMcpConnection }
+	| {
+			state: "authenticating";
+			connection: PublicMcpConnection;
+			authUrl: string;
+		};
 
 // ── Phase 3 ─────────────────────────────────────────────────────────────────
 

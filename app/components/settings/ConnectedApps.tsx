@@ -258,7 +258,7 @@ function ConnectionRow({
 
 function stateBadgeFor(
 	state: McpConnectionDto["lastState"],
-): { label: string; variant: "primary" | "secondary" | "success" | "error" } {
+): { label: string; variant: "primary" | "secondary" | "success" | "destructive" } {
 	switch (state) {
 		case "ready":
 			return { label: "ready", variant: "success" };
@@ -267,7 +267,7 @@ function stateBadgeFor(
 		case "discovering":
 			return { label: "discovering", variant: "secondary" };
 		case "error":
-			return { label: "error", variant: "error" };
+			return { label: "error", variant: "destructive" };
 	}
 }
 

@@ -5,6 +5,7 @@ import {
 	McpConnectionSerializationError,
 	applyBoundFields,
 	buildConnectionFromSdkResult,
+	isL4BearerEnabled,
 	isL4McpEnabled,
 	isMcpConnectionState,
 	isMcpTransportType,
@@ -12,6 +13,7 @@ import {
 	parseEnabledTools,
 	rowToMcpConnection,
 	serializeEnabledTools,
+	toPublicMcpConnection,
 	validateBoundState,
 	type BoundStateRow,
 	type McpConnection,
@@ -318,6 +320,43 @@ describe("isL4McpEnabled (Phase 2)", () => {
 	});
 });
 
+describe("isL4BearerEnabled (Phase 2)", () => {
+	it("requires both the exact rollout flag and the current KEK", () => {
+		expect(
+			isL4BearerEnabled({
+				L4_MCP_BEARER_ENABLED: "true",
+				MCP_BEARER_KEK_CURRENT: "kek",
+			}),
+		).toBe(true);
+	});
+
+	it("stays disabled when the flag is absent, false, or truthy-looking", () => {
+		expect(isL4BearerEnabled({ MCP_BEARER_KEK_CURRENT: "kek" })).toBe(false);
+		expect(
+			isL4BearerEnabled({
+				L4_MCP_BEARER_ENABLED: "false",
+				MCP_BEARER_KEK_CURRENT: "kek",
+			}),
+		).toBe(false);
+		expect(
+			isL4BearerEnabled({
+				L4_MCP_BEARER_ENABLED: "TRUE",
+				MCP_BEARER_KEK_CURRENT: "kek",
+			}),
+		).toBe(false);
+	});
+
+	it("stays disabled when the KEK is absent or blank", () => {
+		expect(isL4BearerEnabled({ L4_MCP_BEARER_ENABLED: "true" })).toBe(false);
+		expect(
+			isL4BearerEnabled({
+				L4_MCP_BEARER_ENABLED: "true",
+				MCP_BEARER_KEK_CURRENT: "",
+			}),
+		).toBe(false);
+	});
+});
+
 describe("buildConnectionFromSdkResult (Phase 2)", () => {
 	const baseArgs = {
 		serverName: "github",
@@ -400,6 +439,56 @@ describe("buildConnectionFromSdkResult (Phase 2)", () => {
 			...input,
 			lastError: null,
 		} satisfies McpConnection);
+	});
+
+	it("maps a Bearer SDK response to encrypted columns without plaintext", () => {
+		const plaintext = "ghp_plaintext";
+		const input = buildConnectionFromSdkResult({
+			...baseArgs,
+			sdk: { id: "bearer-1", state: "ready" },
+			authType: "bearer",
+			encryptedBlob: {
+				version: 1,
+				kekVersion: 2,
+				ivB64: "iv",
+				saltB64: "salt",
+				ciphertextB64: "ciphertext-not-plaintext",
+			},
+		});
+
+		expect(input.authType).toBe("bearer");
+		expect(input.transportType).toBe("streamable-http");
+		expect(input.encryptedTokenB64).toBe("ciphertext-not-plaintext");
+		expect(input.tokenIvB64).toBe("iv");
+		expect(input.tokenSaltB64).toBe("salt");
+		expect(input.tokenEnvelopeVersion).toBe(1);
+		expect(input.tokenKekVersion).toBe(2);
+		expect(JSON.stringify(input)).not.toContain(plaintext);
+	});
+});
+
+describe("toPublicMcpConnection", () => {
+	it("omits encrypted Bearer envelope fields from public DTOs", () => {
+		const publicConn = toPublicMcpConnection({
+			...sampleConn,
+			authType: "bearer",
+			encryptedTokenB64: "ciphertext",
+			tokenIvB64: "iv",
+			tokenSaltB64: "salt",
+			tokenEnvelopeVersion: 1,
+			tokenKekVersion: 2,
+		});
+
+		expect(publicConn).toMatchObject({
+			id: "abc-123",
+			authType: "bearer",
+			serverName: "github",
+		});
+		expect(publicConn).not.toHaveProperty("encryptedTokenB64");
+		expect(publicConn).not.toHaveProperty("tokenIvB64");
+		expect(publicConn).not.toHaveProperty("tokenSaltB64");
+		expect(publicConn).not.toHaveProperty("tokenEnvelopeVersion");
+		expect(publicConn).not.toHaveProperty("tokenKekVersion");
 	});
 });
 
