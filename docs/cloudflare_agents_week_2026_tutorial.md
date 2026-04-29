@@ -1,5 +1,9 @@
 # Cloudflare Agents Week 2026 核心技术教程：构建 Agentic Cloud
 
+> 项目级架构落地版请优先看
+> [Cloudflare Agentic Cloud 2026 Guide](cloudflare-agentic-cloud-2026-guide.md)。
+> 本文保留为中文技术教程和概览。
+
 Cloudflare 在 2026 年 4 月 12 日至 17 日举办了首届 **Agents Week 2026**。本次发布会的核心理念是：为“Agentic Web（Agentic 时代网络）”提供从底层计算到网络安全、从状态存储到模型推理的完整基础设施。本教程将带你深入了解并掌握此次发布的核心组件。
 
 ---
