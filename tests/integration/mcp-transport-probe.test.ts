@@ -27,6 +27,10 @@
 
 import { describe, it, expect } from "vitest";
 import {
+	buildBearerFetch,
+	buildBearerTransport,
+} from "../../workers/lib/mcp-bearer-transport";
+import {
 	MCP_TRANSPORT_TYPES,
 	isMcpTransportType,
 	mcpConnectionToRow,
@@ -35,6 +39,29 @@ import {
 } from "../../workers/lib/mcp-connections";
 
 describe("MCP transport probe (Phase 7)", () => {
+	function connectionInput(
+		overrides: Partial<McpConnectionInput>,
+	): McpConnectionInput {
+		return {
+			id: "conn-1",
+			serverName: "test",
+			displayName: null,
+			serverUrl: "https://mcp.example.com/endpoint",
+			transportType: null,
+			addedByUserId: "u-1",
+			addedAt: 1700000000000,
+			lastState: "ready",
+			enabledTools: null,
+			authType: "oauth",
+			encryptedTokenB64: null,
+			tokenIvB64: null,
+			tokenSaltB64: null,
+			tokenEnvelopeVersion: null,
+			tokenKekVersion: null,
+			...overrides,
+		};
+	}
+
 	describe("transport-type enum surface", () => {
 		it("includes both Cloudflare addMcpServer overloads", () => {
 			// #given the closed set of transports the metadata layer recognises
@@ -48,17 +75,9 @@ describe("MCP transport probe (Phase 7)", () => {
 			"%s round-trips through mcpConnectionToRow / rowToMcpConnection",
 			(transport) => {
 				// #given a metadata input carrying the candidate transport
-				const input: McpConnectionInput = {
-					id: "conn-1",
-					serverName: "test",
-					displayName: null,
-					serverUrl: "https://mcp.example.com/endpoint",
+				const input = connectionInput({
 					transportType: transport,
-					addedByUserId: "u-1",
-					addedAt: 1700000000000,
-					lastState: "ready",
-					enabledTools: null,
-				};
+				});
 				// #when serialised then deserialised
 				const back = rowToMcpConnection(mcpConnectionToRow(input));
 				// #then the transport survives intact (NOT collapsed to null)
@@ -77,19 +96,41 @@ describe("MCP transport probe (Phase 7)", () => {
 
 		it("treats null transport as 'unknown / not yet probed'", () => {
 			// #given a fresh row where the SDK didn't surface a transport hint
-			const input: McpConnectionInput = {
-				id: "conn-1",
-				serverName: "test",
-				displayName: null,
-				serverUrl: "https://mcp.example.com/endpoint",
+			const input = connectionInput({
 				transportType: null,
-				addedByUserId: "u-1",
 				addedAt: 0,
 				lastState: "authenticating",
-				enabledTools: null,
-			};
+			});
 			const back = rowToMcpConnection(mcpConnectionToRow(input));
 			expect(back.transportType).toBeNull();
+		});
+	});
+
+	describe("Bearer transport cutover", () => {
+		it("injects Authorization on the wire while JSON persistence drops the fetch closure", async () => {
+			const token = "ghp_transport_probe_token";
+			const calls: Parameters<typeof fetch>[1][] = [];
+			const fakeFetch: typeof fetch = async (_input, init) => {
+				calls.push(init);
+				return new Response("ok");
+			};
+			const bearerFetch = buildBearerFetch(
+				() => "conn-bearer",
+				() => token,
+				fakeFetch,
+			);
+			const transport = buildBearerTransport(bearerFetch);
+
+			await transport.fetch("https://mcp.example.test/mcp", {
+				headers: { accept: "application/json" },
+			});
+
+			expect(calls).toHaveLength(1);
+			const headers = new Headers(calls[0]?.headers);
+			expect(headers.get("Authorization")).toBe(`Bearer ${token}`);
+			expect(headers.get("accept")).toBe("application/json");
+			expect(JSON.stringify(transport)).toBe('{"type":"streamable-http"}');
+			expect(JSON.stringify(transport)).not.toContain(token);
 		});
 	});
 

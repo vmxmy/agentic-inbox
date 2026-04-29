@@ -35,9 +35,13 @@
 		// LLM_API_KEY is a secret — set via `wrangler secret put LLM_API_KEY`.
 		// L4 (MCP Client integration) feature flag. String literal, not a
 		// boolean — `isL4McpEnabled()` reads it as `String(env.L4_MCP_ENABLED) === "true"`.
-		// Phase 6 lands the Settings UI dormant with the flag at "false";
-		// the cutover commit flips it to "true".
+		// L4 is now live; individual auth modes may still have sub-flags.
 		"L4_MCP_ENABLED": "true",
+		// L4 P8 static Bearer auth for external MCP connections. This flag is
+		// safe to leave "true" because `isL4BearerEnabled()` also requires the
+		// `MCP_BEARER_KEK_CURRENT` secret to be present before Bearer add /
+		// rehydrate paths run.
+		"L4_MCP_BEARER_ENABLED": "true",
 	},
 	"d1_databases": [
 		{

@@ -30,15 +30,19 @@ export interface Env extends Cloudflare.Env {
 	 */
 	LLM_API_KEY?: string;
 	/**
-	 * L4 (MCP Client) feature flag. Phase 6 declares the var in
-	 * `wrangler.jsonc` ("false" by default; the cutover commit flips it to
-	 * "true"), so the typegen-generated narrow literal on
-	 * `Cloudflare.Env` is the source of truth. We do not redeclare the
-	 * field here because narrowing it back to `string | undefined` would
-	 * conflict with the typegen literal — `isL4McpEnabled(env)` already
-	 * widens via `String(...)` so callers stay flexible.
+	 * L4 (MCP Client) feature flag. `wrangler.jsonc` declares the live
+	 * literal, so the typegen-generated narrow field on `Cloudflare.Env` is
+	 * the source of truth. We do not redeclare the field here because
+	 * narrowing it back to `string | undefined` would conflict with the
+	 * typegen literal — `isL4McpEnabled(env)` already widens via
+	 * `String(...)` so callers stay flexible.
 	 */
 	/**
+	 * L4 P8 Bearer auth sub-flag is also declared in `wrangler.jsonc`.
+	 * Do not redeclare `L4_MCP_BEARER_ENABLED` here for the same reason as
+	 * `L4_MCP_ENABLED`: typegen owns the literal. Runtime checks still call
+	 * `isL4BearerEnabled(env)`, which also requires `MCP_BEARER_KEK_CURRENT`.
+	 *
 	 * L4 P8 — Bearer auth Key Encryption Key. Base64-encoded 32 raw bytes,
 	 * deployed as a wrangler secret:
 	 *   wrangler secret put MCP_BEARER_KEK_CURRENT
@@ -51,7 +55,6 @@ export interface Env extends Cloudflare.Env {
 	 * dormant; Phase 2-5 every external code path must guard with
 	 * `isL4BearerEnabled(env)` so an unset KEK never throws at runtime.
 	 */
-	L4_MCP_BEARER_ENABLED?: string;
 	MCP_BEARER_KEK_CURRENT?: string;
 	MCP_BEARER_KEK_PREVIOUS?: string;
 	MCP_BEARER_KEK_VERSION?: string;
