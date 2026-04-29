@@ -29,4 +29,13 @@ export interface Env extends Cloudflare.Env {
 	 * `Cloudflare.Env`.
 	 */
 	LLM_API_KEY?: string;
+	/**
+	 * Phase-2 introduction of the L4 (MCP Client) feature flag. Declared
+	 * here as an optional string so all gating code paths
+	 * (`isL4McpEnabled`) compile against `Env` without forcing
+	 * `wrangler.jsonc` to declare the var until Phase 6 wires the UI and
+	 * flips the default. When unset at runtime the helper returns
+	 * `false`, matching the plan's "default off" promise.
+	 */
+	L4_MCP_ENABLED?: string;
 }

@@ -25,6 +25,12 @@ import {
 	invoke as invokeCapability,
 } from "../lib/capabilities";
 import { readInternalAuthContextHeader, type AuthUser } from "../lib/auth";
+import {
+	buildConnectionFromSdkResult,
+	isL4McpEnabled,
+	type AddExternalMcpServerResult,
+	type McpConnection,
+} from "../lib/mcp-connections";
 import type { Env } from "../types";
 
 // AI SDK v6 changed tool() overloads significantly. We define tools as plain
@@ -477,5 +483,65 @@ Based on the email content and thread context above, draft a reply using draft_r
 			console.error("Auto-draft failed:", (e as Error).message);
 			return { status: "error", error: (e as Error).message };
 		}
+	}
+
+	// ── External MCP servers (L4 P2) ───────────────────────────────
+	//
+	// Owner-only RPC surface that wraps Cloudflare's `Agent.addMcpServer`
+	// + the `MailboxDO.upsertMcpConnection` metadata write into a single
+	// transactional pair. Phase 3 routes (`workers/app.ts`) gate caller
+	// identity via `assertMailboxOwner` before invoking these methods;
+	// the `L4_MCP_ENABLED` feature flag here is the second guard so a
+	// caller bypassing the route still cannot mutate state when the
+	// flag is off.
+
+	private requireL4Enabled(): void {
+		if (!isL4McpEnabled(this.env as Env)) {
+			throw new Error("L4 MCP feature disabled");
+		}
+	}
+
+	async addExternalMcpServer(input: {
+		serverName: string;
+		url: string;
+		displayName?: string;
+		addedByUserId: string;
+	}): Promise<AddExternalMcpServerResult> {
+		this.requireL4Enabled();
+		const env = this.env as Env;
+		const sdk = await this.addMcpServer(input.serverName, input.url);
+		const connectionInput = buildConnectionFromSdkResult({
+			serverName: input.serverName,
+			serverUrl: input.url,
+			displayName: input.displayName,
+			addedByUserId: input.addedByUserId,
+			addedAt: Date.now(),
+			sdk,
+		});
+		const stub = getMailboxStub(env, this.name);
+		const connection = await stub.upsertMcpConnection(connectionInput);
+		if (sdk.state === "authenticating") {
+			return {
+				state: "authenticating",
+				connection,
+				authUrl: sdk.authUrl,
+			};
+		}
+		return { state: "ready", connection };
+	}
+
+	async removeExternalMcpServer(id: string): Promise<void> {
+		this.requireL4Enabled();
+		await this.removeMcpServer(id);
+		const env = this.env as Env;
+		const stub = getMailboxStub(env, this.name);
+		await stub.deleteMcpConnection(id);
+	}
+
+	async listExternalMcpServers(): Promise<readonly McpConnection[]> {
+		this.requireL4Enabled();
+		const env = this.env as Env;
+		const stub = getMailboxStub(env, this.name);
+		return stub.listMcpConnections();
 	}
 }

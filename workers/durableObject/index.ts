@@ -19,6 +19,13 @@ import {
 	type PipelineStub,
 } from "../lib/invoice-pipeline";
 import type { RuleCondition, RuleAction } from "../lib/rules";
+import {
+	mcpConnectionToRow,
+	rowToMcpConnection,
+	type McpConnection,
+	type McpConnectionInput,
+	type McpConnectionRow,
+} from "../lib/mcp-connections";
 
 export interface InvoiceFilters {
 	dateFrom?: string;
@@ -1794,6 +1801,64 @@ export class MailboxDO extends DurableObject<Env> {
 					: existing?.nonAgentSettings ?? null,
 		};
 		return this.replaceMailboxSettings(merged);
+	}
+
+	// ── MCP connections (L4 P2) ─────────────────────────────────────
+	//
+	// Per-mailbox metadata for external MCP server connections. The
+	// Cloudflare Agents SDK keeps the live connection state + OAuth
+	// tokens in its own MCPClientManager-controlled tables; these
+	// RPCs only manage the user-facing display layer the owner sees
+	// in Settings → Connected Apps.
+	//
+	// All three are unconditional inside the DO — the L4_MCP_ENABLED
+	// gate lives one layer up in `EmailAgent` so flag=false makes the
+	// agent reject add/remove RPCs before they ever reach the DO.
+	// Reads stay open so a future "view connections (read-only)" UI
+	// could surface dormant rows during incident response.
+
+	async listMcpConnections(): Promise<readonly McpConnection[]> {
+		const rows = this.db
+			.select()
+			.from(schema.mcpConnections)
+			.orderBy(asc(schema.mcpConnections.added_at))
+			.all();
+		return rows.map((row) => rowToMcpConnection(row as McpConnectionRow));
+	}
+
+	async upsertMcpConnection(
+		input: McpConnectionInput,
+	): Promise<McpConnection> {
+		const row = mcpConnectionToRow(input);
+		this.db
+			.insert(schema.mcpConnections)
+			.values(row)
+			.onConflictDoUpdate({
+				target: schema.mcpConnections.id,
+				set: {
+					server_name: row.server_name,
+					display_name: row.display_name,
+					server_url: row.server_url,
+					transport_type: row.transport_type,
+					added_by_user_id: row.added_by_user_id,
+					added_at: row.added_at,
+					last_state: row.last_state,
+					last_error: row.last_error,
+					enabled_tools_json: row.enabled_tools_json,
+				},
+			})
+			.run();
+		return rowToMcpConnection(row);
+	}
+
+	async deleteMcpConnection(id: string): Promise<void> {
+		// Idempotent — if the row is already gone the delete is a no-op.
+		// Phase 3 routes do their own existence check before invoking,
+		// so a noisy "not found" error here would just be friction.
+		this.db
+			.delete(schema.mcpConnections)
+			.where(eq(schema.mcpConnections.id, id))
+			.run();
 	}
 }
 
