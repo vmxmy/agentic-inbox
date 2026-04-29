@@ -37,7 +37,7 @@
 		// boolean — `isL4McpEnabled()` reads it as `String(env.L4_MCP_ENABLED) === "true"`.
 		// Phase 6 lands the Settings UI dormant with the flag at "false";
 		// the cutover commit flips it to "true".
-		"L4_MCP_ENABLED": "false",
+		"L4_MCP_ENABLED": "true",
 	},
 	"d1_databases": [
 		{
