@@ -253,6 +253,7 @@ export class EmailAgent extends AIChatAgent<any> {
 					tool: tool as ExternalToolLike,
 					connId: parsed.connId,
 					toolName: parsed.toolName,
+					authType: conn.authType,
 					appendMcpAudit: (row) => stub.appendMcpAudit(row),
 					screener,
 					now: () => Date.now(),
