@@ -11,8 +11,6 @@
  * stored as plaintext in the SDK's SQLite table.
  */
 
-export const BEARER_PENDING_CONN_ID = "__pending__";
-
 export type ResolveBearerConnId = () => string;
 export type ReadBearerToken = (connId: string) => string;
 
@@ -45,4 +43,79 @@ export function buildBearerTransport(
 		type: "streamable-http",
 		fetch: bearerFetch,
 	};
+}
+
+type BearerMcpConnectionResult =
+	| { state: "failed"; error: string }
+	| { state: "authenticating"; authUrl: string; clientId?: string }
+	| { state: "connected" };
+
+type BearerMcpDiscoveryResult = {
+	success: boolean;
+	state: string;
+	error?: string;
+};
+
+export interface BearerMcpManager {
+	registerServer(
+		id: string,
+		options: {
+			url: string;
+			name: string;
+			transport: BearerTransportOptions;
+		},
+	): Promise<string>;
+	connectToServer(id: string): Promise<BearerMcpConnectionResult>;
+	discoverIfConnected(id: string): Promise<BearerMcpDiscoveryResult | undefined>;
+	removeServer(id: string): Promise<void>;
+}
+
+/**
+ * Register via MCPClientManager's low-level API instead of
+ * Agent.addMcpServer. The high-level helper persists safely, but it also
+ * normalizes HTTP transport options down to type/headers before constructing
+ * the live transport, which would drop our fetch closure too early.
+ */
+export async function registerBearerMcpServer(args: {
+	manager: BearerMcpManager;
+	id?: string;
+	serverName: string;
+	url: string;
+	bearerFetch: typeof fetch;
+	generateId?: () => string;
+}): Promise<{ id: string; state: "ready" }> {
+	const id = args.id ?? args.generateId?.() ?? crypto.randomUUID();
+	const transport = buildBearerTransport(args.bearerFetch);
+	let registered = false;
+	try {
+		await args.manager.registerServer(id, {
+			url: args.url,
+			name: args.serverName,
+			transport,
+		});
+		registered = true;
+		const result = await args.manager.connectToServer(id);
+		if (result.state === "failed") {
+			throw new Error(
+				`Failed to connect to MCP server at ${args.url}: ${result.error}`,
+			);
+		}
+		if (result.state === "authenticating") {
+			throw new Error(
+				"Bearer MCP server unexpectedly requested OAuth authentication",
+			);
+		}
+		const discovery = await args.manager.discoverIfConnected(id);
+		if (discovery && !discovery.success) {
+			throw new Error(
+				`Failed to discover MCP server capabilities: ${discovery.error}`,
+			);
+		}
+		return { id, state: "ready" };
+	} catch (err) {
+		if (registered) {
+			await args.manager.removeServer(id).catch(() => undefined);
+		}
+		throw err;
+	}
 }

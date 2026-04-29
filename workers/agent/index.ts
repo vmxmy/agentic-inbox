@@ -35,9 +35,8 @@ import {
 	type PublicMcpConnection,
 } from "../lib/mcp-connections";
 import {
-	BEARER_PENDING_CONN_ID,
 	buildBearerFetch,
-	buildBearerTransport,
+	registerBearerMcpServer,
 } from "../lib/mcp-bearer-transport";
 import { encryptBearerToken } from "../lib/mcp-token-crypto";
 import { MailboxBoundOAuthProvider } from "../lib/mcp-oauth-provider";
@@ -202,7 +201,6 @@ export class EmailAgent extends AIChatAgent<any> {
 	 *  owner-only gate denies in that case, which is intentional. */
 	private currentUser: AuthUser | null = null;
 	private bearerCache = new Map<string, string>();
-	private bearerPendingPlaintext = "";
 
 	override async fetch(request: Request): Promise<Response> {
 		this.currentUser = await readInternalAuthContextHeader(
@@ -569,11 +567,7 @@ Based on the email content and thread context above, draft a reply using draft_r
 	}
 
 	private readBearerTokenForFetch(connId: string): string {
-		const token =
-			this.bearerCache.get(connId) ??
-			(connId === BEARER_PENDING_CONN_ID
-				? this.bearerPendingPlaintext
-				: "");
+		const token = this.bearerCache.get(connId) ?? "";
 		if (!token) throw new Error("bearer_cache_miss");
 		return token;
 	}
@@ -612,19 +606,20 @@ Based on the email content and thread context above, draft a reply using draft_r
 		return this.ctx.blockConcurrencyWhile(async () => {
 			const env = this.env as Env;
 			const encryptedBlob = await encryptBearerToken(env, input.bearerToken);
-			let activeConnId = BEARER_PENDING_CONN_ID;
+			const sdkId = crypto.randomUUID();
 			const bearerFetch = buildBearerFetch(
-				() => activeConnId,
+				() => sdkId,
 				(connId) => this.readBearerTokenForFetch(connId),
 			);
-			const transport = buildBearerTransport(bearerFetch);
-			this.bearerPendingPlaintext = input.bearerToken;
+			this.bearerCache.set(sdkId, input.bearerToken);
 			try {
-				const sdk = await this.addMcpServer(input.serverName, input.url, {
-					transport,
+				const sdk = await registerBearerMcpServer({
+					manager: this.mcp,
+					id: sdkId,
+					serverName: input.serverName,
+					url: input.url,
+					bearerFetch,
 				});
-				activeConnId = sdk.id;
-				this.bearerCache.set(sdk.id, input.bearerToken);
 				const connectionInput = buildConnectionFromSdkResult({
 					serverName: input.serverName,
 					serverUrl: input.url,
@@ -638,16 +633,11 @@ Based on the email content and thread context above, draft a reply using draft_r
 				});
 				const stub = getMailboxStub(env, this.name);
 				const connection = await stub.upsertMcpConnection(connectionInput);
-				if (sdk.state === "authenticating") {
-					return {
-						state: "authenticating",
-						connection,
-						authUrl: sdk.authUrl,
-					};
-				}
 				return { state: "ready", connection };
-			} finally {
-				this.bearerPendingPlaintext = "";
+			} catch (err) {
+				this.bearerCache.delete(sdkId);
+				await this.mcp.removeServer(sdkId).catch(() => undefined);
+				throw err;
 			}
 		});
 	}
@@ -695,7 +685,6 @@ Based on the email content and thread context above, draft a reply using draft_r
 
 	override async destroy(): Promise<void> {
 		this.bearerCache.clear();
-		this.bearerPendingPlaintext = "";
 		await super.destroy();
 	}
 }
