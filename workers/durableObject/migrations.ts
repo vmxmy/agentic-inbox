@@ -438,4 +438,17 @@ export const mailboxMigrations: Migration[] = [
             ALTER TABLE mcp_connections ADD COLUMN token_kek_version INTEGER;
         `,
 	},
+	{
+		// Phase 5 of the L4 P8 (Bearer Auth) integration. Carries the
+		// connection auth discriminator into the append-only audit log so
+		// operators can distinguish OAuth vs Bearer external-tool calls without
+		// joining against mutable connection metadata. Existing audit rows are
+		// OAuth by construction because Bearer calls were not reachable before
+		// this migration; the DEFAULT handles them without a backfill UPDATE.
+		name: "20_add_mcp_audit_auth_type",
+		sql: `
+            ALTER TABLE mcp_audit_log ADD COLUMN auth_type TEXT NOT NULL DEFAULT 'oauth';
+            CREATE INDEX IF NOT EXISTS idx_mcp_audit_auth_type ON mcp_audit_log(auth_type);
+        `,
+	},
 ];

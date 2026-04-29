@@ -120,6 +120,7 @@ describe("formatAuditRow", () => {
 		id: "row-1",
 		connId: "abc-123",
 		toolName: "search",
+		authType: "oauth",
 		startedAt: 1714389600000,
 		endedAt: 1714389600100,
 		args: { q: "hello" },
@@ -135,6 +136,7 @@ describe("formatAuditRow", () => {
 			id: "row-1",
 			conn_id: "abc-123",
 			tool_name: "search",
+			auth_type: "oauth",
 			started_at: 1714389600000,
 			ended_at: 1714389600100,
 			args_json: JSON.stringify({ q: "hello" }),
@@ -150,11 +152,17 @@ describe("formatAuditRow", () => {
 		expect(row.result_flagged_injection).toBe(1);
 	});
 
-	it("preserves a string error verbatim", () => {
+	it("stores only the whitelisted error category", () => {
 		// #given a failed tool call
 		const row = formatAuditRow({ ...baseInput, error: "timeout after 5s" });
-		// #then the error column is the original string
-		expect(row.error).toBe("timeout after 5s");
+		// #then the error column is categorised, never persisted verbatim
+		expect(row.error).toBe("timeout");
+	});
+
+	it("carries Bearer auth_type into the audit row", () => {
+		const row = formatAuditRow({ ...baseInput, authType: "bearer" });
+
+		expect(row.auth_type).toBe("bearer");
 	});
 
 	it("serialises null args as the JSON literal `null`", () => {
@@ -202,6 +210,7 @@ describe("wrapExternalTool", () => {
 			tool: { description: "x", inputSchema: {}, execute: original },
 			connId: "abc-123",
 			toolName: "search",
+			authType: "oauth",
 			appendMcpAudit: deps.appendMcpAudit,
 			screener: deps.screener,
 			now: deps.now,
@@ -216,6 +225,7 @@ describe("wrapExternalTool", () => {
 		const row = (deps.appendMcpAudit as any).mock.calls[0][0] as McpAuditRow;
 		expect(row.conn_id).toBe("abc-123");
 		expect(row.tool_name).toBe("search");
+		expect(row.auth_type).toBe("oauth");
 		expect(row.result_flagged_injection).toBe(1);
 		expect(row.error).toBeNull();
 	});
@@ -228,6 +238,7 @@ describe("wrapExternalTool", () => {
 			tool: { description: "x", inputSchema: {}, execute: original },
 			connId: "abc-123",
 			toolName: "search",
+			authType: "oauth",
 			appendMcpAudit: deps.appendMcpAudit,
 			screener: deps.screener,
 			now: deps.now,
@@ -253,6 +264,7 @@ describe("wrapExternalTool", () => {
 			tool: { description: "x", inputSchema: {}, execute: original },
 			connId: "abc-123",
 			toolName: "search",
+			authType: "oauth",
 			appendMcpAudit: deps.appendMcpAudit,
 			screener: deps.screener,
 			now: deps.now,
@@ -261,10 +273,10 @@ describe("wrapExternalTool", () => {
 		// #when the wrapped execute runs and the original throws
 		// #then the wrapper rethrows so the AI SDK observes the failure
 		await expect(wrapped.execute!({ q: "x" })).rejects.toBe(boom);
-		// #and the audit row is still written, with the error message captured
+		// #and the audit row is still written with only a whitelisted error code
 		expect(deps.appendMcpAudit).toHaveBeenCalledTimes(1);
 		const row = (deps.appendMcpAudit as any).mock.calls[0][0] as McpAuditRow;
-		expect(row.error).toContain("network down");
+		expect(row.error).toBe("external_mcp_error");
 		expect(row.result_flagged_injection).toBe(0);
 	});
 
@@ -279,6 +291,7 @@ describe("wrapExternalTool", () => {
 			tool: { description: "x", inputSchema: {}, execute: original },
 			connId: "abc-123",
 			toolName: "search",
+			authType: "oauth",
 			appendMcpAudit: failingAppend,
 			screener,
 			now,
@@ -303,6 +316,7 @@ describe("wrapExternalTool", () => {
 			},
 			connId: "abc-123",
 			toolName: "search",
+			authType: "oauth",
 			appendMcpAudit: vi.fn(async () => {}),
 			screener: vi.fn(async () => false),
 			now,

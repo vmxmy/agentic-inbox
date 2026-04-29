@@ -260,13 +260,17 @@ export const mcpConnections = sqliteTable("mcp_connections", {
  * `result_flagged_injection` is the integer mirror of the Phase 5
  * prompt-injection screen (1 if `isPromptInjection` flagged the result text,
  * 0 otherwise). `args_json` is the JSON-stringified tool input; `error` is
- * NULL on success and carries the captured error message on failure. Indices
- * support time-range and per-connection queries from the future Phase 6 UI.
+ * NULL on success and carries only a whitelisted error category on failure.
+ * `auth_type` mirrors the owning `mcp_connections.auth_type` at call time so
+ * future observability can slice OAuth vs Bearer traffic without re-joining.
+ * Indices support time-range and per-connection queries from the future Phase
+ * 6 UI.
  */
 export const mcpAuditLog = sqliteTable("mcp_audit_log", {
 	id: text("id").primaryKey(),
 	conn_id: text("conn_id").notNull(),
 	tool_name: text("tool_name").notNull(),
+	auth_type: text("auth_type").notNull().default("oauth"),
 	started_at: integer("started_at").notNull(),
 	ended_at: integer("ended_at").notNull(),
 	args_json: text("args_json").notNull(),

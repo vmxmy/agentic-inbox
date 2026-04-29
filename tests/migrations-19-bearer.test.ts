@@ -20,12 +20,15 @@ describe("Migration 19 — auth_type + encrypted token columns", () => {
 		expect(m19).toBeDefined();
 	});
 
-	it("is the LAST migration (position invariant)", () => {
+	it("sits immediately before migration 20 (append-only order invariant)", () => {
 		// #given the migration runner applies entries in array order
-		// #when migration 19 is the newest
-		// #then it must sit at the array tail so future migrations append, not insert
-		const last = mailboxMigrations[mailboxMigrations.length - 1];
-		expect(last?.name).toBe("19_add_mcp_connections_auth_type");
+		// #when Phase 5 appends migration 20
+		// #then migration 19 must keep its historical position rather than move
+		const idx = mailboxMigrations.findIndex(
+			(m) => m.name === "19_add_mcp_connections_auth_type",
+		);
+		const next = mailboxMigrations[idx + 1];
+		expect(next?.name).toBe("20_add_mcp_audit_auth_type");
 	});
 
 	it("comes immediately after migration 18 (mcp_audit_log)", () => {

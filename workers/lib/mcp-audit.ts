@@ -26,18 +26,24 @@
  * does not import them.
  */
 
+import type { McpAuthType } from "./mcp-connections";
+import { categoriseError } from "./mcp-token-crypto";
+
 /** Screener function shape. Implementations live in `workers/lib/ai.ts`. */
 export type Screener = (text: string) => Promise<boolean>;
+
+export type McpAuditError = ReturnType<typeof categoriseError>;
 
 /** SQLite row shape for `mcp_audit_log`. Snake_case mirrors columns 1:1. */
 export interface McpAuditRow {
 	id: string;
 	conn_id: string;
 	tool_name: string;
+	auth_type: McpAuthType;
 	started_at: number;
 	ended_at: number;
 	args_json: string;
-	error: string | null;
+	error: McpAuditError | null;
 	result_flagged_injection: 0 | 1;
 }
 
@@ -46,10 +52,11 @@ export interface AuditRowInput {
 	id: string;
 	connId: string;
 	toolName: string;
+	authType: McpAuthType;
 	startedAt: number;
 	endedAt: number;
 	args: unknown;
-	error: string | null;
+	error: unknown | null;
 	flagged: boolean;
 }
 
@@ -96,10 +103,11 @@ export function formatAuditRow(input: AuditRowInput): McpAuditRow {
 		id: input.id,
 		conn_id: input.connId,
 		tool_name: input.toolName,
+		auth_type: input.authType,
 		started_at: input.startedAt,
 		ended_at: input.endedAt,
 		args_json: argsJson === undefined ? "null" : argsJson,
-		error: input.error,
+		error: input.error === null ? null : categoriseError(input.error),
 		result_flagged_injection: input.flagged ? 1 : 0,
 	};
 }
@@ -121,6 +129,7 @@ export interface WrapExternalToolDeps {
 	tool: ExternalToolLike;
 	connId: string;
 	toolName: string;
+	authType: McpAuthType;
 	appendMcpAudit: (row: McpAuditRow) => Promise<void>;
 	screener: Screener;
 	now: () => number;
@@ -130,7 +139,8 @@ export interface WrapExternalToolDeps {
 /**
  * Wrap one external MCP tool so every invocation:
  *   1. Records `startedAt` from `now()` before calling the original execute.
- *   2. Captures any thrown error, then rethrows so the AI SDK still sees it.
+ *   2. Captures any thrown error, categorises it for audit persistence, then
+ *      rethrows so the AI SDK still sees the original failure.
  *   3. Runs successful (non-thrown) results through the screener and prepends
  *      the SYSTEM marker on a hit.
  *   4. Writes one `mcp_audit_log` row regardless of success or failure. The
@@ -138,7 +148,16 @@ export interface WrapExternalToolDeps {
  *      break the tool path — audit is best-effort, the tool result is not.
  */
 export function wrapExternalTool(deps: WrapExternalToolDeps): ExternalToolLike {
-	const { tool, connId, toolName, appendMcpAudit, screener, now, newId } = deps;
+	const {
+		tool,
+		connId,
+		toolName,
+		authType,
+		appendMcpAudit,
+		screener,
+		now,
+		newId,
+	} = deps;
 	const originalExecute = tool.execute;
 
 	const execute = async (input: unknown, ctx?: unknown): Promise<unknown> => {
@@ -157,28 +176,25 @@ export function wrapExternalTool(deps: WrapExternalToolDeps): ExternalToolLike {
 
 		let body: unknown = undefined;
 		let flagged = false;
-		let errorMsg: string | null = null;
+		let error: unknown | null = null;
 
 		if (captured.kind === "ok") {
 			const screened = await screenAndPrefix(captured.value, screener);
 			body = screened.body;
 			flagged = screened.flagged;
 		} else {
-			errorMsg = String(
-				captured.err instanceof Error
-					? captured.err.message
-					: captured.err,
-			);
+			error = captured.err;
 		}
 
 		const row = formatAuditRow({
 			id,
 			connId,
 			toolName,
+			authType,
 			startedAt,
 			endedAt: now(),
 			args: input,
-			error: errorMsg,
+			error,
 			flagged,
 		});
 
