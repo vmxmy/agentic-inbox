@@ -45,6 +45,22 @@ export type McpTransportType = (typeof MCP_TRANSPORT_TYPES)[number];
 const McpTransportTypeSchema = z.enum(MCP_TRANSPORT_TYPES);
 
 /**
+ * L4 P8 authentication mode. `oauth` uses the SDK's OAuth provider flow;
+ * `bearer` carries an encrypted static token whose plaintext is injected
+ * into outbound requests via a `transport.fetch` closure that never
+ * crosses the SDK's `JSON.stringify(server_options)` persistence path.
+ *
+ * Migration 19 sets `auth_type` to `'oauth'` for every row that existed
+ * before the cutover, so the union below stays exhaustive without a
+ * separate "unknown" branch. Phase 2 will gate the `'bearer'` branch
+ * behind `L4_MCP_BEARER_ENABLED`.
+ */
+export const MCP_AUTH_TYPES = ["oauth", "bearer"] as const;
+export type McpAuthType = (typeof MCP_AUTH_TYPES)[number];
+
+const McpAuthTypeSchema = z.enum(MCP_AUTH_TYPES);
+
+/**
  * Per-server tool allowlist. `null` means "no allowlist — every tool
  * published by the server flows into the LLM". An empty array is the
  * kill-switch: the connection stays healthy but no tools reach the model.
@@ -64,6 +80,15 @@ export interface McpConnectionRow {
 	last_state: McpConnectionState;
 	last_error: string | null;
 	enabled_tools_json: string | null;
+	// L4 P8 — Bearer auth (migration 19). The five encrypted-blob columns
+	// are NULL for `oauth` rows. For `bearer` rows they together form an
+	// `EnvelopeV1` (see `workers/lib/mcp-token-crypto.ts`).
+	auth_type: McpAuthType;
+	encrypted_token_b64: string | null;
+	token_iv_b64: string | null;
+	token_salt_b64: string | null;
+	token_envelope_version: number | null;
+	token_kek_version: number | null;
 }
 
 /** Application-layer TS shape consumed by the rest of the codebase. */
@@ -78,6 +103,13 @@ export interface McpConnection {
 	lastState: McpConnectionState;
 	lastError: string | null;
 	enabledTools: EnabledTools | null;
+	authType: McpAuthType;
+	/** Encrypted bearer token blob, NULL for `oauth` rows. */
+	encryptedTokenB64: string | null;
+	tokenIvB64: string | null;
+	tokenSaltB64: string | null;
+	tokenEnvelopeVersion: number | null;
+	tokenKekVersion: number | null;
 }
 
 /**
@@ -150,6 +182,12 @@ export function rowToMcpConnection(row: McpConnectionRow): McpConnection {
 		lastState: row.last_state,
 		lastError: row.last_error,
 		enabledTools: parseEnabledTools(row.enabled_tools_json),
+		authType: row.auth_type,
+		encryptedTokenB64: row.encrypted_token_b64,
+		tokenIvB64: row.token_iv_b64,
+		tokenSaltB64: row.token_salt_b64,
+		tokenEnvelopeVersion: row.token_envelope_version,
+		tokenKekVersion: row.token_kek_version,
 	};
 }
 
@@ -167,6 +205,12 @@ export function mcpConnectionToRow(
 		last_state: input.lastState,
 		last_error: input.lastError ?? null,
 		enabled_tools_json: serializeEnabledTools(input.enabledTools),
+		auth_type: input.authType,
+		encrypted_token_b64: input.encryptedTokenB64,
+		token_iv_b64: input.tokenIvB64,
+		token_salt_b64: input.tokenSaltB64,
+		token_envelope_version: input.tokenEnvelopeVersion,
+		token_kek_version: input.tokenKekVersion,
 	};
 }
 
@@ -184,6 +228,11 @@ export function isMcpConnectionState(
 /** Type-narrowing helper for transport strings. */
 export function isMcpTransportType(value: unknown): value is McpTransportType {
 	return McpTransportTypeSchema.safeParse(value).success;
+}
+
+/** Type-narrowing helper for `auth_type` strings (Migration 19+). */
+export function isMcpAuthType(value: unknown): value is McpAuthType {
+	return McpAuthTypeSchema.safeParse(value).success;
 }
 
 // ── Phase 2 ─────────────────────────────────────────────────────────────────
@@ -246,6 +295,14 @@ export function buildConnectionFromSdkResult(args: {
 		addedAt: args.addedAt,
 		lastState: isMcpConnectionState(args.sdk.state) ? args.sdk.state : "error",
 		enabledTools: null,
+		// OAuth flow — encrypted-blob columns stay NULL until a Bearer-typed
+		// builder lands in Phase 2.
+		authType: "oauth",
+		encryptedTokenB64: null,
+		tokenIvB64: null,
+		tokenSaltB64: null,
+		tokenEnvelopeVersion: null,
+		tokenKekVersion: null,
 	};
 }
 

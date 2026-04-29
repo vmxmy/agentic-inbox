@@ -413,4 +413,29 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX IF NOT EXISTS idx_mcp_audit_conn ON mcp_audit_log(conn_id);
         `,
 	},
+	{
+		// Phase 1 of the L4 P8 (Bearer Auth) integration. Adds the static-secret
+		// auth path next to the existing OAuth flow. `auth_type` discriminates
+		// the row; the encrypted-blob columns only carry data when
+		// `auth_type='bearer'`. The token plaintext NEVER reaches this table —
+		// it is encrypted with a KEK derived from `MCP_BEARER_KEK_CURRENT` via
+		// HKDF-SHA256, AES-GCM with a per-row 12-byte IV and 32-byte salt, and
+		// wrapped in `EnvelopeV1` whose `kek_version` byte enables graceful
+		// dual-KEK rotation (`MCP_BEARER_KEK_CURRENT` + `MCP_BEARER_KEK_PREVIOUS`).
+		//
+		// Existing OAuth rows retain `auth_type='oauth'` via the column DEFAULT;
+		// no backfill UPDATE is required because SQLite applies the default to
+		// every pre-existing row at ALTER time. Migration 19 is forward-only —
+		// rolling back means leaving the columns in place; downstream phases
+		// stay dormant while `L4_MCP_BEARER_ENABLED!=="true"`.
+		name: "19_add_mcp_connections_auth_type",
+		sql: `
+            ALTER TABLE mcp_connections ADD COLUMN auth_type TEXT NOT NULL DEFAULT 'oauth';
+            ALTER TABLE mcp_connections ADD COLUMN encrypted_token_b64 TEXT;
+            ALTER TABLE mcp_connections ADD COLUMN token_iv_b64 TEXT;
+            ALTER TABLE mcp_connections ADD COLUMN token_salt_b64 TEXT;
+            ALTER TABLE mcp_connections ADD COLUMN token_envelope_version INTEGER;
+            ALTER TABLE mcp_connections ADD COLUMN token_kek_version INTEGER;
+        `,
+	},
 ];

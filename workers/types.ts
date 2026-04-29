@@ -38,4 +38,20 @@ export interface Env extends Cloudflare.Env {
 	 * conflict with the typegen literal — `isL4McpEnabled(env)` already
 	 * widens via `String(...)` so callers stay flexible.
 	 */
+	/**
+	 * L4 P8 — Bearer auth Key Encryption Key. Base64-encoded 32 raw bytes,
+	 * deployed as a wrangler secret:
+	 *   wrangler secret put MCP_BEARER_KEK_CURRENT
+	 * `MCP_BEARER_KEK_PREVIOUS` is set during a graceful KEK rotation so the
+	 * decrypt path can fall back when a row's `kekVersion` predates the
+	 * rotation. `MCP_BEARER_KEK_VERSION` stamps every freshly encrypted blob;
+	 * defaults to "1" when unset.
+	 *
+	 * All three are optional at the type level: Phase 1 ships the helpers
+	 * dormant; Phase 2-5 every external code path must guard with
+	 * `isL4BearerEnabled(env)` so an unset KEK never throws at runtime.
+	 */
+	MCP_BEARER_KEK_CURRENT?: string;
+	MCP_BEARER_KEK_PREVIOUS?: string;
+	MCP_BEARER_KEK_VERSION?: string;
 }
