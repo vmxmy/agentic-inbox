@@ -459,6 +459,54 @@ const api = {
 		),
 	bundleZipUrl: (mailboxId: string, bundleId: string): string =>
 		`/api/v1/mailboxes/${mailboxId}/bundles/${bundleId}.zip`,
+
+	// L4 — external MCP connections (owner-only mutations, member-readable list).
+	// Routes are flag-gated server-side via L4_MCP_ENABLED; the read path
+	// returns an empty list when the flag is off so the UI can render a
+	// "feature disabled" empty state without surfacing a 503.
+	listMcpConnections: (mailboxId: string) =>
+		get<{ connections: McpConnectionDto[] }>(
+			`/api/v1/mailboxes/${mailboxId}/mcp-connections`,
+		),
+	addMcpConnection: (
+		mailboxId: string,
+		input: { name: string; url: string; displayName?: string },
+	) =>
+		post<AddMcpConnectionResult>(
+			`/api/v1/mailboxes/${mailboxId}/mcp-connections`,
+			input,
+		),
+	deleteMcpConnection: (mailboxId: string, connectionId: string) =>
+		del<{ ok: true }>(
+			`/api/v1/mailboxes/${mailboxId}/mcp-connections/${encodeURIComponent(connectionId)}`,
+		),
 };
+
+// ── L4 MCP connection DTOs (mirror workers/lib/mcp-connections.ts) ──
+//
+// We re-declare the row shape here (rather than importing from
+// workers/lib/...) so the React-side bundle stays free of worker
+// imports — the build pipeline already keeps app/* and workers/* in
+// separate compilation roots.
+export interface McpConnectionDto {
+	id: string;
+	serverName: string;
+	displayName: string | null;
+	serverUrl: string;
+	transportType: "sse" | "streamable-http" | null;
+	addedByUserId: string;
+	addedAt: number;
+	lastState: "authenticating" | "ready" | "error" | "discovering";
+	lastError: string | null;
+	enabledTools: readonly string[] | null;
+}
+
+export type AddMcpConnectionResult =
+	| { state: "ready"; connection: McpConnectionDto }
+	| {
+			state: "authenticating";
+			connection: McpConnectionDto;
+			authUrl: string;
+		};
 
 export default api;
