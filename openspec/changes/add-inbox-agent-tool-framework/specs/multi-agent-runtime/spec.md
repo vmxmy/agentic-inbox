@@ -15,6 +15,19 @@ The system SHALL define agent behavior through an agent profile containing ident
 - **THEN** the system SHALL apply that agent profile's configured behavior
 - **AND** the system SHALL use that profile when resolving available tools
 
+#### Scenario: OpenAI-compatible provider supplies the default model
+- **GIVEN** the runtime environment configures an OpenAI-compatible LLM base URL and default model
+- **AND** an inbox uses the default agent profile without pinning a custom model
+- **WHEN** the agent runtime selects the inference model
+- **THEN** the system SHALL use the configured default OpenAI-compatible model for agent inference
+- **AND** the system SHALL fall back to the Workers AI default model when the OpenAI-compatible base URL is not configured
+
+#### Scenario: Custom agent profile model is preserved
+- **GIVEN** an inbox uses an agent profile with a custom model identifier
+- **AND** the runtime environment configures a default OpenAI-compatible model
+- **WHEN** the agent runtime selects the inference model
+- **THEN** the system SHALL preserve the agent profile's custom model identifier instead of replacing it with the environment default
+
 ### Requirement: Inbox agent behavior is resolved before execution
 The system SHALL resolve the effective agent profile for an inbox before constructing prompts, tools, or automation behavior.
 

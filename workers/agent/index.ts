@@ -9,7 +9,6 @@ import {
 	convertToModelMessages,
 	stepCountIs,
 } from "ai";
-import { createWorkersAI } from "workers-ai-provider";
 import type { EmailFull, EmailMetadata } from "../lib/schemas";
 import { verifyDraft, isPromptInjection } from "../lib/ai";
 import {
@@ -30,6 +29,7 @@ import {
 	createAgentToolSet,
 	type ToolExecutionContext,
 } from "../lib/tool-capabilities";
+import { resolveAgentModel } from "../lib/llm-provider";
 import { Folders } from "../../shared/folders";
 import type { Env } from "../types";
 
@@ -77,14 +77,14 @@ export class EmailAgent extends AIChatAgent<any> {
 	async onChatMessage(onFinish: any) {
 		const env = this.env as Env;
 		const mailboxId = this.name;
-		const workersai = createWorkersAI({ binding: env.AI });
 		const { inbox, agent } = await resolveProfiles(env, mailboxId);
 		const tools = createAgentToolSet(
 			buildAgentExecutionContext(env, mailboxId, inbox, agent),
 		);
+		const { model } = resolveAgentModel(env, agent);
 
 		const result = streamText({
-			model: workersai(agent.modelId as Parameters<typeof workersai>[0]),
+			model,
 			system: agent.systemPrompt,
 			messages: await convertToModelMessages(this.messages),
 			tools,
@@ -137,11 +137,11 @@ export class EmailAgent extends AIChatAgent<any> {
 		threadId: string;
 	}) {
 		const env = this.env as Env;
-		const workersai = createWorkersAI({ binding: env.AI });
 		const { inbox, agent } = await resolveProfiles(env, emailData.mailboxId);
 		const tools = createAgentToolSet(
 			buildAgentExecutionContext(env, emailData.mailboxId, inbox, agent),
 		);
+		const { model } = resolveAgentModel(env, agent);
 		const systemPrompt = agent.systemPrompt;
 
 		if (!agent.automation.inboundAutoDraftEnabled) {
@@ -294,7 +294,7 @@ Based on the email content and thread context above, draft a reply using draft_r
 
 		try {
 			const result = await generateText({
-				model: workersai(agent.modelId as Parameters<typeof workersai>[0]),
+				model,
 				system: systemPrompt,
 				messages: await convertToModelMessages(messages),
 				tools,

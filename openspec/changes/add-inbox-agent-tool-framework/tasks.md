@@ -33,6 +33,7 @@
 - [x] 3.3 Resolve the effective agent profile from the inbox profile before agent execution.
 - [x] 3.4 Update `EmailAgent` to receive resolved profile behavior instead of hardcoding all behavior internally.
 - [x] 3.5 Ensure inboxes without custom profile metadata continue to use the default email agent behavior.
+- [x] 3.6 Route EmailAgent inference through `LLM_BASE_URL`/`LLM_DEFAULT_MODEL` when configured, with Workers AI fallback.
 
 ## 4. Tool Capability Framework
 
@@ -49,7 +50,7 @@
 - [ ] 5.1 Update inbound email handling to pass resolved inbox and agent profiles into automation.
 - [x] 5.2 Update UI/API mailbox operations only as needed to preserve existing behavior through the inbox profile adapter.
 - [x] 5.3 Update MCP listing and execution to use the shared registry instead of a separate tool definition path.
-- [ ] 5.4 Keep this change free of required D1 migrations, organization tenancy, billing, custom domains, and domain-specific agents.
+- [x] 5.4 Keep this change free of required D1 migrations, organization tenancy, billing, custom domains, and domain-specific agents.
 
 ## 6. Verification
 
@@ -59,5 +60,6 @@
 - [x] 6.4 Add tests for tool filtering by agent surface, MCP surface, enabled tools, and unregistered tool ids.
 - [ ] 6.5 Verify the default email agent can still perform existing email operations.
 - [ ] 6.6 Verify MCP does not list or execute tools that are disabled or not declared for MCP.
-- [ ] 6.7 Run `npm run typecheck`.
-- [ ] 6.8 Run `npm run build`.
+- [x] 6.7 Run `npm run typecheck`.
+- [x] 6.8 Run `npm run build`.
+- [x] 6.9 Add compile-only checks for OpenAI-compatible provider selection and model-id fallback behavior.

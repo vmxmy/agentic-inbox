@@ -76,6 +76,13 @@ The first multi-agent step will be `AgentProfile`: a declarative behavior record
 containing prompt/model/automation/tool configuration. `EmailAgent` remains the
 initial runtime and resolves its behavior from the selected profile.
 
+When `LLM_BASE_URL` is configured, `EmailAgent` uses an OpenAI-compatible chat
+provider for inference and maps the default `AgentProfile` model to
+`LLM_DEFAULT_MODEL`. If an agent profile pins a custom `modelId`, that pinned id
+is preserved. If `LLM_BASE_URL` is absent, the runtime falls back to the
+original Workers AI provider and default `@cf/...` model. Safety checks that
+already depend on the Workers AI binding remain unchanged in this slice.
+
 Alternatives considered:
 
 - One Durable Object class per agent type: rejected for the foundation slice
@@ -248,5 +255,6 @@ Rollback strategy:
 
 - Which existing tools are safe to expose through MCP by default, and which
   should remain agent-only?
-- Should `AgentProfile` support model configuration in the first implementation,
-  or should model selection remain mailbox settings until a later change?
+- `AgentProfile` supports model configuration in this implementation. The
+  environment default only replaces the built-in profile's Workers AI default
+  when an OpenAI-compatible provider is configured.
