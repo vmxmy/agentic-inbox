@@ -8,7 +8,6 @@ import {
 	Empty,
 	Input,
 	Loader,
-	Select,
 	Text,
 	useKumoToastManager,
 } from "@cloudflare/kumo";
@@ -18,8 +17,10 @@ import { type FormEvent, useEffect, useRef, useState } from "react";
 import { Link as RouterLink } from "react-router";
 import api from "~/services/api";
 import {
+	useCreateInbox,
 	useCreateMailbox,
 	useDeleteMailbox,
+	useInboxNamespace,
 	useMailboxes,
 } from "~/queries/mailboxes";
 import { queryKeys } from "~/queries/keys";
@@ -31,6 +32,7 @@ export function meta() {
 export default function HomeRoute() {
 	const toastManager = useKumoToastManager();
 	const { data: mailboxes = [], refetch: refetchMailboxes, isFetched: mailboxesFetched } = useMailboxes();
+	const createInbox = useCreateInbox();
 	const createMailbox = useCreateMailbox();
 	const deleteMailbox = useDeleteMailbox();
 
@@ -42,11 +44,13 @@ export default function HomeRoute() {
 
 	const domains = configData?.domains ?? [];
 	const emailAddresses = configData?.emailAddresses ?? [];
+	const isConfigured = emailAddresses.length > 0;
+	const { data: inboxNamespace, isLoading: isInboxNamespaceLoading } =
+		useInboxNamespace(!isConfigured && Boolean(configData));
 
 	const [isCreateOpen, setIsCreateOpen] = useState(false);
-	const [newPrefix, setNewPrefix] = useState("");
-	const [selectedDomain, setSelectedDomain] = useState("");
-	const [newName, setNewName] = useState("");
+	const [newSubname, setNewSubname] = useState("");
+	const [newDisplayName, setNewDisplayName] = useState("");
 	const [isCreating, setIsCreating] = useState(false);
 	const [createError, setCreateError] = useState<string | null>(null);
 	const [isDeleteOpen, setIsDeleteOpen] = useState(false);
@@ -55,13 +59,6 @@ export default function HomeRoute() {
 		email: string;
 	} | null>(null);
 	const [isDeleting, setIsDeleting] = useState(false);
-
-	// Set default domain when config loads
-	useEffect(() => {
-		if (domains.length > 0 && !selectedDomain) {
-			setSelectedDomain(domains[0]);
-		}
-	}, [domains, selectedDomain]);
 
 	// Auto-create mailboxes from config (run once when both data sources are ready)
 	const autoCreateDone = useRef(false);
@@ -87,26 +84,27 @@ export default function HomeRoute() {
 			}),
 		).then(() => { if (!cancelled) refetchMailboxes(); });
 		return () => { cancelled = true; };
-	}, [emailAddresses, mailboxes, refetchMailboxes]);
+	}, [emailAddresses, mailboxes, mailboxesFetched, refetchMailboxes]);
 
 	const handleCreate = async (e: FormEvent) => {
 		e.preventDefault();
 		setCreateError(null);
-		if (!newPrefix || !selectedDomain) {
-			setCreateError("Please fill in all fields");
+		if (!newDisplayName.trim() || !newSubname.trim()) {
+			setCreateError("Please enter a display name and address name");
 			return;
 		}
-		const email = `${newPrefix}@${selectedDomain}`;
-		const name = newName || newPrefix;
 		setIsCreating(true);
 		try {
-			await createMailbox.mutateAsync({ email, name });
-			toastManager.add({ title: "Mailbox created successfully!" });
+			await createInbox.mutateAsync({
+				displayName: newDisplayName.trim(),
+				subname: newSubname.trim(),
+			});
+			toastManager.add({ title: "AI inbox created successfully!" });
 			setIsCreateOpen(false);
-			setNewPrefix("");
-			setNewName("");
+			setNewSubname("");
+			setNewDisplayName("");
 		} catch (err: unknown) {
-			const message = (err instanceof Error ? err.message : null) || "Failed to create mailbox";
+			const message = (err instanceof Error ? err.message : null) || "Failed to create AI inbox";
 			setCreateError(message);
 		} finally {
 			setIsCreating(false);
@@ -118,17 +116,16 @@ export default function HomeRoute() {
 		setIsDeleting(true);
 		try {
 			await deleteMailbox.mutateAsync(mailboxToDelete.id);
-			toastManager.add({ title: "Mailbox deleted" });
+			toastManager.add({ title: "AI inbox deleted" });
 			setIsDeleteOpen(false);
 			setMailboxToDelete(null);
 		} catch {
-			toastManager.add({ title: "Failed to delete mailbox", variant: "error" });
+			toastManager.add({ title: "Failed to delete AI inbox", variant: "error" });
 		} finally {
 			setIsDeleting(false);
 		}
 	};
 
-	const isConfigured = emailAddresses.length > 0;
 	const accounts = isConfigured
 		? emailAddresses.map((addr) => ({
 				id: addr,
@@ -137,21 +134,27 @@ export default function HomeRoute() {
 			}))
 		: mailboxes;
 
-	const isLoading = !configData;
+	const normalizedSubname = newSubname.trim().toLowerCase();
+	const previewUsername = inboxNamespace?.username ?? "username";
+	const previewDomain = inboxNamespace?.rootDomain ?? domains[0] ?? "example.com";
+	const previewSubname = normalizedSubname || "subname";
+	const generatedAddressPreview = `${previewUsername}.${previewSubname}@${previewDomain}`;
+
+	const isLoading = !configData || (!isConfigured && isInboxNamespaceLoading);
 
 	return (
 		<div className="min-h-screen bg-kumo-recessed">
 			<div className="mx-auto max-w-2xl px-4 py-8 md:px-6 md:py-16">
 				<div className="mb-8">
 					<div className="flex items-center justify-between">
-						<h1 className="text-2xl font-bold text-kumo-default">Mailboxes</h1>
+						<h1 className="text-2xl font-bold text-kumo-default">AI Inboxes</h1>
 						{!isConfigured && (
 							<Button
 								variant="primary"
 								icon={<PlusIcon size={16} />}
 								onClick={() => setIsCreateOpen(true)}
 							>
-								New Mailbox
+								New AI Inbox
 							</Button>
 						)}
 					</div>
@@ -193,7 +196,7 @@ export default function HomeRoute() {
 										size="sm"
 										shape="square"
 										icon={<TrashIcon size={16} />}
-										aria-label={`Delete mailbox ${account.email}`}
+										aria-label={`Delete AI inbox ${account.email}`}
 										onClick={(e) => {
 											e.preventDefault();
 											e.stopPropagation();
@@ -219,12 +222,12 @@ export default function HomeRoute() {
 								/>
 							</div>
 							<h3 className="text-base font-semibold text-kumo-default mb-1.5">
-								No mailboxes yet
+								No AI inboxes yet
 							</h3>
 							<p className="text-sm text-kumo-subtle max-w-sm mb-5">
 								{isConfigured
-									? "Your email routing is configured but no mailboxes have been created yet. They will appear here automatically."
-									: "Create a mailbox to start sending and receiving emails with your domain."}
+									? "Your email routing is configured but no AI inboxes have been created yet. They will appear here automatically."
+									: "Create an AI inbox to give a workstream its own email address, memory, and agent context."}
 							</p>
 							{!isConfigured && (
 								<Button
@@ -232,7 +235,7 @@ export default function HomeRoute() {
 									icon={<PlusIcon size={16} />}
 									onClick={() => setIsCreateOpen(true)}
 								>
-									Create Mailbox
+									Create AI Inbox
 								</Button>
 							)}
 						</div>
@@ -244,7 +247,7 @@ export default function HomeRoute() {
 			<Dialog.Root open={isCreateOpen} onOpenChange={setIsCreateOpen}>
 				<Dialog size="sm" className="p-6">
 					<Dialog.Title className="text-base font-semibold mb-5">
-						Create New Mailbox
+						Create New AI Inbox
 					</Dialog.Title>
 					<form onSubmit={handleCreate} className="space-y-4">
 						{createError && (
@@ -252,52 +255,34 @@ export default function HomeRoute() {
 								{createError}
 							</Text>
 						)}
-						<div>
-							<span className="text-sm font-medium text-kumo-default mb-1.5 block">
-								Email Address
-							</span>
-							<div className="flex items-center gap-2">
-								<div className="flex-1">
-									<Input
-										aria-label="Address prefix"
-										placeholder="info"
-										size="sm"
-										value={newPrefix}
-										onChange={(e) => setNewPrefix(e.target.value)}
-										required
-									/>
-								</div>
-								<span className="text-sm text-kumo-subtle">@</span>
-								{domains.length > 1 ? (
-									<div className="flex-1">
-							<Select
-								aria-label="Domain"
-								value={selectedDomain}
-								onValueChange={(value) => {
-									if (value) setSelectedDomain(value);
-								}}
-							>
-											{domains.map((d) => (
-												<Select.Option key={d} value={d}>
-													{d}
-												</Select.Option>
-											))}
-										</Select>
-									</div>
-								) : (
-									<span className="text-sm text-kumo-subtle">
-										{selectedDomain || "no domain"}
-									</span>
-								)}
+						<Input
+							label="Display Name"
+							placeholder="Reimbursements"
+							size="sm"
+							value={newDisplayName}
+							onChange={(e) => setNewDisplayName(e.target.value)}
+							required
+						/>
+						<Input
+							label="Address Name"
+							placeholder="reimburse"
+							size="sm"
+							value={newSubname}
+							onChange={(e) => setNewSubname(e.target.value)}
+							required
+						/>
+						<div className="rounded-lg border border-kumo-line bg-kumo-recessed px-3 py-2">
+							<p className="text-sm text-kumo-subtle">
+								Generated email address
+							</p>
+							<div className="mt-1 break-all font-mono text-sm text-kumo-default">
+								{generatedAddressPreview}
 							</div>
 						</div>
-						<Input
-							label="Display Name (optional)"
-							placeholder="Info"
-							size="sm"
-							value={newName}
-							onChange={(e) => setNewName(e.target.value)}
-						/>
+						<p className="text-sm text-kumo-subtle">
+							Use lowercase letters, numbers, and hyphens. The username and
+							root domain come from your verified login and system config.
+						</p>
 						<div className="flex justify-end gap-2 pt-2">
 							<Dialog.Close
 								render={(props) => (
@@ -311,7 +296,7 @@ export default function HomeRoute() {
 								variant="primary"
 								size="sm"
 								loading={isCreating}
-								disabled={!selectedDomain}
+								disabled={!newDisplayName.trim() || !newSubname.trim()}
 							>
 								Create
 							</Button>
@@ -330,7 +315,7 @@ export default function HomeRoute() {
 			>
 				<Dialog size="sm" className="p-6">
 					<Dialog.Title className="text-base font-semibold mb-2">
-						Delete Mailbox
+						Delete AI Inbox
 					</Dialog.Title>
 					<Dialog.Description className="text-kumo-subtle text-sm mb-5">
 						Are you sure you want to delete{" "}

@@ -41,9 +41,11 @@ const LEGACY_MAILBOX = "verify-inbox@example.com";
 function makeEnv(
 	records: Record<string, Record<string, unknown>>,
 	emailAddresses: string[] = [],
+	domains = "",
 ): Env {
 	return {
 		EMAIL_ADDRESSES: emailAddresses,
+		DOMAINS: domains,
 		BUCKET: {
 			get: async (key: string) => {
 				const value = records[key];
@@ -113,7 +115,7 @@ export async function verifyKnownInboundRecipientResolves(): Promise<void> {
 // --- Case 4: unknown recipient is not implicitly created -------------------
 
 export async function verifyUnknownInboundRecipientIsRejected(): Promise<void> {
-	const env = makeEnv({}, []);
+	const env = makeEnv({}, [], "example.com");
 	const result = await resolveInboundInboxProfile(env, [LEGACY_MAILBOX]);
 	if (result.status !== "unknown" || result.profile !== null) {
 		throw new Error("unknown recipient should not auto-create profile");
@@ -141,6 +143,36 @@ export async function verifyDisabledInboundRecipientIsRejected(): Promise<void> 
 	const result = await resolveInboundInboxProfile(env, [LEGACY_MAILBOX]);
 	if (result.status !== "disabled" || result.profile !== null) {
 		throw new Error("disabled inbox should not resolve for inbound handling");
+	}
+}
+
+// --- Case 6: unconfigured dynamic domains are rejected before lookup -------
+
+export async function verifyUnconfiguredDomainIsRejected(): Promise<void> {
+	const env = makeEnv({}, [], "example.com");
+	const result = await resolveInboundInboxProfile(env, ["known@other.test"]);
+	if (result.status !== "not_allowed" || result.profile !== null) {
+		throw new Error("unconfigured inbound domain should be rejected");
+	}
+}
+
+// --- Case 7: configured dynamic domain can resolve registered inbox --------
+
+export async function verifyConfiguredDynamicDomainResolves(): Promise<void> {
+	const address = "alice.reimburse@example.com";
+	const env = makeEnv(
+		{
+			[mailboxSettingsKey(address)]: {
+				fromName: "Reimburse",
+			},
+		},
+		[],
+		"example.com",
+	);
+
+	const result = await resolveInboundInboxProfile(env, [address]);
+	if (result.status !== "resolved" || !result.profile) {
+		throw new Error("registered dynamic-domain recipient should resolve");
 	}
 }
 

@@ -9,6 +9,12 @@ import { createRequestHandler } from "react-router";
 import { app as apiApp, receiveEmail } from "./index";
 import { EmailMCP } from "./mcp";
 import type { Env } from "./types";
+import {
+	DEV_USER_HEADER,
+	requestIdentityFromAccessClaims,
+	requestIdentityFromDevUserHeader,
+	type RequestIdentity,
+} from "./lib/request-identity";
 
 export { MailboxDO } from "./durableObject";
 export { EmailAgent } from "./agent";
@@ -40,12 +46,17 @@ function getAccessUrls(teamDomain: string) {
 }
 
 // Main app that wraps the API and adds React Router fallback
-const app = new Hono<{ Bindings: Env }>();
+const app = new Hono<{
+	Bindings: Env;
+	Variables: { requestIdentity?: RequestIdentity };
+}>();
 
 // Cloudflare Access JWT validation middleware (production only)
 app.use("*", async (c, next) => {
 	// Skip validation in development
 	if (import.meta.env.DEV) {
+		const identity = requestIdentityFromDevUserHeader(c.req.header(DEV_USER_HEADER));
+		if (identity) c.set("requestIdentity", identity);
 		return next();
 	}
 
@@ -67,10 +78,15 @@ app.use("*", async (c, next) => {
 	try {
 		const { issuer, certsUrl } = getAccessUrls(TEAM_DOMAIN);
 		const JWKS = createRemoteJWKSet(certsUrl);
-		await jwtVerify(token, JWKS, {
+		const { payload } = await jwtVerify(token, JWKS, {
 			issuer,
 			audience: POLICY_AUD,
 		});
+		const identity = requestIdentityFromAccessClaims(payload);
+		if (!identity) {
+			return c.text("Missing verified Access email claim", 403);
+		}
+		c.set("requestIdentity", identity);
 	} catch {
 		return c.text("Invalid or expired Access token", 403);
 	}

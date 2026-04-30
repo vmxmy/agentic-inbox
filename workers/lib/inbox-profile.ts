@@ -180,6 +180,43 @@ export function pickInboundRecipient(
 	return normalizedRecipients.find((addr) => allowedSet.has(addr)) ?? null;
 }
 
+function configuredDomains(env: Env): string[] {
+	return String(env.DOMAINS || "")
+		.split(",")
+		.map((domain) => domain.trim().toLowerCase())
+		.filter(Boolean);
+}
+
+function configuredEmailAddresses(env: Env): string[] {
+	const value = env.EMAIL_ADDRESSES as unknown;
+	if (Array.isArray(value)) return value.map(String).filter(Boolean);
+	if (typeof value === "string") {
+		return value.split(",").map((address) => address.trim()).filter(Boolean);
+	}
+	return [];
+}
+
+function domainOf(address: string): string | null {
+	const at = address.lastIndexOf("@");
+	if (at < 0) return null;
+	return address.slice(at + 1).toLowerCase();
+}
+
+function pickRegisteredNamespaceRecipient(env: Env, recipients: string[]): string | null {
+	const normalizedRecipients = recipients
+		.map(normalizeInboxAddress)
+		.filter(Boolean);
+	const domains = configuredDomains(env);
+	if (domains.length === 0) return normalizedRecipients[0] ?? null;
+	const domainSet = new Set(domains);
+	return (
+		normalizedRecipients.find((address) => {
+			const domain = domainOf(address);
+			return domain ? domainSet.has(domain) : false;
+		}) ?? null
+	);
+}
+
 /**
  * Resolve an inbound recipient to an existing active InboxProfile before
  * storage or automation. Unknown recipients are deliberately not created.
@@ -188,10 +225,10 @@ export async function resolveInboundInboxProfile(
 	env: Env,
 	recipients: string[],
 ): Promise<InboundInboxResolution> {
-	const matchedAddress = pickInboundRecipient(
-		recipients,
-		(env.EMAIL_ADDRESSES ?? []) as string[],
-	);
+	const allowedAddresses = configuredEmailAddresses(env);
+	const matchedAddress = allowedAddresses.length > 0
+		? pickInboundRecipient(recipients, allowedAddresses)
+		: pickRegisteredNamespaceRecipient(env, recipients);
 	if (!matchedAddress) {
 		return {
 			status: recipients.length === 0 ? "empty_recipients" : "not_allowed",
