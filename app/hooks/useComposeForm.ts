@@ -162,6 +162,15 @@ function buildInitialComposeFields(
 	};
 }
 
+function fileToBase64(file: File): Promise<string> {
+	return new Promise((resolve, reject) => {
+		const reader = new FileReader();
+		reader.onload = () => resolve((reader.result as string).split(",")[1] ?? "");
+		reader.onerror = reject;
+		reader.readAsDataURL(file);
+	});
+}
+
 export function useComposeForm(mailboxId?: string, _folder?: string) {
 	const toastManager = useKumoToastManager();
 	const { composeOptions, closePanel, closeCompose } = useUIStore();
@@ -181,7 +190,23 @@ export function useComposeForm(mailboxId?: string, _folder?: string) {
 	const [error, setError] = useState<string | null>(null);
 	const [isSavingDraft, setIsSavingDraft] = useState(false);
 	const [isSending, setIsSending] = useState(false);
+	const [attachments, setAttachments] = useState<File[]>([]);
 	const lastInitializedOptionsRef = useRef<typeof composeOptions | null>(null);
+
+	const addAttachments = (files: FileList) => {
+		const valid: File[] = [];
+		for (const f of Array.from(files)) {
+			if (f.size > 10 * 1024 * 1024) {
+				toastManager.add({ title: `${f.name} exceeds 10 MB limit`, variant: "error" });
+			} else {
+				valid.push(f);
+			}
+		}
+		setAttachments((prev) => [...prev, ...valid]);
+	};
+
+	const removeAttachment = (index: number) =>
+		setAttachments((prev) => prev.filter((_, i) => i !== index));
 	const isDraftEdit = !!composeOptions.draftEmail;
 
 	const formTitle = useMemo(() => {
@@ -207,6 +232,7 @@ export function useComposeForm(mailboxId?: string, _folder?: string) {
 		setShowCcBcc(initialFields.showCcBcc);
 		setSubject(initialFields.subject);
 		setBody(initialFields.body);
+		setAttachments([]);
 	}, [composeOptions, currentMailbox?.email, sigBlock]);
 
 	const handleSaveDraft = async () => {
@@ -240,6 +266,14 @@ export function useComposeForm(mailboxId?: string, _folder?: string) {
 		const ccRecipients = splitEmailList(cc); const bccRecipients = splitEmailList(bcc);
 		const fromName = currentMailbox.settings?.fromName || currentMailbox.name;
 		const from = fromName && fromName !== currentMailbox.email ? { email: currentMailbox.email, name: fromName } : currentMailbox.email;
+		const encodedAttachments = await Promise.all(
+			attachments.map(async (f) => ({
+				content: await fileToBase64(f),
+				filename: f.name,
+				type: f.type || "application/octet-stream",
+				disposition: "attachment" as const,
+			}))
+		);
 		const emailData = {
 			to: toEmailListValue(toRecipients),
 			cc: toEmailListValue(ccRecipients),
@@ -248,6 +282,7 @@ export function useComposeForm(mailboxId?: string, _folder?: string) {
 			subject,
 			html: body,
 			text: htmlToPlainText(body),
+			attachments: encodedAttachments.length ? encodedAttachments : undefined,
 		};
 		const draftId = composeOptions.draftEmail?.id; const mode = composeOptions.mode; const originalId = composeOptions.originalEmail?.id || composeOptions.draftEmail?.in_reply_to;
 		setIsSending(true); toastManager.add({ title: "Sending email..." });
@@ -262,5 +297,5 @@ export function useComposeForm(mailboxId?: string, _folder?: string) {
 		finally { setIsSending(false); }
 	};
 
-	return { to, setTo, cc, setCc, bcc, setBcc, showCcBcc, setShowCcBcc, subject, setSubject, body, setBody, error, setError, isSavingDraft, isSending, formTitle, handleSaveDraft, handleSend, closeCompose, closePanel };
+	return { to, setTo, cc, setCc, bcc, setBcc, showCcBcc, setShowCcBcc, subject, setSubject, body, setBody, error, setError, isSavingDraft, isSending, attachments, addAttachments, removeAttachment, formTitle, handleSaveDraft, handleSend, closeCompose, closePanel };
 }
