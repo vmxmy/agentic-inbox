@@ -3,10 +3,17 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import { Banner, Button, Input } from "@cloudflare/kumo";
-import { FloppyDiskIcon, PaperPlaneTiltIcon, XIcon } from "@phosphor-icons/react";
+import { FloppyDiskIcon, PaperclipIcon, PaperPlaneTiltIcon, XCircleIcon, XIcon } from "@phosphor-icons/react";
+import { useRef } from "react";
 import { useParams } from "react-router";
 import { useComposeForm } from "~/hooks/useComposeForm";
 import RichTextEditor from "./RichTextEditor";
+
+function formatFileSize(bytes: number): string {
+	if (bytes < 1024) return `${bytes} B`;
+	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 export default function ComposePanel() {
 	const { mailboxId, folder } = useParams<{
@@ -14,6 +21,7 @@ export default function ComposePanel() {
 		folder: string;
 	}>();
 
+	const fileInputRef = useRef<HTMLInputElement>(null);
 	const {
 		to,
 		setTo,
@@ -30,6 +38,9 @@ export default function ComposePanel() {
 		error,
 		isSavingDraft,
 		isSending,
+		attachments,
+		addAttachments,
+		removeAttachment,
 		formTitle,
 		handleSaveDraft,
 		handleSend,
@@ -155,12 +166,55 @@ export default function ComposePanel() {
 					</div>
 				</div>
 
+				<input
+					ref={fileInputRef}
+					type="file"
+					multiple
+					className="hidden"
+					onChange={(e) => e.target.files && addAttachments(e.target.files)}
+				/>
+
+				{attachments.length > 0 && (
+					<div className="px-4 md:px-6 pb-3 flex flex-wrap gap-2">
+						{attachments.map((f, i) => (
+							<div
+								key={i}
+								className="flex items-center gap-1.5 rounded border border-kumo-line bg-kumo-recessed px-2 py-1 text-xs text-kumo-default"
+							>
+								<PaperclipIcon size={12} className="shrink-0 text-kumo-subtle" />
+								<span className="max-w-[160px] truncate">{f.name}</span>
+								<span className="text-kumo-subtle shrink-0">({formatFileSize(f.size)})</span>
+								<button
+									type="button"
+									onClick={() => removeAttachment(i)}
+									aria-label={`Remove ${f.name}`}
+									className="shrink-0 ml-0.5"
+								>
+									<XCircleIcon size={14} className="text-kumo-subtle hover:text-kumo-default" />
+								</button>
+							</div>
+						))}
+					</div>
+				)}
+
 				{/* Footer actions */}
 				<div className="mt-auto px-4 py-3 border-t border-kumo-line bg-kumo-fill/30 shrink-0 md:px-6">
 					<div className="flex items-center justify-between gap-2 flex-wrap">
-						<Button type="button" variant="ghost" size="sm" onClick={closeCompose} disabled={isSending}>
-							Discard
-						</Button>
+						<div className="flex items-center gap-1">
+							<Button
+								type="button"
+								variant="ghost"
+								size="sm"
+								disabled={isSending}
+								icon={<PaperclipIcon size={14} />}
+								onClick={() => fileInputRef.current?.click()}
+							>
+								Attach
+							</Button>
+							<Button type="button" variant="ghost" size="sm" onClick={closeCompose} disabled={isSending}>
+								Discard
+							</Button>
+						</div>
 						<div className="flex items-center gap-2">
 							<Button
 								type="button"

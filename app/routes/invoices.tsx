@@ -144,7 +144,7 @@ export default function InvoicesRoute() {
 			if (!targetId) {
 				const trimmed = newBundleName.trim();
 				if (!trimmed) {
-					window.alert("请选择一个报销单或填写新报销单名称");
+					window.alert("Please select a bundle or enter a new bundle name");
 					setAddPending(false);
 					return;
 				}
@@ -170,10 +170,10 @@ export default function InvoicesRoute() {
 				}
 			}
 			if (failures.length === 0) {
-				window.alert(`已加入 ${success} 张发票`);
+				window.alert(`Added ${success} invoice${success !== 1 ? "s" : ""} to bundle`);
 			} else {
 				window.alert(
-					`加入 ${success} 张成功，${failures.length} 张失败：\n${failures.join("\n")}`,
+					`Added ${success}, ${failures.length} failed:\n${failures.join("\n")}`,
 				);
 			}
 			setAddOpen(false);
@@ -188,7 +188,7 @@ export default function InvoicesRoute() {
 	const handleDelete = async (invoiceId: string, invoiceNumber: string) => {
 		if (
 			!window.confirm(
-				`删除发票 ${invoiceNumber}？原始文件仍保留在 R2。`,
+				`Delete invoice ${invoiceNumber}? The original file will remain in R2.`,
 			)
 		) {
 			return;
@@ -196,7 +196,7 @@ export default function InvoicesRoute() {
 		try {
 			await deleteInvoice.mutateAsync(invoiceId);
 		} catch (e) {
-			window.alert(`删除失败：${(e as Error).message}`);
+			window.alert(`Failed to delete: ${(e as Error).message}`);
 		}
 	};
 
@@ -207,27 +207,27 @@ export default function InvoicesRoute() {
 					<div>
 						<h1 className="text-xl font-semibold text-kumo-default flex items-center gap-2">
 							<ReceiptIcon size={22} weight="regular" />
-							发票
+							Invoices
 						</h1>
 						<p className="mt-1 text-sm text-kumo-subtle">
-							{totalCount} 张发票 · 每张都关联邮件内的权威原始文件
+							{totalCount} invoice{totalCount !== 1 ? "s" : ""} · Each linked to its authoritative original file
 						</p>
 					</div>
 					<div className="flex items-center gap-2">
 						{selected.size > 0 ? (
 							<>
 								<span className="text-sm text-kumo-subtle">
-									已选 {selected.size} 张
+									{selected.size} selected
 								</span>
 								<Button
 									variant="primary"
 									onClick={() => setAddOpen(true)}
 								>
 									<PackageIcon size={14} weight="regular" />
-									加入报销单
+									Add to Bundle
 								</Button>
 								<Button variant="ghost" onClick={clearSelection}>
-									取消选择
+									Deselect
 								</Button>
 							</>
 						) : null}
@@ -241,7 +241,7 @@ export default function InvoicesRoute() {
 									setPage(1);
 								}}
 							/>
-							隐藏已红冲
+							Hide voided
 						</label>
 						<label className="inline-flex items-center gap-2 text-sm text-kumo-default">
 							<input
@@ -253,10 +253,10 @@ export default function InvoicesRoute() {
 									setPage(1);
 								}}
 							/>
-							仅看需要复核
+							Needs review only
 						</label>
 						<Button variant="ghost" onClick={resetFilters}>
-							清除筛选
+							Clear filters
 						</Button>
 						<Button
 							variant="secondary"
@@ -270,14 +270,14 @@ export default function InvoicesRoute() {
 							}}
 						>
 							<DownloadSimpleIcon size={14} weight="regular" />
-							导出 CSV
+							Export CSV
 						</Button>
 					</div>
 				</div>
 
 				<div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-7">
 					<Input
-						placeholder="销方名称 like…"
+						placeholder="Seller name…"
 						value={sellerContains}
 						onChange={(e) => {
 							setSellerContains(e.target.value);
@@ -285,7 +285,7 @@ export default function InvoicesRoute() {
 						}}
 					/>
 					<Input
-						placeholder="购方名称 like…"
+						placeholder="Buyer name…"
 						value={buyerContains}
 						onChange={(e) => {
 							setBuyerContains(e.target.value);
@@ -294,7 +294,7 @@ export default function InvoicesRoute() {
 					/>
 					<Input
 						type="date"
-						placeholder="开票起"
+						placeholder="Invoice date from"
 						value={dateFrom}
 						onChange={(e) => {
 							setDateFrom(e.target.value);
@@ -303,7 +303,7 @@ export default function InvoicesRoute() {
 					/>
 					<Input
 						type="date"
-						placeholder="开票止"
+						placeholder="Invoice date to"
 						value={dateTo}
 						onChange={(e) => {
 							setDateTo(e.target.value);
@@ -312,7 +312,7 @@ export default function InvoicesRoute() {
 					/>
 					<Input
 						type="number"
-						placeholder="最小金额"
+						placeholder="Min amount"
 						value={minAmount}
 						onChange={(e) => {
 							setMinAmount(e.target.value);
@@ -321,7 +321,7 @@ export default function InvoicesRoute() {
 					/>
 					<Input
 						type="number"
-						placeholder="最大金额"
+						placeholder="Max amount"
 						value={maxAmount}
 						onChange={(e) => {
 							setMaxAmount(e.target.value);
@@ -329,7 +329,7 @@ export default function InvoicesRoute() {
 						}}
 					/>
 					<Input
-						placeholder="货物/服务名 like…"
+						placeholder="Item name…"
 						value={itemContains}
 						onChange={(e) => {
 							setItemContains(e.target.value);
@@ -346,11 +346,11 @@ export default function InvoicesRoute() {
 					</div>
 				) : invoices.length === 0 ? (
 					<Empty
-						title={reviewOnly ? "没有需要复核的发票" : "暂无发票"}
+						title={reviewOnly ? "No invoices need review" : "No invoices yet"}
 						description={
 							reviewOnly
-								? "OCR 结果全部通过字段校验 — 漂亮。"
-								: "带 XML 附件或下载链接的发票邮件进来后会自动入库。也可以对已有 PDF 邮件手动跑 OCR。"
+								? "All OCR results passed field validation — great."
+								: "Invoices from emails with XML attachments or download links are ingested automatically. You can also run OCR manually on existing PDF emails."
 						}
 					/>
 				) : (
@@ -369,14 +369,14 @@ export default function InvoicesRoute() {
 										onChange={toggleSelectAll}
 									/>
 								</th>
-								<th className="px-3 py-2 font-medium">开票日期</th>
-								<th className="px-3 py-2 font-medium">发票号码</th>
-								<th className="px-3 py-2 font-medium">销方</th>
-								<th className="px-3 py-2 font-medium">购方</th>
-								<th className="px-3 py-2 font-medium text-right">不含税</th>
-								<th className="px-3 py-2 font-medium text-right">税额</th>
-								<th className="px-3 py-2 font-medium text-right">价税合计</th>
-								<th className="px-3 py-2 font-medium">源</th>
+								<th className="px-3 py-2 font-medium">Invoice Date</th>
+								<th className="px-3 py-2 font-medium">Number</th>
+								<th className="px-3 py-2 font-medium">Seller</th>
+								<th className="px-3 py-2 font-medium">Buyer</th>
+								<th className="px-3 py-2 font-medium text-right">Excl. Tax</th>
+								<th className="px-3 py-2 font-medium text-right">Tax</th>
+								<th className="px-3 py-2 font-medium text-right">Total</th>
+								<th className="px-3 py-2 font-medium">Source</th>
 								<th className="px-3 py-2 font-medium"></th>
 							</tr>
 						</thead>
@@ -441,7 +441,7 @@ export default function InvoicesRoute() {
 											{inv.needs_review ? (
 												<Badge variant="outline" className={WARNING_BADGE_CLASS_NAME}>
 													<WarningIcon size={12} weight="fill" />
-													待复核
+													Review
 												</Badge>
 											) : null}
 										</div>
@@ -481,16 +481,16 @@ export default function InvoicesRoute() {
 			<Dialog.Root open={addOpen} onOpenChange={setAddOpen}>
 				<Dialog size="sm" className="p-6">
 					<Dialog.Title className="text-base font-semibold mb-2">
-						加入报销单
+						Add to Bundle
 					</Dialog.Title>
 					<p className="mb-4 text-sm text-kumo-subtle">
-						将选中的 {selected.size} 张发票加入既有报销单，或新建一个。
+						Add the {selected.size} selected invoice{selected.size !== 1 ? "s" : ""} to an existing bundle or create a new one.
 					</p>
 					<div className="space-y-4">
 						{bundles.length > 0 ? (
 							<div>
 								<label className="block text-sm font-medium text-kumo-default mb-1">
-									选择已有报销单
+									Select existing bundle
 								</label>
 								<select
 									className="w-full rounded border border-kumo-default bg-kumo-raised px-2 py-1.5 text-sm"
@@ -500,10 +500,10 @@ export default function InvoicesRoute() {
 										if (e.target.value) setNewBundleName("");
 									}}
 								>
-									<option value="">— 不选 —</option>
+									<option value="">— None —</option>
 									{bundles.map((b) => (
 										<option key={b.id} value={b.id}>
-											{b.name}（{b.invoice_count} 张）
+											{b.name} ({b.invoice_count} invoice{b.invoice_count !== 1 ? "s" : ""})
 										</option>
 									))}
 								</select>
@@ -511,10 +511,10 @@ export default function InvoicesRoute() {
 						) : null}
 						<div>
 							<label className="block text-sm font-medium text-kumo-default mb-1">
-								或新建报销单
+								Or create a new bundle
 							</label>
 							<Input
-								placeholder="例如：2026-04 出差报销"
+								placeholder="e.g. Apr 2026 Business Trip"
 								value={newBundleName}
 								onChange={(e) => {
 									setNewBundleName(e.target.value);
@@ -528,7 +528,7 @@ export default function InvoicesRoute() {
 						<Dialog.Close
 							render={(props) => (
 								<Button {...props} variant="secondary">
-									取消
+									Cancel
 								</Button>
 							)}
 						/>
@@ -540,7 +540,7 @@ export default function InvoicesRoute() {
 								(!chosenBundleId && !newBundleName.trim())
 							}
 						>
-							确认加入
+							Add to Bundle
 						</Button>
 					</div>
 				</Dialog>

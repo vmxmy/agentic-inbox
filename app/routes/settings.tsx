@@ -62,6 +62,21 @@ const SETTINGS_TABS: SettingsTabDef[] = [
 // once the catalog loads".
 const DEFAULT_MODEL = "";
 
+function friendlyModelName(id: string): string {
+	const claude = id.match(/^claude-(\w+)-(\d+)-(\d+)/);
+	if (claude) {
+		const tier = claude[1].charAt(0).toUpperCase() + claude[1].slice(1);
+		return `Claude ${tier} ${claude[2]}.${claude[3]}`;
+	}
+	if (id === "gpt-4o") return "GPT-4o";
+	if (id === "gpt-4o-mini") return "GPT-4o mini";
+	if (id.startsWith("gpt-4")) return id.replace("gpt-4", "GPT-4").replace(/-/g, " ");
+	if (/^o\d+(-\w+)?$/.test(id)) return id.toUpperCase().replace(/-/g, " ");
+	const gemini = id.match(/^gemini-(.+)/);
+	if (gemini) return `Gemini ${gemini[1].split("-").map((s) => s.charAt(0).toUpperCase() + s.slice(1)).join(" ")}`;
+	return id;
+}
+
 // ── Rule types (mirror workers/lib/rules.ts) ──
 interface UIRuleAction {
 	capabilityId: string;
@@ -496,7 +511,7 @@ export default function SettingsRoute() {
 										</option>
 										{modelOptions.map((m) => (
 											<option key={m.id} value={m.id}>
-												{m.id}{m.owned_by ? ` — ${m.owned_by}` : ""}
+												{friendlyModelName(m.id)}{m.owned_by ? ` — ${m.owned_by}` : ""}
 											</option>
 										))}
 										{activeModel && !modelOptions.find((m) => m.id === activeModel) && (
@@ -1697,7 +1712,7 @@ function LlmProviderForm({
 							<option value={defaultModel}>{defaultModel} (not in catalog)</option>
 						)}
 						{discoveredModels.map((m) => (
-							<option key={m} value={m}>{m}</option>
+							<option key={m} value={m}>{friendlyModelName(m)}</option>
 						))}
 					</select>
 				) : (

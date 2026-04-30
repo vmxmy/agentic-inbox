@@ -2,9 +2,10 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { Loader } from "@cloudflare/kumo";
-import { ChatCircleIcon, PlugsIcon } from "@phosphor-icons/react";
+import { Button } from "@cloudflare/kumo";
+import { ChatCircleIcon, PlugsIcon, SidebarSimpleIcon } from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
+import { useUIStore } from "~/hooks/useUIStore";
 import MCPPanel from "./MCPPanel";
 
 function LazyUnifiedAgentPanel() {
@@ -58,6 +59,7 @@ export default function AgentSidebar() {
 	// same session. We persist on change rather than on unmount so quick
 	// remounts (e.g. route transitions) don't lose the value.
 	const [activeTab, setActiveTab] = useState<AgentSidebarTab>(readInitialTab);
+	const { toggleAgentPanel } = useUIStore();
 
 	useEffect(() => {
 		if (typeof window !== "undefined") {
@@ -93,6 +95,16 @@ export default function AgentSidebar() {
 					<PlugsIcon size={14} weight={activeTab === "mcp" ? "fill" : "regular"} />
 					MCP
 				</button>
+				<div className="ml-auto px-2">
+					<Button
+						variant="ghost"
+						shape="square"
+						size="sm"
+						icon={<SidebarSimpleIcon size={16} weight="regular" />}
+						onClick={toggleAgentPanel}
+						aria-label="Close agent panel"
+					/>
+				</div>
 			</div>
 
 			{/* Tab content — keep chat mounted so chat state survives tab switches */}

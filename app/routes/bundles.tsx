@@ -46,16 +46,16 @@ export default function BundlesRoute() {
 			setNewNote("");
 			setCreateOpen(false);
 		} catch (err) {
-			window.alert(`创建失败：${(err as Error).message}`);
+			window.alert(`Failed to create: ${(err as Error).message}`);
 		}
 	};
 
 	const handleDelete = async (bundleId: string, name: string) => {
-		if (!window.confirm(`删除报销单「${name}」？发票本身不会被删除。`)) return;
+		if (!window.confirm(`Delete bundle "${name}"? Invoices will not be deleted.`)) return;
 		try {
 			await deleteBundle.mutateAsync(bundleId);
 		} catch (err) {
-			window.alert(`删除失败：${(err as Error).message}`);
+			window.alert(`Failed to delete: ${(err as Error).message}`);
 		}
 	};
 
@@ -65,10 +65,10 @@ export default function BundlesRoute() {
 				<div>
 					<h1 className="text-xl font-semibold text-kumo-default flex items-center gap-2">
 						<PackageIcon size={22} weight="regular" />
-						报销单
+						Bundles
 					</h1>
 					<p className="mt-1 text-sm text-kumo-subtle">
-						{bundles.length} 个报销单 · 多张发票打包导出 ZIP
+						{bundles.length} bundle{bundles.length !== 1 ? "s" : ""} · Export invoices as ZIP
 					</p>
 				</div>
 				<Button
@@ -76,7 +76,7 @@ export default function BundlesRoute() {
 					onClick={() => setCreateOpen(true)}
 				>
 					<PlusIcon size={14} weight="regular" />
-					新建报销单
+					New Bundle
 				</Button>
 			</div>
 
@@ -87,18 +87,18 @@ export default function BundlesRoute() {
 					</div>
 				) : bundles.length === 0 ? (
 					<Empty
-						title="暂无报销单"
-						description="在发票列表勾选多张发票后点击「加入报销单」，或者在这里新建一个空报销单。"
+						title="No bundles yet"
+						description='Select invoices from the invoice list and click "Add to Bundle", or create an empty bundle here.'
 					/>
 				) : (
 					<table className="w-full text-sm">
 						<thead className="sticky top-0 border-b border-kumo-default bg-kumo-raised text-left text-xs uppercase text-kumo-subtle">
 							<tr>
-								<th className="px-6 py-2 font-medium">名称</th>
-								<th className="px-3 py-2 font-medium text-right">张数</th>
-								<th className="px-3 py-2 font-medium text-right">总额</th>
-								<th className="px-3 py-2 font-medium">状态</th>
-								<th className="px-3 py-2 font-medium">创建时间</th>
+								<th className="px-6 py-2 font-medium">Name</th>
+								<th className="px-3 py-2 font-medium text-right">Invoices</th>
+								<th className="px-3 py-2 font-medium text-right">Total</th>
+								<th className="px-3 py-2 font-medium">Status</th>
+								<th className="px-3 py-2 font-medium">Created</th>
 								<th className="px-3 py-2 font-medium"></th>
 							</tr>
 						</thead>
@@ -171,19 +171,19 @@ export default function BundlesRoute() {
 			<Dialog.Root open={createOpen} onOpenChange={setCreateOpen}>
 				<Dialog size="sm" className="p-6">
 					<Dialog.Title className="text-base font-semibold mb-4">
-						新建报销单
+						New Bundle
 					</Dialog.Title>
 					<form onSubmit={handleCreate} className="space-y-4">
 						<Input
-							label="名称"
-							placeholder="例如：2026-04 出差报销"
+							label="Name"
+							placeholder="e.g. Apr 2026 Business Trip"
 							value={newName}
 							onChange={(e) => setNewName(e.target.value)}
 							required
 						/>
 						<Input
-							label="备注（可选）"
-							placeholder="项目代码、申请人等"
+							label="Note (optional)"
+							placeholder="Project code, applicant, etc."
 							value={newNote}
 							onChange={(e) => setNewNote(e.target.value)}
 						/>
@@ -191,7 +191,7 @@ export default function BundlesRoute() {
 							<Dialog.Close
 								render={(props) => (
 									<Button {...props} variant="secondary">
-										取消
+										Cancel
 									</Button>
 								)}
 							/>
@@ -200,7 +200,7 @@ export default function BundlesRoute() {
 								variant="primary"
 								disabled={!newName.trim() || createBundle.isPending}
 							>
-								创建
+								Create
 							</Button>
 						</div>
 					</form>
