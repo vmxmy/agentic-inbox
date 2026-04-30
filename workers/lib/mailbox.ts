@@ -4,17 +4,24 @@
 
 /**
  * Hono middleware to handle repetitive Mailbox Durable Object instantiation.
- * Checks if the mailbox exists in R2, then instantiates the DO stub
- * and attaches it to the Hono context (`c.var.mailboxStub`).
+ * Resolves the mailbox id to an InboxProfile (which may be a default for
+ * legacy mailboxes), then attaches both the profile and the matching
+ * MailboxDO stub to the Hono context.
  */
 import { createMiddleware } from "hono/factory";
 import type { MailboxDO } from "../durableObject";
 import type { Env } from "../types";
+import {
+	getMailboxStubForInbox,
+	loadInboxProfile,
+	type InboxProfile,
+} from "./inbox-profile";
 
 export type MailboxContext = {
 	Bindings: Env;
 	Variables: {
 		mailboxStub: DurableObjectStub<MailboxDO>;
+		inboxProfile: InboxProfile;
 	};
 };
 
@@ -23,19 +30,15 @@ export const requireMailbox = createMiddleware<MailboxContext>(async (c, next) =
 	if (!rawId) return c.json({ error: "Mailbox ID required" }, 400);
 	const mailboxId = decodeURIComponent(rawId);
 
-	// Verify mailbox exists
-	const key = `mailboxes/${mailboxId}.json`;
-	const obj = await c.env.BUCKET.head(key);
-	if (!obj) {
+	const profile = await loadInboxProfile(c.env, mailboxId);
+	if (!profile) {
 		return c.json({ error: "Not found" }, 404);
 	}
 
-	// Instantiate DO stub
-	const ns = c.env.MAILBOX;
-	const id = ns.idFromName(mailboxId);
-	const stub = ns.get(id);
+	const stub = getMailboxStubForInbox(c.env, profile);
 
+	c.set("inboxProfile", profile);
 	c.set("mailboxStub", stub);
-	
+
 	await next();
 });

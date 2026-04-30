@@ -13,13 +13,22 @@ import {
 	SenderValidationError,
 	generateMessageId,
 	buildThreadingHeaders,
-	listMailboxes,
 } from "./lib/email-helpers";
 import { SendEmailRequestSchema } from "./lib/schemas";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
 import type { Env } from "./types";
 import { requireMailbox, type MailboxContext } from "./lib/mailbox";
+import {
+	ensureSettingsInboxProfile,
+	getMailboxStubForInbox,
+	listInboxProfiles,
+	loadInboxProfile,
+	loadMailboxSettings,
+	mailboxSettingsKey,
+	mergeSettingsPreservingInboxProfile,
+	normalizeInboxAddress,
+} from "./lib/inbox-profile";
 
 type AppContext = Context<MailboxContext>;
 
@@ -95,21 +104,22 @@ app.get("/api/v1/config", (c) => {
 // -- Mailboxes ------------------------------------------------------
 
 app.get("/api/v1/mailboxes", async (c) => {
-	const allMailboxes = await listMailboxes(c.env.BUCKET);
-	return c.json(allMailboxes.map((m) => ({ ...m, name: m.id })));
+	const profiles = await listInboxProfiles(c.env);
+	return c.json(profiles.map((p) => ({ id: p.canonicalAddress, email: p.canonicalAddress, name: p.canonicalAddress })));
 });
 
 app.post("/api/v1/mailboxes", async (c) => {
 	const { name, settings, email: rawEmail } = CreateMailboxBody.parse(await c.req.json());
-	const email = rawEmail.toLowerCase();
+	const email = normalizeInboxAddress(rawEmail);
 	const allowedAddresses = (c.env.EMAIL_ADDRESSES ?? []) as string[];
 	if (allowedAddresses.length > 0 && !allowedAddresses.map((a) => a.toLowerCase()).includes(email)) {
 		return c.json({ error: "Mailbox creation is restricted to configured EMAIL_ADDRESSES" }, 403);
 	}
-	const key = `mailboxes/${email}.json`;
+	const key = mailboxSettingsKey(email);
 	if (await c.env.BUCKET.head(key)) return c.json({ error: "Mailbox already exists" }, 409);
 	const defaultSettings = { fromName: name, forwarding: { enabled: false, email: "" }, signature: { enabled: false, text: "" }, autoReply: { enabled: false, subject: "", message: "" } };
-	const finalSettings = { ...defaultSettings, ...settings };
+	const mergedSettings = { ...defaultSettings, ...settings };
+	const finalSettings = ensureSettingsInboxProfile(email, mergedSettings);
 	await c.env.BUCKET.put(key, JSON.stringify(finalSettings));
 	const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(email));
 	await stub.getFolders();
@@ -118,23 +128,25 @@ app.post("/api/v1/mailboxes", async (c) => {
 
 app.get("/api/v1/mailboxes/:mailboxId", async (c) => {
 	const mailboxId = c.req.param("mailboxId")!;
-	const obj = await c.env.BUCKET.get(`mailboxes/${mailboxId}.json`);
-	if (!obj) return c.json({ error: "Not found" }, 404);
-	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings: await obj.json() });
+	const settings = await loadMailboxSettings(c.env, mailboxId);
+	if (settings === null) return c.json({ error: "Not found" }, 404);
+	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings });
 });
 
 app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 	const mailboxId = c.req.param("mailboxId")!;
 	const { settings } = (await c.req.json()) as { settings: Record<string, unknown> };
-	const key = `mailboxes/${mailboxId}.json`;
-	if (!(await c.env.BUCKET.head(key))) return c.json({ error: "Not found" }, 404);
-	await c.env.BUCKET.put(key, JSON.stringify(settings));
-	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings });
+	const key = mailboxSettingsKey(mailboxId);
+	const existingSettings = await loadMailboxSettings(c.env, mailboxId);
+	if (existingSettings === null) return c.json({ error: "Not found" }, 404);
+	const finalSettings = mergeSettingsPreservingInboxProfile(existingSettings, settings, mailboxId);
+	await c.env.BUCKET.put(key, JSON.stringify(finalSettings));
+	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings: finalSettings });
 });
 
 app.delete("/api/v1/mailboxes/:mailboxId", async (c) => {
 	const mailboxId = c.req.param("mailboxId")!;
-	const key = `mailboxes/${mailboxId}.json`;
+	const key = mailboxSettingsKey(mailboxId);
 	if (!(await c.env.BUCKET.head(key))) return c.json({ error: "Not found" }, 404);
 	await c.env.BUCKET.delete(key); // TODO: also delete DO data and R2 attachment blobs
 	return c.body(null, 204);
@@ -364,9 +376,10 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 	if (!mailboxId) throw new Error("received email with no valid recipient address");
 
 	const messageId = crypto.randomUUID();
-	if (!(await env.BUCKET.head(`mailboxes/${mailboxId}.json`))) { console.log(`Ignoring email for ${mailboxId}: mailbox does not exist`); return; }
+	const inboxProfile = await loadInboxProfile(env, mailboxId);
+	if (!inboxProfile) { console.log(`Ignoring email for ${mailboxId}: mailbox does not exist`); return; }
 
-	const stub = env.MAILBOX.get(env.MAILBOX.idFromName(mailboxId));
+	const stub = getMailboxStubForInbox(env, inboxProfile);
 
 	const attachmentData: StoredAttachment[] = [];
 	if (parsedEmail.attachments) {
@@ -402,10 +415,10 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 		thread_id: threadId, message_id: originalMessageId, raw_headers: JSON.stringify(parsedEmail.headers),
 	}, attachmentData);
 
-	const agentStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName(mailboxId));
+	const agentStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName(inboxProfile.storageMailboxId));
 	ctx.waitUntil(agentStub.fetch(new Request("https://agents/onNewEmail", {
 		method: "POST", headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ mailboxId, emailId: messageId, sender: (parsedEmail.from?.address || "").toLowerCase(), subject: parsedEmail.subject || "", threadId }),
+		body: JSON.stringify({ mailboxId: inboxProfile.storageMailboxId, emailId: messageId, sender: (parsedEmail.from?.address || "").toLowerCase(), subject: parsedEmail.subject || "", threadId }),
 	})).catch((e) => console.error("Auto-draft trigger failed:", (e as Error).message)));
 }
 

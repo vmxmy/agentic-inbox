@@ -22,6 +22,7 @@ import {
 } from "../lib/tools";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
 import type { Env } from "../types";
+import { loadInboxProfile } from "../lib/inbox-profile";
 
 /** Wrap a plain result object into MCP content format. */
 function mcpText(result: unknown) {
@@ -75,8 +76,8 @@ export class EmailMCP extends McpAgent<Env> {
 		 * Returns an MCP error response if the mailbox is not found, or null if valid.
 		 */
 		const verifyMailbox = async (mailboxId: string) => {
-			const obj = await env.BUCKET.head(`mailboxes/${mailboxId}.json`);
-			if (!obj) {
+			const profile = await loadInboxProfile(env, mailboxId);
+			if (!profile) {
 				return mcpError(`Mailbox "${mailboxId}" not found. Use list_mailboxes to see available mailboxes.`);
 			}
 			return null;
