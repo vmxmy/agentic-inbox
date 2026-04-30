@@ -19,6 +19,7 @@ import {
 import {
 	createDefaultInboxProfile,
 	loadInboxProfile,
+	normalizeInboxAddress,
 	type InboxProfile,
 } from "../lib/inbox-profile";
 import {
@@ -33,6 +34,10 @@ import { resolveAgentModel } from "../lib/llm-provider";
 import { Folders } from "../../shared/folders";
 import type { Env } from "../types";
 
+type EmailAgentEnv = Env & {
+	INTERNAL_SECRET?: string;
+};
+
 /**
  * Resolve the InboxProfile + AgentProfile for a mailbox. Falls back to a
  * default InboxProfile (and the default AgentProfile) if R2 has no
@@ -41,7 +46,24 @@ import type { Env } from "../types";
 async function resolveProfiles(
 	env: Env,
 	mailboxId: string,
+	preResolved?: {
+		inboxProfile?: InboxProfile;
+		agentProfile?: AgentProfile;
+	},
 ): Promise<{ inbox: InboxProfile; agent: AgentProfile }> {
+	if (
+		preResolved?.inboxProfile &&
+		preResolved.agentProfile &&
+		normalizeInboxAddress(preResolved.inboxProfile.storageMailboxId) ===
+			normalizeInboxAddress(mailboxId) &&
+		preResolved.inboxProfile.lifecycleStatus === "active"
+	) {
+		return {
+			inbox: preResolved.inboxProfile,
+			agent: preResolved.agentProfile,
+		};
+	}
+
 	let inbox: InboxProfile | null = null;
 	try {
 		inbox = await loadInboxProfile(env, mailboxId);
@@ -103,14 +125,32 @@ export class EmailAgent extends AIChatAgent<any> {
 		const url = new URL(request.url);
 		if (url.pathname === "/onNewEmail" && request.method === "POST") {
 			try {
+				const env = this.env as EmailAgentEnv;
+				const internalSecret = env.INTERNAL_SECRET;
+				const internalHeader = request.headers.get("x-internal-system");
+				if (internalSecret && internalHeader !== internalSecret) {
+					return new Response("Forbidden", { status: 403 });
+				}
 				const emailData = await request.json() as {
 					mailboxId: string;
 					emailId: string;
 					sender: string;
 					subject: string;
 					threadId: string;
+					inboxProfile?: InboxProfile;
+					agentProfile?: AgentProfile;
 				};
-				const result = await this.handleNewEmail(emailData);
+				const preResolvedProfiles = internalSecret
+					? {
+						inboxProfile: emailData.inboxProfile,
+						agentProfile: emailData.agentProfile,
+					}
+					: undefined;
+				const result = await this.handleNewEmail({
+					...emailData,
+					inboxProfile: preResolvedProfiles?.inboxProfile,
+					agentProfile: preResolvedProfiles?.agentProfile,
+				});
 				return new Response(JSON.stringify(result), {
 					headers: { "Content-Type": "application/json" },
 				});
@@ -135,9 +175,14 @@ export class EmailAgent extends AIChatAgent<any> {
 		sender: string;
 		subject: string;
 		threadId: string;
+		inboxProfile?: InboxProfile;
+		agentProfile?: AgentProfile;
 	}) {
 		const env = this.env as Env;
-		const { inbox, agent } = await resolveProfiles(env, emailData.mailboxId);
+		const { inbox, agent } = await resolveProfiles(env, emailData.mailboxId, {
+			inboxProfile: emailData.inboxProfile,
+			agentProfile: emailData.agentProfile,
+		});
 		const tools = createAgentToolSet(
 			buildAgentExecutionContext(env, emailData.mailboxId, inbox, agent),
 		);
