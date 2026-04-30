@@ -39,7 +39,11 @@ type ToolPartShape = { result?: unknown; output?: unknown };
 
 function getCreatedAt(msg: UIMessage): number {
 	const stamp = (msg as unknown as WithCreatedAt).createdAt;
-	return stamp ? new Date(stamp).getTime() : 0;
+	// Unpersisted streaming messages have no createdAt yet. Sorting them to 0
+	// (epoch) would place them at the top of the timeline instead of the bottom
+	// where current conversation belongs. MAX_SAFE_INTEGER puts them last so
+	// they appear below all persisted messages until the DO stamps a real date.
+	return stamp ? new Date(stamp).getTime() : Number.MAX_SAFE_INTEGER;
 }
 
 function getToolResult(part: UIMessage["parts"][number]): unknown {
