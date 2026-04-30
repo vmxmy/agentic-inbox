@@ -10,6 +10,9 @@ concurrency:
   group: test-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   typecheck-and-test:
     name: typecheck + vitest
@@ -30,11 +33,8 @@ jobs:
       - name: Test
         run: npm test
 
-      # Typecheck is intentionally not blocking yet — the frontend tree
-      # carries pre-existing `@phosphor-icons/react` IconProps errors that
-      # are unrelated to the worker code under active migration. Once those
-      # are cleared, promote this step out of `continue-on-error` so a
-      # regression is a hard CI failure.
-      - name: Typecheck (advisory)
-        run: npm run typecheck
-        continue-on-error: true
+      - name: Verify
+        run: npm run verify
+
+      - name: Build
+        run: npm run build

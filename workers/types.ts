@@ -21,6 +21,12 @@ export interface Env extends Cloudflare.Env {
 	/** D1 database holding users / sessions / email_tokens. */
 	DB: D1Database;
 	/**
+	 * Required shared secret for internal Worker-to-DO trust envelopes, inbound
+	 * auto-draft calls, and mailbox invite tokens. Wrangler typegen only sees
+	 * secrets present in the local env file, so declare it here for CI too.
+	 */
+	INTERNAL_SECRET: string;
+	/**
 	 * Bearer token for the LLM endpoint. Optional secret:
 	 *   wrangler secret put LLM_API_KEY
 	 *
