@@ -13,6 +13,6 @@ export default defineConfig({
     cloudflare({ viteEnvironment: { name: "ssr" } }),
     tailwindcss(),
     reactRouter(),
-    tsconfigPaths(),
+    tsconfigPaths({ root: process.cwd() }),
   ],
 });

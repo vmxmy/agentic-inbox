@@ -13,6 +13,7 @@ build/
 dist/
 snapshot-*.txt
 .agents/
+.omc/
 opencode.jsonc
 skills-lock.json
 .DS_Store
