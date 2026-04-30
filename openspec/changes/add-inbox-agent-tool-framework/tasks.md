@@ -59,8 +59,8 @@
 - [x] 6.2 Add tests for known and unknown inbound recipient resolution.
 - [x] 6.3 Add tests for default and custom `AgentProfile` resolution.
 - [x] 6.4 Add tests for tool filtering by agent surface, MCP surface, enabled tools, and unregistered tool ids.
-- [ ] 6.5 Verify the default email agent can still perform existing email operations.
-- [ ] 6.6 Verify MCP does not list or execute tools that are disabled or not declared for MCP.
+- [x] 6.5 Verify the default email agent can still perform existing email operations.
+- [x] 6.6 Verify MCP does not list or execute tools that are disabled or not declared for MCP.
 - [x] 6.7 Run `npm run typecheck`.
 - [x] 6.8 Run `npm run build`.
 - [x] 6.9 Add compile-only checks for OpenAI-compatible provider selection and model-id fallback behavior.
