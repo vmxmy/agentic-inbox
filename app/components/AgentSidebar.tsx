@@ -49,8 +49,12 @@ function isTab(value: string): value is AgentSidebarTab {
 
 function readInitialTab(): AgentSidebarTab {
 	if (typeof window === "undefined") return "chat";
-	const raw = window.sessionStorage.getItem(TAB_STORAGE_KEY);
-	return raw && isTab(raw) ? raw : "chat";
+	try {
+		const raw = window.sessionStorage.getItem(TAB_STORAGE_KEY);
+		return raw && isTab(raw) ? raw : "chat";
+	} catch {
+		return "chat";
+	}
 }
 
 export default function AgentSidebar() {
@@ -63,7 +67,11 @@ export default function AgentSidebar() {
 
 	useEffect(() => {
 		if (typeof window !== "undefined") {
-			window.sessionStorage.setItem(TAB_STORAGE_KEY, activeTab);
+			try {
+				window.sessionStorage.setItem(TAB_STORAGE_KEY, activeTab);
+			} catch {
+				// ignore (private browsing / quota exceeded)
+			}
 		}
 	}, [activeTab]);
 

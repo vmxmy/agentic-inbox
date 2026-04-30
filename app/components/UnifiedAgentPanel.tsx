@@ -8,7 +8,7 @@ import {
 	StopIcon,
 	TrashIcon,
 } from "@phosphor-icons/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router";
 import type { UIMessage } from "ai";
 import { useUIStore } from "~/hooks/useUIStore";
@@ -190,6 +190,7 @@ function UnifiedChatConnected({
 	useAgentChat: typeof import("@cloudflare/ai-chat/react").useAgentChat;
 }) {
 	const scrollRef = useRef<HTMLDivElement>(null);
+	const isNearBottomRef = useRef(true);
 	const [inputValue, setInputValue] = useState("");
 	const [pendingAgent, setPendingAgent] = useState<AgentId | null>(null);
 	// Lazy initializer reads sessionStorage on first render. `readLastAgent`
@@ -201,10 +202,19 @@ function UnifiedChatConnected({
 	const { startCompose } = useUIStore();
 
 	// If the route changes mailbox underneath us (e.g. user navigates between
-	// mailboxes without unmounting the panel), re-read the per-mailbox preference.
+	// mailboxes without unmounting the panel), re-read the per-mailbox preference
+	// and drop any in-progress @-mention so it doesn't carry over.
 	useEffect(() => {
 		setDefaultAgent(readLastAgent(mailboxId));
+		setPendingAgent(null);
 	}, [mailboxId]);
+
+	const handleScroll = useCallback(() => {
+		const el = scrollRef.current;
+		if (!el) return;
+		isNearBottomRef.current =
+			el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+	}, []);
 
 	// Two parallel agent connections — each agent owns its own SQLite chat
 	// history in its DO, and we merge the two message streams into a single
@@ -249,7 +259,7 @@ function UnifiedChatConnected({
 
 	useEffect(() => {
 		const el = scrollRef.current;
-		if (el) el.scrollTop = el.scrollHeight;
+		if (el && isNearBottomRef.current) el.scrollTop = el.scrollHeight;
 	}, [timeline.length, isEmailStreaming, isInvoiceStreaming]);
 
 	const targetAgent: AgentId = pendingAgent ?? defaultAgent;
@@ -267,6 +277,13 @@ function UnifiedChatConnected({
 		sendToAgent(targetAgent, text);
 		setInputValue("");
 		setPendingAgent(null);
+		// Always scroll to bottom when the user sends — even if they had
+		// scrolled up to read earlier messages.
+		isNearBottomRef.current = true;
+		requestAnimationFrame(() => {
+			const el = scrollRef.current;
+			if (el) el.scrollTop = el.scrollHeight;
+		});
 	};
 
 	const handleStop = () => {
@@ -354,7 +371,7 @@ function UnifiedChatConnected({
 			</div>
 
 			{/* Messages */}
-			<div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-4">
+			<div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto px-3 py-4">
 				{timeline.length === 0 ? (
 					<EmptyState onSendToAgent={sendToAgent} />
 				) : (
