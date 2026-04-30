@@ -110,6 +110,23 @@ export default function MCPPanel() {
 					</div>
 				</div>
 
+				{/* Authentication */}
+				<div className="space-y-1.5">
+					<label className="text-xs font-medium text-kumo-strong block">
+						Authentication
+					</label>
+					<div className="rounded-lg border border-kumo-line bg-kumo-recessed px-3 py-2.5 text-[11px] text-kumo-subtle space-y-1.5 leading-relaxed">
+						<p>Add a Bearer token header when connecting an external AI client:</p>
+						<div className="font-mono bg-kumo-base rounded border border-kumo-line px-2 py-1 text-kumo-default select-all">
+							Authorization: Bearer &lt;your-token&gt;
+						</div>
+						<p>
+							Generate and manage tokens in{" "}
+							<strong className="text-kumo-default">Settings → Connections</strong>.
+						</p>
+					</div>
+				</div>
+
 				{/* Available tools */}
 				<div className="space-y-2">
 					<h4 className="text-xs uppercase tracking-wider font-semibold text-kumo-subtle px-0.5">

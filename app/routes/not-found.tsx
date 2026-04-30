@@ -11,16 +11,18 @@ export default function NotFoundRoute() {
 
 	return (
 		<div className="flex items-center justify-center min-h-screen min-h-[100dvh]">
-			<Empty
-				icon={<WarningIcon size={48} className="text-kumo-inactive" />}
-				title="404 -- Page Not Found"
-				description="The page you're looking for doesn't exist."
-				contents={
-					<Button variant="primary" size="sm" onClick={() => navigate("/")}>
-						Go Home
-					</Button>
-				}
-			/>
+			<div className="w-full max-w-sm mx-auto px-4">
+				<Empty
+					icon={<WarningIcon size={48} className="text-kumo-inactive" />}
+					title="404 — Page Not Found"
+					description="The page you're looking for doesn't exist."
+					contents={
+						<Button variant="primary" size="sm" onClick={() => navigate("/")}>
+							Go Home
+						</Button>
+					}
+				/>
+			</div>
 		</div>
 	);
 }

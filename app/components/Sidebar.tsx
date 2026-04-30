@@ -177,13 +177,13 @@ export default function Sidebar() {
 					<FolderLink
 						to={`/mailbox/${mailboxId}/invoices`}
 						icon={<ReceiptIcon size={18} weight="regular" />}
-						label="发票"
+						label="Invoices"
 						onClick={handleNavClick}
 					/>
 					<FolderLink
 						to={`/mailbox/${mailboxId}/bundles`}
 						icon={<PackageIcon size={18} weight="regular" />}
-						label="报销单"
+						label="Bundles"
 						onClick={handleNavClick}
 					/>
 				</div>

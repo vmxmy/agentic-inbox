@@ -51,8 +51,17 @@ export default function MagicRoute() {
 
 	if (!token) {
 		return (
-			<AuthShell title="Sign in via magic link">
-				<p className="text-sm text-kumo-default">No token in URL.</p>
+			<AuthShell
+				title="Sign in via magic link"
+				footer={
+					<Link to="/login" className="text-kumo-link hover:underline">
+						Back to sign in
+					</Link>
+				}
+			>
+				<div className="text-xs rounded border border-red-400/40 bg-red-500/5 text-red-400 p-2">
+					No magic link token found in URL. Please request a new sign-in link.
+				</div>
 			</AuthShell>
 		);
 	}
