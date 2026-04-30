@@ -36,6 +36,19 @@ export interface InboxProfile {
 	settings: Record<string, unknown>;
 }
 
+export type InboundInboxResolutionStatus =
+	| "resolved"
+	| "empty_recipients"
+	| "not_allowed"
+	| "unknown"
+	| "disabled";
+
+export interface InboundInboxResolution {
+	status: InboundInboxResolutionStatus;
+	matchedAddress: string | null;
+	profile: InboxProfile | null;
+}
+
 /** Lower-case + trim an inbox address for canonical use. */
 export function normalizeInboxAddress(address: string): string {
 	return address.trim().toLowerCase();
@@ -149,6 +162,53 @@ export async function loadInboxProfile(
 	const settings = await loadMailboxSettings(env, mailboxId);
 	if (settings === null) return null;
 	return profileFromSettings(mailboxId, settings);
+}
+
+export function pickInboundRecipient(
+	recipients: string[],
+	allowedAddresses: string[],
+): string | null {
+	const normalizedRecipients = recipients
+		.map(normalizeInboxAddress)
+		.filter(Boolean);
+	if (normalizedRecipients.length === 0) return null;
+
+	const allowed = allowedAddresses.map(normalizeInboxAddress).filter(Boolean);
+	if (allowed.length === 0) return normalizedRecipients[0];
+
+	const allowedSet = new Set(allowed);
+	return normalizedRecipients.find((addr) => allowedSet.has(addr)) ?? null;
+}
+
+/**
+ * Resolve an inbound recipient to an existing active InboxProfile before
+ * storage or automation. Unknown recipients are deliberately not created.
+ */
+export async function resolveInboundInboxProfile(
+	env: Env,
+	recipients: string[],
+): Promise<InboundInboxResolution> {
+	const matchedAddress = pickInboundRecipient(
+		recipients,
+		(env.EMAIL_ADDRESSES ?? []) as string[],
+	);
+	if (!matchedAddress) {
+		return {
+			status: recipients.length === 0 ? "empty_recipients" : "not_allowed",
+			matchedAddress: null,
+			profile: null,
+		};
+	}
+
+	const profile = await loadInboxProfile(env, matchedAddress);
+	if (!profile) {
+		return { status: "unknown", matchedAddress, profile: null };
+	}
+	if (profile.lifecycleStatus === "disabled") {
+		return { status: "disabled", matchedAddress, profile: null };
+	}
+
+	return { status: "resolved", matchedAddress, profile };
 }
 
 /** List InboxProfiles for every mailbox doc in R2. */

@@ -48,15 +48,15 @@
 
 ## 5. Integration
 
-- [ ] 5.1 Update inbound email handling to pass resolved inbox and agent profiles into automation.
+- [x] 5.1 Update inbound email handling to pass resolved inbox and agent profiles into automation.
 - [x] 5.2 Update UI/API mailbox operations only as needed to preserve existing behavior through the inbox profile adapter.
 - [x] 5.3 Update MCP listing and execution to use the shared registry instead of a separate tool definition path.
 - [x] 5.4 Keep this change free of required D1 migrations, organization tenancy, billing, custom domains, and domain-specific agents.
 
 ## 6. Verification
 
-- [ ] 6.1 Add tests or type-level checks for legacy settings to `InboxProfile` defaulting.
-- [ ] 6.2 Add tests for known and unknown inbound recipient resolution.
+- [x] 6.1 Add tests or type-level checks for legacy settings to `InboxProfile` defaulting.
+- [x] 6.2 Add tests for known and unknown inbound recipient resolution.
 - [x] 6.3 Add tests for default and custom `AgentProfile` resolution.
 - [x] 6.4 Add tests for tool filtering by agent surface, MCP surface, enabled tools, and unregistered tool ids.
 - [ ] 6.5 Verify the default email agent can still perform existing email operations.

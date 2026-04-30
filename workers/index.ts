@@ -19,15 +19,16 @@ import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
 import type { Env } from "./types";
 import { requireMailbox, type MailboxContext } from "./lib/mailbox";
+import { resolveAgentProfile } from "./lib/agent-profile";
 import {
 	ensureSettingsInboxProfile,
 	getMailboxStubForInbox,
 	listInboxProfiles,
-	loadInboxProfile,
 	loadMailboxSettings,
 	mailboxSettingsKey,
 	mergeSettingsPreservingInboxProfile,
 	normalizeInboxAddress,
+	resolveInboundInboxProfile,
 } from "./lib/inbox-profile";
 
 type AppContext = Context<MailboxContext>;
@@ -363,21 +364,22 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 
 	if (!parsedEmail.to?.length || !parsedEmail.to[0].address) throw new Error("received email with empty to");
 
-	const allowedAddresses = ((env.EMAIL_ADDRESSES ?? []) as string[]).map((a) => a.toLowerCase());
 	const allRecipients = parsedEmail.to.map((t) => t.address?.toLowerCase()).filter(Boolean) as string[];
 	const ccRecipients = (parsedEmail.cc || []).map((e) => e.address?.toLowerCase()).filter(Boolean) as string[];
 	const bccRecipients = (parsedEmail.bcc || []).map((e) => e.address?.toLowerCase()).filter(Boolean) as string[];
 
-	let mailboxId: string | undefined;
-	if (allowedAddresses.length > 0) {
-		mailboxId = allRecipients.find((addr) => allowedAddresses.includes(addr));
-		if (!mailboxId) { console.log(`Ignoring email: no recipient matches EMAIL_ADDRESSES.`); return; }
-	} else { mailboxId = allRecipients[0]; }
-	if (!mailboxId) throw new Error("received email with no valid recipient address");
+	const inboundResolution = await resolveInboundInboxProfile(env, allRecipients);
+	if (!inboundResolution.profile) {
+		console.log(
+			`Ignoring email: inbound recipient resolution failed (${inboundResolution.status})`,
+			inboundResolution.matchedAddress ? `for ${inboundResolution.matchedAddress}` : "",
+		);
+		return;
+	}
 
 	const messageId = crypto.randomUUID();
-	const inboxProfile = await loadInboxProfile(env, mailboxId);
-	if (!inboxProfile) { console.log(`Ignoring email for ${mailboxId}: mailbox does not exist`); return; }
+	const inboxProfile = inboundResolution.profile;
+	const agentProfile = resolveAgentProfile(env, inboxProfile);
 
 	const stub = getMailboxStubForInbox(env, inboxProfile);
 
@@ -415,10 +417,22 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 		thread_id: threadId, message_id: originalMessageId, raw_headers: JSON.stringify(parsedEmail.headers),
 	}, attachmentData);
 
+	const agentHeaders = new Headers({ "Content-Type": "application/json" });
+	if (env.INTERNAL_SECRET) {
+		agentHeaders.set("x-internal-system", env.INTERNAL_SECRET);
+	}
 	const agentStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName(inboxProfile.storageMailboxId));
 	ctx.waitUntil(agentStub.fetch(new Request("https://agents/onNewEmail", {
-		method: "POST", headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ mailboxId: inboxProfile.storageMailboxId, emailId: messageId, sender: (parsedEmail.from?.address || "").toLowerCase(), subject: parsedEmail.subject || "", threadId }),
+		method: "POST", headers: agentHeaders,
+		body: JSON.stringify({
+			mailboxId: inboxProfile.storageMailboxId,
+			emailId: messageId,
+			sender: (parsedEmail.from?.address || "").toLowerCase(),
+			subject: parsedEmail.subject || "",
+			threadId,
+			inboxProfile,
+			agentProfile,
+		}),
 	})).catch((e) => console.error("Auto-draft trigger failed:", (e as Error).message)));
 }
 
