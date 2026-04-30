@@ -1,68 +1,81 @@
 ## Why
 
-Agentic Inbox currently treats a mailbox as an arbitrary email address. That is
-not enough for the product model we have agreed on: a human user should own
-multiple independent AI inbox entities, each with its own address, work context,
-agent behavior, and future collaboration boundary.
+Current code already lets an Access-authenticated operator create arbitrary
+mailboxes from the home page. That is useful for the official single-team demo,
+but it is not yet the product model we agreed on.
 
-This change creates the first product slice for that model while preserving a
-safe migration path from the existing mailbox implementation.
+The product model is: a human user owns multiple AI inboxes under a governed
+namespace, and ordinary user-created addresses are generated as
+`username.subname@root-domain`. The server, not the browser, must derive that
+address from the verified login identity and the user-entered `subname`.
+
+This change refines the existing generic mailbox creation flow into a
+user-owned AI inbox creation flow while preserving the official baseline's R2
+settings, MailboxDO, Cloudflare Access, and Email Routing architecture.
 
 ## What Changes
 
-- Add generated, stable usernames for authenticated users.
-- Add a product-facing AI inbox creation flow using `displayName` and `subname`.
-- Derive ordinary user inbox addresses on the server as
-  `username.subname@root-domain`.
-- Validate `subname` with governed address rules.
-- Persist inbox metadata needed for product display and future address registry
-  migration.
-- Update the UI from arbitrary "Create Mailbox" prefix entry to "Create AI
-  Inbox" with a fixed username/root-domain preview.
-- Move inbound mailbox existence resolution toward D1 control-plane state
-  instead of legacy R2 mailbox blob checks.
-- Keep existing `MailboxDO` and `mailboxId = full email address` as a
-  transitional implementation detail for this slice.
-- Do not add full organizations, custom domains, global alias requests, billing,
-  or operations dashboards in this change.
+- Reuse the existing home-page create flow, mailbox APIs, R2 mailbox settings,
+  InboxProfile adapter, MailboxDO storage, and inbound resolver.
+- Add a server-side Access identity helper that extracts the verified user email
+  from Cloudflare Access JWT claims after existing Access verification.
+- Derive a stable username from the verified user email and persist it in R2
+  account metadata for this MVP.
+- Change ordinary user inbox creation so the client submits only `displayName`
+  and `subname`; the server derives `username.subname@root-domain`.
+- Validate `subname` and reserve system/global names so ordinary users cannot
+  claim arbitrary short aliases such as `support@root-domain`.
+- Store user-owned inbox metadata additively in the R2 mailbox settings document
+  alongside the existing `inboxProfile`.
+- Update the frontend copy and form from arbitrary "Create Mailbox" address
+  entry to product-facing "Create AI Inbox" with a generated address preview.
+- Keep existing arbitrary mailbox creation compatibility for fixed configured
+  mailboxes / future admin flows; do not remove legacy records.
+- Keep inbound resolution R2-backed for this slice; do not introduce D1 or a new
+  control-plane database in this official-baseline worktree.
+
+## What Does Not Change
+
+- No D1 migrations in this slice.
+- No organizations, billing, custom domains, or admin dashboard.
+- No MailboxDO identity migration; `mailboxId = full email address` remains the
+  transitional storage key.
+- No per-inbox Cloudflare Email Routing rule creation. Catch-all routing still
+  lands in the Worker and the Worker resolves registered inboxes.
+- No broad AgentProfile / ToolCapability UI in this slice.
 
 ## Capabilities
 
 ### New Capabilities
 
 - `user-owned-ai-inboxes`: A logged-in user can create and list multiple AI
-  inbox entities with `displayName`, `subname`, generated username, and derived
-  email address.
+  inboxes with `displayName`, `subname`, generated username, and derived email
+  address.
 - `inbound-address-resolution`: Inbound Cloudflare Email Routing recipients are
-  resolved against application-owned inbox/address state before mail is
-  persisted.
+  resolved against registered inbox profile state before mail is persisted.
 
 ### Modified Capabilities
 
-- None. There are no existing OpenSpec capabilities yet.
+- `multi-inbox-runtime`: User-owned inbox metadata extends the existing
+  R2-backed InboxProfile/mailbox runtime without replacing MailboxDO storage.
 
 ## Impact
 
 - Affected frontend:
-  - home/inbox list creation flow
-  - API client methods and query hooks
-  - displayed language from mailbox-first to inbox-first where user-facing
+  - `app/routes/home.tsx`
+  - `app/services/api.ts`
+  - `app/queries/mailboxes.ts`
+  - `app/types/index.ts`
 - Affected worker/API:
-  - user identity helpers
-  - inbox/mailbox creation route
-  - mailbox directory metadata
-  - inbound email recipient resolution
+  - `workers/app.ts` Access claim handling
+  - `workers/index.ts` mailbox/inbox creation and listing routes
+  - `workers/lib/inbox-profile.ts` metadata helpers and address derivation
+  - optional new focused helper module under `workers/lib/`
 - Affected data:
-  - D1 user username field or username table
-  - D1 inbox metadata or mailbox profile table
-  - potential backfill for existing users/mailboxes
-- Affected tests:
-  - username generation
-  - subname validation
-  - derived address creation
-  - duplicate handling
-  - inbound known/unknown address behavior
-- Cloudflare constraints:
-  - no per-inbox Email Routing rule creation
-  - dynamic addresses remain catch-all -> Worker -> D1/application resolution
-
+  - R2 account metadata under a new additive prefix such as `users/<email>.json`
+  - R2 mailbox settings under existing `mailboxes/<email>.json`
+- Affected tests/verification:
+  - compile-only or helper verification for username derivation, subname
+    validation, address derivation, duplicate handling, and legacy compatibility
+  - browser E2E for create-inbox UI
+  - inbound resolver verification for known/unknown addresses

@@ -36,7 +36,7 @@ architecture must remain a generic inbox platform.
 - Cloudflare Email Routing / Email Workers
 - Cloudflare Email Service `send_email`
 - Cloudflare Durable Objects with SQLite
-- Cloudflare D1
+- Cloudflare R2-backed mailbox/settings control plane (current official baseline)
 - Cloudflare R2
 - Cloudflare Workers AI / provider registry
 - Cloudflare Agents SDK
@@ -67,7 +67,7 @@ architecture must remain a generic inbox platform.
 - Cloudflare is the platform premise. Do not design default flows that require
   non-Cloudflare email infrastructure.
 - The Worker is the external trust boundary.
-- D1 is the global control plane.
+- Current official-baseline control-plane metadata is R2-backed; future D1/address-registry migration remains possible but is not present today.
 - Durable Objects own inbox-local serialized state.
 - R2 stores attachment bytes and large artifacts.
 - MCP and capabilities are governed tool surfaces, not unrestricted plugin
@@ -86,7 +86,7 @@ architecture must remain a generic inbox platform.
 ### Testing Strategy
 
 - Run `npm run typecheck` before declaring worker changes complete.
-- Run relevant Vitest suites when touching auth, MCP, migrations, or helpers.
+- Run available compile/build verification when touching auth, MCP, migrations, or helpers; add focused tests/verification files where no test runner exists.
 - Run `npm run build` for frontend/runtime build validation.
 - For Cloudflare config changes, run `wrangler types` or `npm run typecheck`.
 - For inbound email flows, test locally with `wrangler email dev` where
@@ -152,7 +152,7 @@ not replace inbox entities.
 - Cloudflare Email Service
 - Cloudflare Workers
 - Cloudflare Durable Objects
-- Cloudflare D1
+- Cloudflare R2-backed mailbox/settings control plane (current official baseline)
 - Cloudflare R2
 - Cloudflare Workers AI / AI Gateway-compatible model routing
 - Cloudflare Agents SDK
