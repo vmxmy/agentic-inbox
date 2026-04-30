@@ -29,6 +29,15 @@ import {
 	toolMoveEmail,
 	toolDiscardDraft,
 } from "../lib/tools";
+import {
+	createDefaultInboxProfile,
+	loadInboxProfile,
+	type InboxProfile,
+} from "../lib/inbox-profile";
+import {
+	resolveAgentProfile,
+	type AgentProfile,
+} from "../lib/agent-profile";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
 import type { Env } from "../types";
 
@@ -47,64 +56,23 @@ function defineTool(def: {
 }
 
 /**
- * Default system prompt used when no custom prompt is configured for a mailbox.
- * Users can override this on a per-mailbox basis via the Settings UI.
+ * Resolve the InboxProfile + AgentProfile for a mailbox. Falls back to a
+ * default InboxProfile (and the default AgentProfile) if R2 has no
+ * settings doc yet, preserving legacy behavior for unconfigured inboxes.
  */
-const DEFAULT_SYSTEM_PROMPT = `You are an email assistant that helps manage this inbox. You read emails, draft replies, and help organize conversations.
-
-## Writing Style
-Write like a real person. Short, direct, flowing prose. Get to the point. Plain text only - no HTML tags in your replies.
-
-**Formatting rules:**
-- Write in natural paragraphs. NO bullet points, NO numbered lists, NO dashes, NO markdown formatting in email drafts.
-- NO bold (**), NO italic (*), NO headers (#), NO horizontal rules (---), NO code blocks. Plain text only.
-- Links go inline in the text, not on separate lines.
-- Don't structure replies like a template or form letter. Just talk normally.
-
-**Agent Behavior Rules (CRITICAL):**
-- NEVER output meta-commentary about what you are doing (e.g. do not say "I am drafting a reply to Alex", "I checked the thread", etc).
-- When a new email arrives, your ONLY job is to call the \`draft_reply\` tool.
-- DO NOT summarize the email. DO NOT explain your actions.
-- Output NOTHING except the tool call. If you must output text, it should ONLY be the literal draft text itself if tools fail.
-- Before drafting ANY reply, carefully read the full thread history.
-- NEVER repeat information that was already shared in a prior message in the thread.
-- Your reply should only contain NEW information or directly respond to what the person just said. Move the conversation forward, don't rehash it.
-
-## Who Are You Replying To?
-Use the name the person gives in their email body / signature. That's their name - use it. The "from" address is where you send the reply, but the name in the email is how you greet them.
-
-## CRITICAL: Draft Only - Never Send
-You can ONLY draft emails. You do NOT have the ability to send emails directly.
-
-- Use draft_reply to draft replies to existing emails
-- Use draft_email to draft new outbound emails
-- The operator will review and send drafts from the UI - you cannot send them
-
-**CRITICAL: The draft body must contain ONLY the email text.** Never include agent commentary, status messages, meta-notes, markdown formatting, or anything that isn't part of the actual email in the draft body. No "Draft created.", no "---", no "**bold**", no "Here's the draft:", no separators. The body field is the literal email the recipient will read. Everything else goes in your chat message, not in the draft body.
-
-**Don't paste draft contents into the chat.** The drafts are saved via tools - the operator can see them in the Drafts folder. In your chat message, just briefly say what you drafted (e.g. "Drafted a reply to Tim"). Don't duplicate the full email body in the chat.
-
-## Draft Management
-Use discard_draft to delete drafts that the operator rejects or that are no longer needed.`;
-
-/**
- * Fetch the custom system prompt for a mailbox from its R2 settings.
- * Falls back to DEFAULT_SYSTEM_PROMPT if none is configured.
- */
-async function getSystemPrompt(env: Env, mailboxId: string): Promise<string> {
+async function resolveProfiles(
+	env: Env,
+	mailboxId: string,
+): Promise<{ inbox: InboxProfile; agent: AgentProfile }> {
+	let inbox: InboxProfile | null = null;
 	try {
-		const key = `mailboxes/${mailboxId}.json`;
-		const obj = await env.BUCKET.get(key);
-		if (obj) {
-			const settings = await obj.json<Record<string, unknown>>();
-			if (typeof settings.agentSystemPrompt === "string" && settings.agentSystemPrompt.trim()) {
-				return settings.agentSystemPrompt;
-			}
-		}
+		inbox = await loadInboxProfile(env, mailboxId);
 	} catch {
-		// Fall through to default
+		inbox = null;
 	}
-	return DEFAULT_SYSTEM_PROMPT;
+	const effectiveInbox = inbox ?? createDefaultInboxProfile(mailboxId);
+	const agent = resolveAgentProfile(env, effectiveInbox);
+	return { inbox: effectiveInbox, agent };
 }
 
 function createEmailTools(env: Env, mailboxId: string) {
@@ -278,11 +246,11 @@ export class EmailAgent extends AIChatAgent<any> {
 		const mailboxId = this.name;
 		const workersai = createWorkersAI({ binding: env.AI });
 		const tools = createEmailTools(env, mailboxId);
-		const systemPrompt = await getSystemPrompt(env, mailboxId);
+		const { agent } = await resolveProfiles(env, mailboxId);
 
 		const result = streamText({
-			model: workersai("@cf/moonshotai/kimi-k2.5"),
-			system: systemPrompt,
+			model: workersai(agent.modelId as Parameters<typeof workersai>[0]),
+			system: agent.systemPrompt,
 			messages: await convertToModelMessages(this.messages),
 			tools,
 			stopWhen: stepCountIs(5),
@@ -336,7 +304,33 @@ export class EmailAgent extends AIChatAgent<any> {
 		const env = this.env as Env;
 		const workersai = createWorkersAI({ binding: env.AI });
 		const tools = createEmailTools(env, emailData.mailboxId);
-		const systemPrompt = await getSystemPrompt(env, emailData.mailboxId);
+		const { agent } = await resolveProfiles(env, emailData.mailboxId);
+		const systemPrompt = agent.systemPrompt;
+
+		if (!agent.automation.inboundAutoDraftEnabled) {
+			console.info(
+				`Skipping auto-draft for ${emailData.mailboxId}: agent profile '${agent.id}' has inboundAutoDraftEnabled=false`,
+			);
+			const skipText = `Auto-draft is disabled for this inbox (agent profile: ${agent.displayName}). New email from ${emailData.sender}: "${emailData.subject}".`;
+			const skipMessages = [
+				{
+					id: crypto.randomUUID(),
+					role: "user" as const,
+					content: `[Auto-triggered] New email from ${emailData.sender}: "${emailData.subject}"`,
+					createdAt: new Date(),
+					parts: [{ type: "text" as const, text: `[Auto-triggered] New email from ${emailData.sender}: "${emailData.subject}"` }],
+				},
+				{
+					id: crypto.randomUUID(),
+					role: "assistant" as const,
+					content: skipText,
+					createdAt: new Date(),
+					parts: [{ type: "text" as const, text: skipText }],
+				},
+			];
+			await this.persistMessages([...this.messages, ...skipMessages]);
+			return { status: "skipped", reason: "inbound_auto_draft_disabled" };
+		}
 
 		// Pre-read the email and thread so the agent has full context
 		// without needing to waste tool calls discovering it
@@ -463,7 +457,7 @@ Based on the email content and thread context above, draft a reply using draft_r
 
 		try {
 			const result = await generateText({
-				model: workersai("@cf/moonshotai/kimi-k2.5"),
+				model: workersai(agent.modelId as Parameters<typeof workersai>[0]),
 				system: systemPrompt,
 				messages: await convertToModelMessages(messages),
 				tools,
