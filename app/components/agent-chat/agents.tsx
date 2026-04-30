@@ -38,13 +38,13 @@ import {
 import type { ReactNode } from "react";
 import type { ToolLabelsMap } from "./MessageBubble";
 
-export type AgentId = "email" | "invoice";
+export type AgentId = "email" | "invoice" | "router";
 
 export interface AgentDef {
 	id: AgentId;
 	/** DO class name — must match `wrangler.jsonc` `durable_objects.bindings`
 	 *  and the `useAgent({ agent: "..." })` hook argument. */
-	bindingName: "EmailAgent" | "InvoiceAgent";
+	bindingName: "EmailAgent" | "InvoiceAgent" | "RouterAgent";
 	/** Short identifier shown in the @ dropdown, chip, and message header. */
 	label: string;
 	/** One-line description shown beside the label in the @ dropdown
@@ -172,17 +172,44 @@ const INVOICE: AgentDef = {
 	],
 };
 
+const ROUTER: AgentDef = {
+	id: "router",
+	bindingName: "RouterAgent",
+	label: "assistant",
+	description: "Routes your request to the right agent",
+	icon: <RobotIcon size={12} weight="bold" />,
+	largeIcon: (
+		<RobotIcon size={24} weight="duotone" className="text-kumo-brand" />
+	),
+	toolLabels: {
+		ask_email_agent: {
+			label: "Asking email agent",
+			icon: <EnvelopeSimpleIcon size={14} weight="bold" />,
+		},
+		ask_invoice_agent: {
+			label: "Asking invoice agent",
+			icon: <ReceiptIcon size={14} weight="bold" />,
+		},
+	},
+	suggestedPrompts: [
+		"Show me the latest inbox emails",
+		"List my reimbursement bundles",
+		"Draft a reply to the latest email",
+	],
+};
+
 export const AGENTS: AgentDef[] = [EMAIL, INVOICE];
 
 export const AGENTS_BY_ID: Record<AgentId, AgentDef> = {
 	email: EMAIL,
 	invoice: INVOICE,
+	router: ROUTER,
 };
 
 export const DEFAULT_AGENT_ID: AgentId = "email";
 
 export function isAgentId(s: string): s is AgentId {
-	return s === "email" || s === "invoice";
+	return s === "email" || s === "invoice" || s === "router";
 }
 
 const SESSION_KEY_PREFIX = "agentic-inbox:lastAgent";

@@ -36,6 +36,7 @@ export { MailboxDO } from "./durableObject";
 export { EmailAgent } from "./agent";
 export { EmailMCP } from "./mcp";
 export { InvoiceAgent } from "./invoice-agent";
+export { RouterAgent } from "./router-agent";
 
 declare module "react-router" {
 	export interface AppLoadContext {

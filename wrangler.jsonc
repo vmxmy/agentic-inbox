@@ -84,6 +84,10 @@
 			{
 				"name": "INVOICE_AGENT",
 				"class_name": "InvoiceAgent"
+			},
+			{
+				"name": "ROUTER_AGENT",
+				"class_name": "RouterAgent"
 			}
 		]
 	},
@@ -110,6 +114,12 @@
 			"tag": "v4",
 			"new_sqlite_classes": [
 				"InvoiceAgent"
+			]
+		},
+		{
+			"tag": "v5",
+			"new_sqlite_classes": [
+				"RouterAgent"
 			]
 		}
 	]

@@ -5,6 +5,7 @@
 import { AIChatAgent } from "@cloudflare/ai-chat";
 import {
 	streamText,
+	generateText,
 	convertToModelMessages,
 	stepCountIs,
 	type ToolSet,
@@ -346,5 +347,28 @@ export class InvoiceAgent extends AIChatAgent<any> {
 		});
 
 		return result.toUIMessageStreamResponse();
+	}
+
+	async executeTask(task: string, contextSummary: string): Promise<string> {
+		const env = this.env as Env;
+		const mailboxId = this.name;
+		const config = await getAgentConfig(env, mailboxId);
+		const tools = createInvoiceTools(env, mailboxId);
+		const systemPrompt = resolveSystemPrompt(config.invoiceAgentSystemPrompt);
+		const cfg = await resolveLlmConfig(env);
+		const provider = getLlmProvider(env, cfg);
+		const catalog = await listLlmModels(env, { cfg });
+		const modelId = pickModel(catalog, config.invoiceModel ?? config.model, cfg.defaultModel);
+		const contextPrefix = contextSummary
+			? `Conversation context from the user's session:\n${contextSummary}\n\n`
+			: "";
+		const result = await generateText({
+			model: provider(modelId),
+			system: contextPrefix + systemPrompt,
+			messages: [{ role: "user", content: task }],
+			tools,
+			stopWhen: stepCountIs(8),
+		});
+		return result.text || "(No response)";
 	}
 }

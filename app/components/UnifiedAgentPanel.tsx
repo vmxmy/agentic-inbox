@@ -4,14 +4,12 @@
 
 import { Badge, Button, Loader, Tooltip } from "@cloudflare/kumo";
 import {
-	PencilSimpleIcon,
 	StopIcon,
 	TrashIcon,
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router";
 import type { UIMessage } from "ai";
-import { useUIStore } from "~/hooks/useUIStore";
 import {
 	AGENTS,
 	AGENTS_BY_ID,
@@ -20,90 +18,8 @@ import {
 	readLastAgent,
 	writeLastAgent,
 } from "./agent-chat/agents";
-import {
-	getToolNameFromPart,
-	MessageBubble,
-} from "./agent-chat/MessageBubble";
+import { MessageBubble } from "./agent-chat/MessageBubble";
 import MentionAutocomplete from "./agent-chat/MentionAutocomplete";
-
-// ── Typed accessors for fields not surfaced by the AI SDK v6 UIMessage ─
-//
-// AI SDK v6's `UIMessage` union deliberately hides a few runtime fields
-// that the AIChatAgent persist path stamps in (`createdAt`) or that vary
-// between part shapes (`output` / `result`). Centralising the casts here
-// keeps `as unknown as` out of the hot path and makes the assumed shape
-// explicit so a future SDK bump is easy to audit.
-
-type WithCreatedAt = { createdAt?: string | number | Date };
-type ToolPartShape = { result?: unknown; output?: unknown };
-
-function getCreatedAt(msg: UIMessage): number {
-	const stamp = (msg as unknown as WithCreatedAt).createdAt;
-	// Unpersisted streaming messages have no createdAt yet. Sorting them to 0
-	// (epoch) would place them at the top of the timeline instead of the bottom
-	// where current conversation belongs. MAX_SAFE_INTEGER puts them last so
-	// they appear below all persisted messages until the DO stamps a real date.
-	return stamp ? new Date(stamp).getTime() : Number.MAX_SAFE_INTEGER;
-}
-
-function getToolResult(part: UIMessage["parts"][number]): unknown {
-	const p = part as unknown as ToolPartShape;
-	return p.output ?? p.result;
-}
-
-// ── Email-agent-specific draft action footer ─────────────────────────
-//
-// Only the email agent has a `draft_reply` tool that produces a payload
-// the user wants to hand off to the composer. The unified panel renders
-// `renderEmailActions` only for messages tagged with `agentId === "email"`.
-
-function hasDraftReplyTool(message: UIMessage): boolean {
-	return message.parts.some(
-		(part) => getToolNameFromPart(part) === "draft_reply",
-	);
-}
-
-interface DraftReplyData {
-	to?: string;
-	subject?: string;
-	body?: string;
-	id?: string;
-}
-
-function isDraftReplyData(value: unknown): value is DraftReplyData {
-	return typeof value === "object" && value !== null;
-}
-
-function findDraftReplyData(message: UIMessage): DraftReplyData | null {
-	for (const part of message.parts) {
-		if (getToolNameFromPart(part) !== "draft_reply") continue;
-		const result = getToolResult(part);
-		if (isDraftReplyData(result)) return result;
-	}
-	return null;
-}
-
-function DraftActions({
-	onEdit,
-	disabled,
-}: {
-	onEdit: () => void;
-	disabled: boolean;
-}) {
-	return (
-		<div className="flex gap-1.5 mt-1">
-			<Button
-				variant="primary"
-				size="sm"
-				icon={<PencilSimpleIcon size={14} />}
-				onClick={onEdit}
-				disabled={disabled}
-			>
-				Edit & send in composer
-			</Button>
-		</div>
-	);
-}
 
 // ── Empty state ──────────────────────────────────────────────────────
 
@@ -199,8 +115,6 @@ function UnifiedChatConnected({
 	const [defaultAgent, setDefaultAgent] = useState<AgentId>(() =>
 		readLastAgent(mailboxId),
 	);
-	const { startCompose } = useUIStore();
-
 	// If the route changes mailbox underneath us (e.g. user navigates between
 	// mailboxes without unmounting the panel), re-read the per-mailbox preference
 	// and drop any in-progress @-mention so it doesn't carry over.
@@ -216,64 +130,33 @@ function UnifiedChatConnected({
 			el.scrollHeight - el.scrollTop - el.clientHeight < 60;
 	}, []);
 
-	// Two parallel agent connections — each agent owns its own SQLite chat
-	// history in its DO, and we merge the two message streams into a single
-	// timeline visually (sorted by createdAt).
-	const emailAgent = useAgent({ agent: "EmailAgent", name: mailboxId });
-	const invoiceAgent = useAgent({ agent: "InvoiceAgent", name: mailboxId });
-	const emailChat = useAgentChat({ agent: emailAgent });
-	const invoiceChat = useAgentChat({ agent: invoiceAgent });
+	const routerAgent = useAgent({ agent: "RouterAgent", name: mailboxId });
+	const chat = useAgentChat({ agent: routerAgent });
 
-	const isEmailStreaming =
-		emailChat.status === "streaming" || emailChat.status === "submitted";
-	const isInvoiceStreaming =
-		invoiceChat.status === "streaming" ||
-		invoiceChat.status === "submitted";
-	const isAnyStreaming = isEmailStreaming || isInvoiceStreaming;
+	const isStreaming = chat.status === "streaming" || chat.status === "submitted";
 
-	const timeline: TaggedMessage[] = useMemo(() => {
-		const tagged: TaggedMessage[] = [
-			...emailChat.messages.map(
-				(m): TaggedMessage => ({ msg: m, agentId: "email" }),
-			),
-			...invoiceChat.messages.map(
-				(m): TaggedMessage => ({ msg: m, agentId: "invoice" }),
-			),
-		];
-		return tagged.sort((a, b) => {
-			// Primary key: persist-stamped `createdAt`. Falls back to 0
-			// (see `getCreatedAt`).
-			const dt = getCreatedAt(a.msg) - getCreatedAt(b.msg);
-			if (dt !== 0) return dt;
-			// Secondary keys keep cross-agent ordering deterministic when
-			// timestamps tie or are both missing — otherwise the visual
-			// order would depend on which DO's stream landed first.
-			if (a.agentId !== b.agentId) {
-				return a.agentId < b.agentId ? -1 : 1;
-			}
-			if (a.msg.id < b.msg.id) return -1;
-			if (a.msg.id > b.msg.id) return 1;
-			return 0;
-		});
-	}, [emailChat.messages, invoiceChat.messages]);
+	const timeline: TaggedMessage[] = useMemo(
+		() => chat.messages.map((msg): TaggedMessage => ({ msg, agentId: "router" })),
+		[chat.messages],
+	);
 
 	useEffect(() => {
 		const el = scrollRef.current;
 		if (el && isNearBottomRef.current) el.scrollTop = el.scrollHeight;
-	}, [timeline.length, isEmailStreaming, isInvoiceStreaming]);
+	}, [timeline.length, isStreaming]);
 
 	const targetAgent: AgentId = pendingAgent ?? defaultAgent;
 
 	const sendToAgent = (agentId: AgentId, text: string) => {
-		if (agentId === "email") emailChat.sendMessage({ text });
-		else invoiceChat.sendMessage({ text });
+		const hint = agentId !== "router" ? `[→${agentId}] ` : "";
+		chat.sendMessage({ text: hint + text });
 		writeLastAgent(agentId, mailboxId);
 		setDefaultAgent(agentId);
 	};
 
 	const handleSend = () => {
 		const text = inputValue.trim();
-		if (!text || isAnyStreaming) return;
+		if (!text || isStreaming) return;
 		sendToAgent(targetAgent, text);
 		setInputValue("");
 		setPendingAgent(null);
@@ -287,58 +170,17 @@ function UnifiedChatConnected({
 	};
 
 	const handleStop = () => {
-		if (isEmailStreaming) emailChat.stop();
-		if (isInvoiceStreaming) invoiceChat.stop();
+		chat.stop();
 	};
 
 	const handleClearAll = () => {
-		// `setMessages([])` resets the local UIMessage[] state. The DO's
-		// SQLite-backed history (see workers/agent/index.ts:persistMessages)
-		// may persist across reloads depending on the AIChatAgent SDK
-		// path — surface that uncertainty in the prompt rather than
-		// promising a destructive backend wipe we can't verify here.
 		if (
 			window.confirm(
-				"Clear chat history for both agents on this device? Server-side history may reappear on reload.",
+				"Clear chat history on this device? Server-side history may reappear on reload.",
 			)
 		) {
-			emailChat.setMessages([]);
-			invoiceChat.setMessages([]);
+			chat.setMessages([]);
 		}
-	};
-
-	const renderEmailActions = (msg: UIMessage) => {
-		if (!hasDraftReplyTool(msg)) return null;
-		// Extract draft data from the draft_reply tool result so the "Edit
-		// & send" button can hand off the right payload to the composer.
-		const draftData = findDraftReplyData(msg);
-		return (
-			<DraftActions
-				disabled={isAnyStreaming}
-				onEdit={() => {
-					if (draftData) {
-						startCompose({
-							mode: "reply",
-							originalEmail: null,
-							draftEmail: {
-								id: draftData.id || "",
-								subject: draftData.subject || "",
-								sender: mailboxId,
-								recipient: draftData.to || "",
-								date: new Date().toISOString(),
-								read: true,
-								starred: false,
-								body: draftData.body || "",
-							},
-						});
-					} else {
-						emailChat.sendMessage({
-							text: "Let me edit this draft first. Show me what you have so I can modify it.",
-						});
-					}
-				}}
-			/>
-		);
 	};
 
 	const placeholder = pendingAgent
@@ -354,7 +196,7 @@ function UnifiedChatConnected({
 					<span className="text-xs text-kumo-subtle">Assistant</span>
 				</div>
 				<div className="flex items-center gap-1">
-					{isAnyStreaming && <Loader size="sm" />}
+					{isStreaming && <Loader size="sm" />}
 					{timeline.length > 0 && (
 						<Tooltip content="Clear chat" asChild>
 							<Button
@@ -384,17 +226,11 @@ function UnifiedChatConnected({
 									message={msg}
 									toolLabels={agent.toolLabels}
 									assistantIcon={agent.icon}
-									renderActions={
-										agentId === "email" ? renderEmailActions : undefined
-									}
 								/>
 							);
 						})}
-						{isEmailStreaming && (
-							<ThinkingIndicator agent={AGENTS_BY_ID.email} />
-						)}
-						{isInvoiceStreaming && (
-							<ThinkingIndicator agent={AGENTS_BY_ID.invoice} />
+						{isStreaming && (
+							<ThinkingIndicator agent={AGENTS_BY_ID.router} />
 						)}
 					</div>
 				)}
@@ -402,7 +238,7 @@ function UnifiedChatConnected({
 
 			{/* Composer */}
 			<div className="shrink-0 border-t border-kumo-line px-3 py-2">
-				{isAnyStreaming ? (
+				{isStreaming ? (
 					<div className="flex justify-center">
 						<Button
 							variant="secondary"
