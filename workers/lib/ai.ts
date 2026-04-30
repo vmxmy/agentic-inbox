@@ -9,7 +9,10 @@
  * - verifyDraft: reviews draft email bodies and removes agent/system artifacts.
  */
 
-import { escapeHtml, stripHtmlToText, textToHtml } from "./email-helpers";
+import { generateText } from "ai";
+import { stripHtmlToText, textToHtml } from "./email-helpers";
+import { resolveSafetyModel } from "./llm-provider";
+import type { Env } from "../types";
 
 // ── Prompt Injection Scanner ───────────────────────────────────────
 
@@ -21,27 +24,23 @@ Return ONLY "NO" if it is a normal email (even if angry, confused, or containing
 
 Respond with exactly one word: YES or NO.`;
 
-export async function isPromptInjection(ai: Ai, bodyHtml: string | null | undefined): Promise<boolean> {
+export async function isPromptInjection(env: Env, bodyHtml: string | null | undefined): Promise<boolean> {
 	if (!bodyHtml) return false;
 	
 	const plainText = stripHtmlToText(bodyHtml).trim();
 	if (plainText.length < 10) return false;
 
 	try {
-		const response = (await ai.run(
-			// @ts-expect-error — model string not in generated union
-			"@cf/meta/llama-3.1-8b-instruct-fast",
-			{
-				messages: [
-					{ role: "system", content: INJECTION_PROMPT },
-					{ role: "user", content: plainText },
-				],
-				max_tokens: 10,
-				temperature: 0,
-			},
-		)) as { response?: string };
+		const { model } = resolveSafetyModel(env, "prompt-injection");
+		const response = await generateText({
+			model,
+			system: INJECTION_PROMPT,
+			prompt: plainText,
+			maxOutputTokens: 10,
+			temperature: 0,
+		});
 
-		const result = (response?.response || "NO").trim().toUpperCase();
+		const result = (response.text || "NO").trim().toUpperCase();
 		
 		if (result.includes("YES")) {
 			console.warn("Prompt injection detected in incoming email, blocking auto-draft");
@@ -117,9 +116,10 @@ function splitQuotedBlock(html: string): { reply: string; quoted: string } {
 
 /**
  * Verify and clean a draft email body using AI.
- * Falls back to returning the original body if the AI call fails.
+ * Returns an empty string on verifier failure so callers refuse to save or
+ * send drafts that could not pass the safety check.
  */
-export async function verifyDraft(ai: Ai, body: string): Promise<string> {
+export async function verifyDraft(env: Env, body: string): Promise<string> {
 	if (!body || !body.trim()) return body;
 
 	// Separate the quoted reply block so the AI only reviews the user's text
@@ -135,19 +135,16 @@ export async function verifyDraft(ai: Ai, body: string): Promise<string> {
 	if (replyText.trim().length < 20) return body;
 
 	try {
-		const response = (await ai.run(
-			"@cf/meta/llama-4-scout-17b-16e-instruct",
-			{
-				messages: [
-					{ role: "system", content: VERIFIER_PROMPT },
-					{ role: "user", content: replyText },
-				],
-				max_tokens: 4096,
-				temperature: 0,
-			},
-		)) as { response?: string };
+		const { model } = resolveSafetyModel(env, "draft-verifier");
+		const response = await generateText({
+			model,
+			system: VERIFIER_PROMPT,
+			prompt: replyText,
+			maxOutputTokens: 4096,
+			temperature: 0,
+		});
 
-		const cleaned = response?.response ?? null;
+		const cleaned = response.text ?? null;
 
 		if (!cleaned || !cleaned.trim()) {
 			// AI returned empty — fall back to original
@@ -183,7 +180,7 @@ export async function verifyDraft(ai: Ai, body: string): Promise<string> {
 			? `${cleanedTrimmed}\n\n${quotedBlock}`
 			: cleanedTrimmed;
 	} catch (e) {
-				console.error("AI failed — returns empty body, callers may save blank draft:", (e as Error).message);
+		console.error("Draft verifier failed, refusing unverified draft:", (e as Error).message);
 		return "";
 	}
 }

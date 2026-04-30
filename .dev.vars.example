@@ -1,3 +1,11 @@
 # Cloudflare Access (required in production). TEAM_DOMAIN may be the base Access URL or the full /cdn-cgi/access/certs URL.
 POLICY_AUD=your-access-policy-audience-tag
 TEAM_DOMAIN=https://your-team.cloudflareaccess.com
+
+# Optional OpenAI-compatible endpoint for EmailAgent inference.
+# If omitted, the agent falls back to the Workers AI binding.
+LLM_BASE_URL=https://your-llm-proxy.example.com/v1
+LLM_DEFAULT_MODEL=your-default-chat-model
+# Optional: use a separate model for prompt-injection scanning and draft verification.
+LLM_SAFETY_MODEL=your-safety-chat-model
+LLM_API_KEY=your-llm-api-key
