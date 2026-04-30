@@ -138,6 +138,26 @@ npm run dev
 npm run deploy
 ```
 
+### CI/CD
+
+Pull requests and pushes to `main` run the GitHub Actions `test` workflow. It
+installs dependencies, runs `npm test`, runs the full `npm run verify` gate, and
+then runs `npm run build`; all three gates must pass before the workflow is
+green.
+
+Production deployment is intentionally separate from CI. Use the manual
+`deploy` workflow in GitHub Actions when you are ready to promote a commit. The
+workflow targets the `production` environment, so configure environment
+reviewers/protection in GitHub and provide these repository or environment
+secrets:
+
+- `CLOUDFLARE_API_TOKEN` — a token allowed to deploy this Worker.
+- `CLOUDFLARE_ACCOUNT_ID` — the Cloudflare account that owns the Worker.
+
+Worker runtime secrets such as `INTERNAL_SECRET`, `LLM_API_KEY`, and
+`MCP_BEARER_KEK_CURRENT` are still managed through Wrangler secrets and are not
+stored in the GitHub workflow file.
+
 ## Prerequisites
 
 - Cloudflare account with a domain
