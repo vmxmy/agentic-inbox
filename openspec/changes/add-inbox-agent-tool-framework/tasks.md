@@ -36,19 +36,19 @@
 
 ## 4. Tool Capability Framework
 
-- [ ] 4.1 Define `ToolCapability`, tool surface identifiers, permission metadata, and `ToolExecutionContext`.
-- [ ] 4.2 Implement a built-in tool registry with lookup and filtering helpers.
-- [ ] 4.3 Register existing email agent operations as built-in tool capabilities.
-- [ ] 4.4 Filter agent tools by inbox profile, effective agent profile, and `agent` surface.
-- [ ] 4.5 Filter MCP tools by inbox profile, effective agent profile, and `mcp` surface.
-- [ ] 4.6 Reject execution attempts for unregistered, disabled, or surface-incompatible tools.
-- [ ] 4.7 Ensure tool executors use `ToolExecutionContext` for inbox and environment access.
+- [x] 4.1 Define `ToolCapability`, tool surface identifiers, permission metadata, and `ToolExecutionContext`.
+- [x] 4.2 Implement a built-in tool registry with lookup and filtering helpers.
+- [x] 4.3 Register existing email agent operations as built-in tool capabilities.
+- [x] 4.4 Filter agent tools by inbox profile, effective agent profile, and `agent` surface.
+- [x] 4.5 Filter MCP tools by inbox profile, effective agent profile, and `mcp` surface.
+- [x] 4.6 Reject execution attempts for unregistered, disabled, or surface-incompatible tools.
+- [x] 4.7 Ensure tool executors use `ToolExecutionContext` for inbox and environment access.
 
 ## 5. Integration
 
 - [ ] 5.1 Update inbound email handling to pass resolved inbox and agent profiles into automation.
 - [x] 5.2 Update UI/API mailbox operations only as needed to preserve existing behavior through the inbox profile adapter.
-- [ ] 5.3 Update MCP listing and execution to use the shared registry instead of a separate tool definition path.
+- [x] 5.3 Update MCP listing and execution to use the shared registry instead of a separate tool definition path.
 - [ ] 5.4 Keep this change free of required D1 migrations, organization tenancy, billing, custom domains, and domain-specific agents.
 
 ## 6. Verification
@@ -56,7 +56,7 @@
 - [ ] 6.1 Add tests or type-level checks for legacy settings to `InboxProfile` defaulting.
 - [ ] 6.2 Add tests for known and unknown inbound recipient resolution.
 - [x] 6.3 Add tests for default and custom `AgentProfile` resolution.
-- [ ] 6.4 Add tests for tool filtering by agent surface, MCP surface, enabled tools, and unregistered tool ids.
+- [x] 6.4 Add tests for tool filtering by agent surface, MCP surface, enabled tools, and unregistered tool ids.
 - [ ] 6.5 Verify the default email agent can still perform existing email operations.
 - [ ] 6.6 Verify MCP does not list or execute tools that are disabled or not declared for MCP.
 - [ ] 6.7 Run `npm run typecheck`.
