@@ -34,6 +34,7 @@
 - [x] 3.4 Update `EmailAgent` to receive resolved profile behavior instead of hardcoding all behavior internally.
 - [x] 3.5 Ensure inboxes without custom profile metadata continue to use the default email agent behavior.
 - [x] 3.6 Route EmailAgent inference through `LLM_BASE_URL`/`LLM_DEFAULT_MODEL` when configured, with Workers AI fallback.
+- [x] 3.7 Route safety checks through `LLM_SAFETY_MODEL`/`LLM_DEFAULT_MODEL` when configured, with Workers AI fallback.
 
 ## 4. Tool Capability Framework
 
@@ -63,3 +64,4 @@
 - [x] 6.7 Run `npm run typecheck`.
 - [x] 6.8 Run `npm run build`.
 - [x] 6.9 Add compile-only checks for OpenAI-compatible provider selection and model-id fallback behavior.
+- [x] 6.10 Add compile-only checks for safety model provider selection and fallback behavior.

@@ -17,8 +17,12 @@ import {
 import {
 	resolveAgentModel,
 	resolveAgentModelId,
+	resolveSafetyModel,
+	resolveSafetyModelId,
 	type AgentModelProvider,
 	type ResolvedAgentModel,
+	type ResolvedSafetyModel,
+	type SafetyModelPurpose,
 } from "./llm-provider";
 import type { Env } from "../types";
 
@@ -37,6 +41,14 @@ type _ProviderShape = Expect<
 
 type _ResolvedShape = Expect<
 	Equal<keyof ResolvedAgentModel, "model" | "modelId" | "provider">
+>;
+
+type _SafetyPurposeShape = Expect<
+	Equal<SafetyModelPurpose, "prompt-injection" | "draft-verifier">
+>;
+
+type _ResolvedSafetyShape = Expect<
+	Equal<keyof ResolvedSafetyModel, "model" | "modelId" | "provider" | "purpose">
 >;
 
 // --- Inert fixtures --------------------------------------------------------
@@ -116,7 +128,54 @@ export function verifyOpenAiCompatibleProviderSelection(): ResolvedAgentModel {
 	return resolved;
 }
 
+// --- Case 5: Safety models use Workers AI defaults without LLM_BASE_URL ----
+
+export function verifyWorkersAiSafetyModels(): string[] {
+	const injectionModel = resolveSafetyModelId(
+		FAKE_ENV,
+		"prompt-injection",
+		"workers-ai",
+	);
+	const verifierModel = resolveSafetyModelId(
+		FAKE_ENV,
+		"draft-verifier",
+		"workers-ai",
+	);
+	if (injectionModel !== "@cf/meta/llama-3.1-8b-instruct-fast") {
+		throw new Error("prompt-injection Workers AI model drift");
+	}
+	if (verifierModel !== "@cf/meta/llama-4-scout-17b-16e-instruct") {
+		throw new Error("draft-verifier Workers AI model drift");
+	}
+	return [injectionModel, verifierModel];
+}
+
+// --- Case 6: LLM_SAFETY_MODEL overrides the default OpenAI-compatible model -
+
+export function verifyOpenAiCompatibleSafetyModelOverride(): ResolvedSafetyModel {
+	const resolved = resolveSafetyModel(
+		{
+			LLM_BASE_URL: "https://llm.example.test/v1",
+			LLM_DEFAULT_MODEL: "glm-5.1",
+			LLM_SAFETY_MODEL: "safety-specialist",
+		} as unknown as Env,
+		"draft-verifier",
+	);
+	if (resolved.provider !== "openai-compatible") {
+		throw new Error("LLM_BASE_URL should select OpenAI-compatible safety model");
+	}
+	if (resolved.modelId !== "safety-specialist") {
+		throw new Error("LLM_SAFETY_MODEL should override LLM_DEFAULT_MODEL");
+	}
+	if (resolved.purpose !== "draft-verifier") {
+		throw new Error("safety model purpose was not preserved");
+	}
+	return resolved;
+}
+
 export type LlmProviderVerificationCases = {
 	providerShape: _ProviderShape;
 	resolvedShape: _ResolvedShape;
+	safetyPurposeShape: _SafetyPurposeShape;
+	resolvedSafetyShape: _ResolvedSafetyShape;
 };

@@ -28,6 +28,13 @@ The system SHALL define agent behavior through an agent profile containing ident
 - **WHEN** the agent runtime selects the inference model
 - **THEN** the system SHALL preserve the agent profile's custom model identifier instead of replacing it with the environment default
 
+#### Scenario: Safety checks use the configured provider
+- **GIVEN** the runtime environment configures an OpenAI-compatible LLM base URL
+- **WHEN** the system performs prompt-injection scanning or draft verification
+- **THEN** the system SHALL use the configured OpenAI-compatible safety model when present
+- **AND** the system SHALL use the configured default OpenAI-compatible model when no dedicated safety model is present
+- **AND** the system SHALL fall back to the original Workers AI safety models when the OpenAI-compatible base URL is not configured
+
 ### Requirement: Inbox agent behavior is resolved before execution
 The system SHALL resolve the effective agent profile for an inbox before constructing prompts, tools, or automation behavior.
 

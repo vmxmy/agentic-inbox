@@ -80,8 +80,14 @@ When `LLM_BASE_URL` is configured, `EmailAgent` uses an OpenAI-compatible chat
 provider for inference and maps the default `AgentProfile` model to
 `LLM_DEFAULT_MODEL`. If an agent profile pins a custom `modelId`, that pinned id
 is preserved. If `LLM_BASE_URL` is absent, the runtime falls back to the
-original Workers AI provider and default `@cf/...` model. Safety checks that
-already depend on the Workers AI binding remain unchanged in this slice.
+original Workers AI provider and default `@cf/...` model.
+
+Safety checks use the same provider boundary. Prompt-injection scanning and
+draft verification use `LLM_SAFETY_MODEL` when configured, otherwise
+`LLM_DEFAULT_MODEL` when `LLM_BASE_URL` is present. Without `LLM_BASE_URL`, they
+fall back to their original Workers AI safety models. This keeps the safety
+policy centralized while preserving the current fail-closed prompt-injection
+behavior.
 
 Alternatives considered:
 
