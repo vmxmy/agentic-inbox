@@ -201,8 +201,12 @@ function sessionKey(mailboxId?: string | null): string {
  */
 export function readLastAgent(mailboxId?: string | null): AgentId {
 	if (typeof window === "undefined") return DEFAULT_AGENT_ID;
-	const raw = window.sessionStorage.getItem(sessionKey(mailboxId));
-	return raw && isAgentId(raw) ? raw : DEFAULT_AGENT_ID;
+	try {
+		const raw = window.sessionStorage.getItem(sessionKey(mailboxId));
+		return raw && isAgentId(raw) ? raw : DEFAULT_AGENT_ID;
+	} catch {
+		return DEFAULT_AGENT_ID;
+	}
 }
 
 export function writeLastAgent(
@@ -210,5 +214,9 @@ export function writeLastAgent(
 	mailboxId?: string | null,
 ): void {
 	if (typeof window === "undefined") return;
-	window.sessionStorage.setItem(sessionKey(mailboxId), id);
+	try {
+		window.sessionStorage.setItem(sessionKey(mailboxId), id);
+	} catch {
+		// ignore (private browsing / quota exceeded)
+	}
 }
