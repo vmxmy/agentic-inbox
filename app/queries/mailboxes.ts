@@ -4,7 +4,13 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import api from "~/services/api";
-import type { InboxNamespace, Mailbox } from "~/types";
+import type {
+	InboxAgentConfigOptions,
+	InboxAgentConfigPatch,
+	InboxAgentConfigResponse,
+	InboxNamespace,
+	Mailbox,
+} from "~/types";
 import { queryKeys } from "./keys";
 
 export function useMailboxes() {
@@ -77,6 +83,41 @@ export function useDeleteMailbox() {
 	return useMutation({
 		mutationFn: (mailboxId: string) => api.deleteMailbox(mailboxId),
 		onSuccess: () => {
+			qc.invalidateQueries({ queryKey: queryKeys.mailboxes.all });
+		},
+	});
+}
+
+export function useInboxAgentConfigOptions(enabled: boolean) {
+	return useQuery<InboxAgentConfigOptions>({
+		queryKey: queryKeys.inboxes.agentConfigOptions,
+		queryFn: () => api.getInboxAgentConfigOptions(),
+		enabled,
+		staleTime: 5 * 60 * 1000,
+	});
+}
+
+export function useInboxAgentConfig(mailboxId: string | undefined, enabled: boolean) {
+	return useQuery<InboxAgentConfigResponse>({
+		queryKey: mailboxId
+			? queryKeys.inboxes.agentConfig(mailboxId)
+			: ["inboxes", "_disabled", "agent-config"],
+		queryFn: () => api.getInboxAgentConfig(mailboxId!),
+		enabled: !!mailboxId && enabled,
+	});
+}
+
+export function useUpdateInboxAgentConfig() {
+	const qc = useQueryClient();
+	return useMutation({
+		mutationFn: ({
+			mailboxId,
+			patch,
+		}: { mailboxId: string; patch: InboxAgentConfigPatch }) =>
+			api.updateInboxAgentConfig(mailboxId, patch),
+		onSuccess: (data, { mailboxId }) => {
+			qc.setQueryData(queryKeys.inboxes.agentConfig(mailboxId), data);
+			qc.invalidateQueries({ queryKey: queryKeys.mailboxes.detail(mailboxId) });
 			qc.invalidateQueries({ queryKey: queryKeys.mailboxes.all });
 		},
 	});

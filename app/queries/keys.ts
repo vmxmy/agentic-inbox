@@ -10,6 +10,9 @@ export const queryKeys = {
 	},
 	inboxes: {
 		namespace: ["inboxes", "namespace"] as const,
+		agentConfig: (mailboxId: string) =>
+			["inboxes", mailboxId, "agent-config"] as const,
+		agentConfigOptions: ["inboxes", "agent-config", "options"] as const,
 	},
 	emails: {
 		list: (mailboxId: string, params: Record<string, string>) =>

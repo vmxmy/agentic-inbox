@@ -33,12 +33,21 @@ import {
 	ensureSettingsInboxProfile,
 	getMailboxStubForInbox,
 	listInboxProfiles,
+	loadInboxProfile,
 	loadMailboxSettings,
 	mailboxSettingsKey,
 	mergeSettingsPreservingInboxProfile,
 	normalizeInboxAddress,
 	resolveInboundInboxProfile,
 } from "./lib/inbox-profile";
+import {
+	appendInboxAgentConfigAudit,
+	applyInboxAgentConfigUpdate,
+	buildInboxAgentConfigOptions,
+	buildInboxAgentConfigResponse,
+	checkStructuredConfigEligibility,
+	validateInboxAgentConfigPatch,
+} from "./lib/inbox-agent-config";
 
 type AppContext = Context<MailboxContext>;
 
@@ -142,6 +151,103 @@ app.use("/api/*", cors({
 }));
 app.use("/api/v1/mailboxes/:mailboxId/*", requireMailbox);
 
+// -- Inbox agent configuration handlers (Phase 2 control plane) ----
+// Defined before route registration so the same handlers can be mounted
+// under both /mailboxes and /inboxes (the design-preferred path).
+
+async function handleAgentConfigGet(c: AppContext) {
+	const mailboxId = c.req.param("mailboxId")!;
+	const profile = await loadInboxProfile(c.env, mailboxId);
+	if (!profile) return c.json({ error: "Not found" }, 404);
+	const eligibility = checkStructuredConfigEligibility(
+		profile.settings,
+		c.var.requestIdentity?.email ?? null,
+	);
+	if (!eligibility.ok) {
+		const status = eligibility.code === "not_owner" ? 404 : 409;
+		return c.json({ error: eligibility.message, code: eligibility.code }, status);
+	}
+	const config = await buildInboxAgentConfigResponse(c.env, profile);
+	return c.json(config);
+}
+
+async function handleAgentConfigPatch(c: AppContext) {
+	const mailboxId = c.req.param("mailboxId")!;
+	const profile = await loadInboxProfile(c.env, mailboxId);
+	if (!profile) return c.json({ error: "Not found" }, 404);
+	const eligibility = checkStructuredConfigEligibility(
+		profile.settings,
+		c.var.requestIdentity?.email ?? null,
+	);
+	if (!eligibility.ok) {
+		const status = eligibility.code === "not_owner" ? 404 : 409;
+		return c.json({ error: eligibility.message, code: eligibility.code }, status);
+	}
+
+	let body: unknown;
+	try {
+		body = await c.req.json();
+	} catch {
+		return c.json({ error: "Invalid JSON body" }, 400);
+	}
+	const validation = validateInboxAgentConfigPatch(body, c.env);
+	if (!validation.ok) {
+		return c.json({ error: "Invalid configuration", errors: validation.errors }, 400);
+	}
+
+	const currentConfig = await buildInboxAgentConfigResponse(c.env, profile);
+	if (currentConfig.revision !== validation.patch.expectedRevision) {
+		return c.json(
+			{
+				error: "Configuration was changed by another session. Reload and try again.",
+				code: "revision_conflict",
+				currentRevision: currentConfig.revision,
+			},
+			409,
+		);
+	}
+
+	const previousSettings = profile.settings;
+	const previousRevision = currentConfig.revision;
+	const updateResult = await applyInboxAgentConfigUpdate(
+		profile.storageMailboxId,
+		previousSettings,
+		validation.patch,
+	);
+
+	if (updateResult.changedFields.length === 0) {
+		const refreshed = await buildInboxAgentConfigResponse(c.env, profile);
+		return c.json(refreshed);
+	}
+
+	await c.env.BUCKET.put(
+		mailboxSettingsKey(mailboxId),
+		JSON.stringify(updateResult.settings),
+	);
+
+	c.executionCtx.waitUntil(
+		appendInboxAgentConfigAudit({
+			env: c.env,
+			mailboxId,
+			canonicalAddress: profile.canonicalAddress,
+			storageMailboxId: profile.storageMailboxId,
+			actorEmail: c.var.requestIdentity?.email ?? null,
+			previousSettings,
+			nextSettings: updateResult.settings,
+			previousRevision,
+			nextRevision: updateResult.revision,
+			changedFields: updateResult.changedFields,
+		}),
+	);
+
+	const refreshedProfile = await loadInboxProfile(c.env, mailboxId);
+	const refreshed = await buildInboxAgentConfigResponse(
+		c.env,
+		refreshedProfile ?? profile,
+	);
+	return c.json(refreshed);
+}
+
 // -- Config ---------------------------------------------------------
 
 app.get("/api/v1/config", (c) => {
@@ -149,6 +255,12 @@ app.get("/api/v1/config", (c) => {
 	const domains = domainsRaw.split(",").map((d) => d.trim()).filter(Boolean);
 	const emailAddresses = configuredEmailAddresses(c.env);
 	return c.json({ domains, emailAddresses });
+});
+
+// -- Inbox agent configuration (Phase 2 control plane) --------------
+
+app.get("/api/v1/inbox-config/options", (c) => {
+	return c.json(buildInboxAgentConfigOptions(c.env));
 });
 
 // -- AI Inboxes -----------------------------------------------------
@@ -292,10 +404,23 @@ app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 	const key = mailboxSettingsKey(mailboxId);
 	const existingSettings = await loadMailboxSettings(c.env, mailboxId);
 	if (existingSettings === null) return c.json({ error: "Not found" }, 404);
+	const userOwnedInbox = readUserOwnedInboxMetadata(existingSettings);
+	if (userOwnedInbox && c.var.requestIdentity?.email !== userOwnedInbox.ownerEmail) {
+		return c.json({ error: "Not found" }, 404);
+	}
 	const finalSettings = mergeSettingsPreservingInboxProfile(existingSettings, settings, mailboxId);
 	await c.env.BUCKET.put(key, JSON.stringify(finalSettings));
 	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings: finalSettings });
 });
+
+app.get("/api/v1/mailboxes/:mailboxId/agent-config", handleAgentConfigGet);
+app.patch("/api/v1/mailboxes/:mailboxId/agent-config", handleAgentConfigPatch);
+
+// Design-preferred /inboxes/:mailboxId/agent-config aliases. Both paths
+// hit the same handlers, so existing UIs keep working while new clients
+// use the inbox-scoped path.
+app.get("/api/v1/inboxes/:mailboxId/agent-config", handleAgentConfigGet);
+app.patch("/api/v1/inboxes/:mailboxId/agent-config", handleAgentConfigPatch);
 
 app.delete("/api/v1/mailboxes/:mailboxId", async (c) => {
 	const mailboxId = c.req.param("mailboxId")!;

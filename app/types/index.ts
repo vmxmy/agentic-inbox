@@ -85,3 +85,98 @@ export interface Folder {
 	name: string;
 	unreadCount: number;
 }
+
+// -- Inbox agent configuration (Phase 2 control plane) ---------------
+
+export const INBOX_AGENT_CONFIG_SCHEMA_VERSION = 1 as const;
+
+export interface AgentModelOption {
+	id: string;
+	displayName: string;
+	tier: "default" | "workers-ai" | "openai-compatible" | "deprecated";
+	description?: string;
+}
+
+export interface AgentToolCatalogEntry {
+	id: string;
+	displayName: string;
+	description: string;
+	surfaces: string[];
+	permissions: {
+		mutates: boolean;
+		sendsMail: boolean;
+		global: boolean;
+		readsInbox: boolean;
+	};
+	editable: boolean;
+	lockReason?: string;
+	defaultEnabled: boolean;
+}
+
+export interface AgentSafetyPolicy {
+	version: 1;
+	promptInjectionScanEnabled: boolean;
+	threadContextScanEnabled: boolean;
+	draftVerificationEnabled: boolean;
+	safetyModelId: string | null;
+	level: "off" | "standard" | "strict";
+}
+
+export interface AgentSafetyLevelOption {
+	id: AgentSafetyPolicy["level"];
+	displayName: string;
+	description: string;
+}
+
+export interface InboxAgentConfigOptions {
+	schemaVersion: typeof INBOX_AGENT_CONFIG_SCHEMA_VERSION;
+	models: AgentModelOption[];
+	defaultModelId: string;
+	tools: AgentToolCatalogEntry[];
+	defaultEnabledToolIds: string[];
+	safety: {
+		defaults: AgentSafetyPolicy;
+		levels: AgentSafetyLevelOption[];
+	};
+	defaults: {
+		systemPrompt: string;
+		automation: { inboundAutoDraftEnabled: boolean };
+	};
+	lockedToolIds: string[];
+}
+
+export interface InboxAgentConfigResponse {
+	schemaVersion: typeof INBOX_AGENT_CONFIG_SCHEMA_VERSION;
+	revision: string;
+	inboxId: string;
+	canonicalAddress: string;
+	displayName: string;
+	agent: {
+		profileId: string;
+		displayName: string;
+		description?: string;
+		systemPrompt: string;
+		modelId: string;
+		modelDeprecated: boolean;
+		automation: { inboundAutoDraftEnabled: boolean };
+	};
+	tools: {
+		enabledToolIds: string[];
+		usingDefaultPreset: boolean;
+	};
+	safety: AgentSafetyPolicy;
+}
+
+export interface InboxAgentConfigPatch {
+	schemaVersion: typeof INBOX_AGENT_CONFIG_SCHEMA_VERSION;
+	expectedRevision: string;
+	agent?: {
+		displayName?: string;
+		description?: string;
+		systemPrompt?: string;
+		modelId?: string;
+		automation?: { inboundAutoDraftEnabled?: boolean };
+	};
+	tools?: { enabledToolIds?: string[] };
+	safety?: Partial<AgentSafetyPolicy>;
+}
