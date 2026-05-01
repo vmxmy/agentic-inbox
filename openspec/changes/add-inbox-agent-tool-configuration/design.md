@@ -33,6 +33,9 @@ about safely exposing it as product configuration.
 - Make the frontend settings page understandable to ordinary users.
 - Make tool permissions and safety behavior explicit.
 - Preserve compatibility for legacy mailboxes and existing prompt override.
+- Keep configuration choices backend-owned: model options, tool editability,
+  default tool preset, safety defaults, and reset defaults all come from the
+  Worker, not from hardcoded frontend policy.
 
 **Non-Goals:**
 
@@ -40,28 +43,37 @@ about safely exposing it as product configuration.
 - Agent marketplace / template library.
 - External MCP server installation UI.
 - Arbitrary user-provided tools.
+- Ordinary-user automatic sending.
 - Multi-tenant admin roles.
 - Stable `inbox_id` migration.
+- Legacy mailbox migration or legacy mailbox config writes.
 
 ## Decisions
 
-### Decision: Add a dedicated config API instead of expanding raw mailbox update
+### Decision: Add a dedicated user-owned config API instead of expanding raw mailbox update
 
 Use product-facing endpoints such as:
 
 ```text
 GET   /api/v1/inboxes/:mailboxId/agent-config
 PATCH /api/v1/inboxes/:mailboxId/agent-config
-GET   /api/v1/tools/catalog
+GET   /api/v1/inbox-config/options
 ```
 
 The exact route names can be adjusted during implementation, but the important
 boundary is that the new endpoint accepts a constrained config shape rather than
 an arbitrary `settings` object.
 
+The structured config API is limited to Phase 1 user-owned inboxes. Legacy
+mailboxes may still show their current display name and legacy prompt settings,
+but the new Agent/Tools/Safety configuration flow must be read-only or hidden
+for legacy records until an owner model exists for them.
+
 Why: `PUT /api/v1/mailboxes/:mailboxId` exists for compatibility and legacy
 settings. A structured endpoint is easier to validate, easier to document, and
 less likely to accidentally let clients overwrite identity/routing fields.
+Limiting writes to user-owned inboxes avoids turning the transitional legacy
+mailbox model into a long-term authorization contract.
 
 ### Decision: Store the default custom profile per inbox under `settings.agentProfiles`
 
@@ -92,11 +104,36 @@ shape should reuse the current resolver:
 This avoids introducing a separate global agent-profile store before we have
 multiple reusable profiles.
 
-### Decision: Tool catalog is backend-owned
+### Decision: Model selection is backend allowlist, not free text
 
-The frontend should not hardcode the canonical tool list. It may provide local
-icons/grouping, but stable ids, descriptions, surfaces, and permission flags
-come from the backend registry.
+The frontend should not provide a free-text model id field. The Worker should
+return a small backend-owned model catalog with stable ids and user-facing
+metadata, for example:
+
+```json
+{
+  "models": [
+    { "id": "glm-5.1", "displayName": "GLM 5.1", "tier": "default" },
+    { "id": "@cf/moonshotai/kimi-k2.5", "displayName": "Kimi K2.5", "tier": "workers-ai" }
+  ],
+  "defaultModelId": "glm-5.1"
+}
+```
+
+If an inbox already has a saved model id that is not in the current allowlist,
+the read endpoint may return it as a non-editable or deprecated current value so
+the UI can explain the state and let the user reset to a supported model.
+
+Why: free text would push provider availability, billing tier, token limits, and
+safety compatibility into an unvalidated string. The provider registry should be
+flexible; the user input should be governed.
+
+### Decision: Tool catalog and editability are backend-owned
+
+The frontend should not hardcode the canonical tool list or decide which tools
+are editable. It may provide local icons/grouping, but stable ids, descriptions,
+surfaces, permission flags, editability, and lock reasons come from the backend
+registry/config options.
 
 Tool permission metadata should be rendered in human terms:
 
@@ -104,10 +141,23 @@ Tool permission metadata should be rendered in human terms:
 - writes drafts / changes folders
 - sends external email
 - global / no inbox context
+- elevated / system-only capability
 
 This is necessary before we let users turn capabilities on or off.
 
-### Decision: Default user-facing tool preset should be safe
+### Decision: Send-mail tools are visible but locked in Phase 2
+
+Tools that send external mail, such as `send_email` and `send_reply`, should be
+visible as high-risk/elevated capabilities but not editable by ordinary users in
+Phase 2. The backend should reject any config write that attempts to enable them
+and return a stable lock reason such as `drafts_only_in_phase2`.
+
+Why: hiding them makes the product feel arbitrary, but enabling them violates
+this phase's product promise: the agent drafts, the human sends. It also risks
+root-domain sending reputation if prompt injection or misconfiguration causes
+unwanted outbound mail.
+
+### Decision: Default user-facing tool preset should be explicit and safe
 
 The legacy runtime currently treats empty `enabledToolIds` as “all built-ins” to
 preserve compatibility. The configuration UI should not rely on that implicit
@@ -121,9 +171,8 @@ Recommended initial product preset for ordinary inboxes:
 - update/delete drafts
 - move/mark read if needed
 
-External send tools should remain disabled unless a later product decision adds
-a clear review/confirmation model. This keeps the product promise aligned with
-“agent drafts, human sends”.
+External send tools remain locked until a future product slice adds a clear
+review/confirmation, quota, audit, and sender reputation model.
 
 ### Decision: Safety policy is explicit per inbox but defaults to safe-on
 
@@ -136,7 +185,8 @@ Add a settings-owned safety policy such as:
     "promptInjectionScanEnabled": true,
     "threadContextScanEnabled": true,
     "draftVerificationEnabled": true,
-    "safetyModelId": null
+    "safetyModelId": null,
+    "level": "standard"
   }
 }
 ```
@@ -144,9 +194,36 @@ Add a settings-owned safety policy such as:
 The runtime should continue to fail safe by default: missing safety settings
 mean scans and verification remain enabled.
 
-A per-inbox `safetyModelId` is optional. If absent, the existing env-level
-`LLM_SAFETY_MODEL` / `LLM_DEFAULT_MODEL` / Workers AI fallback chain remains
-in effect.
+Safety level and safety model choices should be backend-owned options, not free
+frontend strings. A per-inbox `safetyModelId` is optional. If absent, the
+existing env-level `LLM_SAFETY_MODEL` / `LLM_DEFAULT_MODEL` / Workers AI
+fallback chain remains in effect.
+
+### Decision: Config writes are versioned, optimistic, and auditable
+
+Each saved config should include a schema version. Update requests should use a
+revision or ETag-style precondition so two browser tabs do not silently overwrite
+each other. The exact storage mechanism can be simple for R2 MVP, but the API
+contract should include conflict detection.
+
+Every successful config change should append a small audit entry containing at
+least actor, inbox address/id, changed fields, timestamp, and a redacted old/new
+summary. In this MVP the audit log can live in R2 next to mailbox settings, but
+it must not depend on a future D1 migration.
+
+### Decision: Config changes affect future runs, not in-flight runs
+
+The simplest operational semantics are: a saved config applies to the next agent
+run for that inbox. In-flight EmailAgent work is not interrupted or retroactively
+changed. This avoids needing Durable Object invalidation/broadcast mechanics in
+Phase 2.
+
+### Decision: MCP can read config but cannot write it in Phase 2
+
+If MCP exposes configuration at all in Phase 2, it should be read-only. Writes
+remain through HTTP API routes protected by the normal user-owned inbox
+authorization and UI warnings. This prevents MCP clients from bypassing the
+product safety explanations around high-risk tools.
 
 ### Decision: Frontend should teach the user's mental model
 
@@ -157,15 +234,23 @@ Settings should be organized around product concepts, not internal classes:
 - **Safety**: malicious-instruction detection and draft cleanup.
 
 The UI should explain that these settings apply only to the current AI Inbox.
+It should also include reset-to-defaults affordances backed by server-provided
+defaults.
 
 ## Risks / Trade-offs
 
 - **Risk: unsafe tool exposure.** Mitigation: backend catalog permission labels,
-  explicit allow-list on save, and keep send tools disabled by default.
+  explicit allow-list on save, and keep send tools locked server-side.
 - **Risk: raw settings and config endpoint drift.** Mitigation: implement config
   assembly/merge in one helper and use compile verification.
 - **Risk: user prompt breaks system safety rules.** Mitigation: keep invariant
   runtime guardrails outside user-editable prompt and retain safety scans.
+- **Risk: model id drift.** Mitigation: backend-owned model options, deprecated
+  current-value handling, and reset-to-defaults.
+- **Risk: silent lost updates.** Mitigation: version/revision precondition on
+  config writes.
+- **Risk: no accountability for risky changes.** Mitigation: R2 audit log for
+  config changes.
 - **Risk: too much UI at once.** Mitigation: structured settings page only; no
   workflow builder or template marketplace in this slice.
 
@@ -175,14 +260,16 @@ The UI should explain that these settings apply only to the current AI Inbox.
   agent and safe-on safety policy.
 - Existing `settings.agentSystemPrompt` remains readable as a legacy prompt
   override.
-- First save through the new settings UI writes the structured config shape.
+- First save through the new settings UI writes the structured config shape,
+  schema version, explicit tool allow-list, and safety defaults.
+- Legacy mailboxes do not receive new config writes in Phase 2; they remain on
+  existing compatibility settings.
 - No destructive R2 rewrite is required.
 
 ## Open Questions
 
-- Should model selection be a free text input in Phase 2, or a small server
-  returned list containing the current default and custom value?
-- Should non-owner legacy mailboxes expose this config UI, or should the new
-  config endpoint be limited to user-owned inboxes first?
-- Should send-mail tools be completely hidden in Phase 2 or visible as disabled
-  advanced capabilities?
+- What initial backend model allowlist should ship for the current deployment?
+- Should the audit log store field-level old/new values or only redacted change
+  summaries for prompt/safety-sensitive fields?
+- Should disabled/locked send tools appear in the UI by default, or only behind
+  an “advanced capabilities” disclosure while still being returned by the API?

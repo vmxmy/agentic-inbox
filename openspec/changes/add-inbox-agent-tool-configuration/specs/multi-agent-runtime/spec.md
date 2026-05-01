@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Inbox owner can configure effective agent behavior
-The system SHALL expose a constrained per-inbox configuration surface for the effective agent profile used by that inbox.
+The system SHALL expose a constrained per-inbox configuration surface for the effective agent profile used by a user-owned inbox.
 
 #### Scenario: Owner reads current agent configuration
 - **GIVEN** a verified user owns an AI inbox
@@ -19,6 +19,25 @@ The system SHALL expose a constrained per-inbox configuration surface for the ef
 - **WHEN** the payload includes inbox address, owner, storage mailbox id, lifecycle, or other routing metadata
 - **THEN** the system SHALL reject or ignore those fields
 - **AND** the inbox identity and routing fields SHALL remain server-owned
+
+### Requirement: Agent model choices are backend-owned
+The system SHALL constrain inbox agent model selection to backend-provided options instead of accepting arbitrary free-text model identifiers.
+
+#### Scenario: Config options include model catalog
+- **GIVEN** the frontend requests inbox configuration options
+- **WHEN** the system returns model choices
+- **THEN** the response SHALL include backend-owned model ids, display names, default model id, and availability metadata
+
+#### Scenario: Unsupported model update rejected
+- **GIVEN** a client submits a model id that is not in the backend-owned model options
+- **WHEN** the system validates the inbox agent configuration update
+- **THEN** the system SHALL reject the update with a validation error
+
+#### Scenario: Existing unknown model shown as deprecated current value
+- **GIVEN** an inbox already stores a model id that is no longer in the current backend-owned options
+- **WHEN** the owner reads the inbox agent configuration
+- **THEN** the system MAY return that model as the current deprecated or custom value
+- **AND** the owner SHALL be able to reset to a supported default
 
 ### Requirement: Inbox automation policy is configurable
 The system SHALL allow an inbox owner to control whether inbound email triggers automatic draft generation for that inbox.
@@ -51,3 +70,21 @@ The system SHALL resolve an explicit safety policy for each inbox before running
 - **GIVEN** a safety policy does not pin a safety model
 - **WHEN** safety checks run
 - **THEN** the system SHALL use the existing environment-level safety model resolution fallback chain
+
+#### Scenario: Safety options are backend-owned
+- **GIVEN** the frontend requests inbox configuration options
+- **WHEN** the system returns safety choices
+- **THEN** the response SHALL include backend-owned safety defaults and allowed safety levels or controls
+
+### Requirement: Config changes apply to future agent runs
+The system SHALL define saved configuration changes as applying to future agent runs without interrupting in-flight work.
+
+#### Scenario: Saved config affects next run
+- **GIVEN** an inbox owner saves new agent, tool, or safety configuration
+- **WHEN** a later inbound email or chat action invokes the agent
+- **THEN** the runtime SHALL resolve and use the saved configuration
+
+#### Scenario: In-flight run is not retroactively changed
+- **GIVEN** an agent run is already in progress
+- **WHEN** an inbox owner saves new configuration
+- **THEN** the in-flight run MAY continue with the configuration it already resolved
