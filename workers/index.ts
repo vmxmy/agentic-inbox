@@ -21,6 +21,15 @@ import type { Env } from "./types";
 import { requireMailbox, type MailboxContext } from "./lib/mailbox";
 import { resolveAgentProfile } from "./lib/agent-profile";
 import {
+	buildUserOwnedInboxSettings,
+	defaultRootDomain,
+	deriveUserOwnedInboxAddress,
+	ensureUserMetadata,
+	readUserOwnedInboxMetadata,
+	userOwnedInboxExists,
+	validateInboxSubname,
+} from "./lib/user-owned-inbox";
+import {
 	ensureSettingsInboxProfile,
 	getMailboxStubForInbox,
 	listInboxProfiles,
@@ -40,6 +49,11 @@ const CreateMailboxBody = z.object({
 	name: z.string().min(1),
 	settings: z.record(z.any()).optional(), // unvalidated — agentSystemPrompt goes straight to AI
 });
+
+const CreateInboxBody = z.object({
+	displayName: z.string().trim().min(1).max(120),
+	subname: z.string().trim().min(1).max(128),
+}).strict();
 
 const DraftBody = z.object({
 	to: z.string().optional(),
@@ -73,6 +87,41 @@ function boolQuery(c: AppContext, key: string): boolean | undefined {
 	return v === "true" || v === "1";
 }
 
+function configuredEmailAddresses(env: Env): string[] {
+	const value = env.EMAIL_ADDRESSES as unknown;
+	if (Array.isArray(value)) return value.map(String).filter(Boolean);
+	if (typeof value === "string") {
+		return value.split(",").map((address) => address.trim()).filter(Boolean);
+	}
+	return [];
+}
+
+function mailboxResponse(profile: Awaited<ReturnType<typeof listInboxProfiles>>[number]) {
+	const userOwnedInbox = readUserOwnedInboxMetadata(profile.settings);
+	const displayName = profile.displayName || profile.canonicalAddress;
+	return {
+		id: profile.canonicalAddress,
+		email: profile.canonicalAddress,
+		name: displayName,
+		displayName,
+		settings: profile.settings,
+		userOwnedInbox,
+		...(userOwnedInbox
+			? {
+				username: userOwnedInbox.username,
+				subname: userOwnedInbox.subname,
+				rootDomain: userOwnedInbox.rootDomain,
+			}
+			: {}),
+	};
+}
+
+function userCanSeeProfile(c: AppContext, profile: Awaited<ReturnType<typeof listInboxProfiles>>[number]) {
+	const userOwnedInbox = readUserOwnedInboxMetadata(profile.settings);
+	if (!userOwnedInbox) return true;
+	return c.var.requestIdentity?.email === userOwnedInbox.ownerEmail;
+}
+
 // -- App & middleware -----------------------------------------------
 
 const app = new Hono<MailboxContext>();
@@ -98,21 +147,103 @@ app.use("/api/v1/mailboxes/:mailboxId/*", requireMailbox);
 app.get("/api/v1/config", (c) => {
 	const domainsRaw = c.env.DOMAINS || "";
 	const domains = domainsRaw.split(",").map((d) => d.trim()).filter(Boolean);
-	const emailAddresses = c.env.EMAIL_ADDRESSES ?? [];
+	const emailAddresses = configuredEmailAddresses(c.env);
 	return c.json({ domains, emailAddresses });
+});
+
+// -- AI Inboxes -----------------------------------------------------
+
+app.get("/api/v1/inboxes/me", async (c) => {
+	const identity = c.var.requestIdentity;
+	if (!identity) return c.json({ error: "Verified user identity required" }, 403);
+	const rootDomain = defaultRootDomain(c.env);
+	if (!rootDomain) return c.json({ error: "No root domain configured" }, 500);
+	const user = await ensureUserMetadata(c.env, identity.email);
+	return c.json({
+		email: identity.email,
+		username: user.username,
+		rootDomain,
+	});
+});
+
+app.post("/api/v1/inboxes", async (c) => {
+	const identity = c.var.requestIdentity;
+	if (!identity) return c.json({ error: "Verified user identity required" }, 403);
+
+	const rawBody = (await c.req.json()) as unknown;
+	if (!rawBody || typeof rawBody !== "object" || Array.isArray(rawBody)) {
+		return c.json({ error: "Request body must be an object" }, 400);
+	}
+	const rawRecord = rawBody as Record<string, unknown>;
+	for (const forbidden of ["email", "address", "username"]) {
+		if (forbidden in rawRecord) {
+			return c.json({
+				error: "AI inbox address is derived by the server; submit displayName and subname only",
+			}, 400);
+		}
+	}
+
+	const parsed = CreateInboxBody.safeParse(rawBody);
+	if (!parsed.success) {
+		return c.json({
+			error: parsed.error.issues[0]?.message ?? "Invalid AI inbox payload",
+		}, 400);
+	}
+
+	const rootDomain = defaultRootDomain(c.env);
+	if (!rootDomain) return c.json({ error: "No root domain configured" }, 500);
+
+	const subnameResult = validateInboxSubname(parsed.data.subname);
+	if (!subnameResult.ok || !subnameResult.subname) {
+		return c.json({
+			error: subnameResult.message ?? "Invalid inbox address name",
+			code: subnameResult.code,
+		}, 400);
+	}
+
+	const user = await ensureUserMetadata(c.env, identity.email);
+	const email = deriveUserOwnedInboxAddress(user.username, subnameResult.subname, rootDomain);
+	if (await userOwnedInboxExists(c.env, email)) {
+		return c.json({ error: "AI inbox address already exists", code: "duplicate_subname" }, 409);
+	}
+
+	const settings = buildUserOwnedInboxSettings({
+		address: email,
+		displayName: parsed.data.displayName,
+		ownerEmail: identity.email,
+		username: user.username,
+		subname: subnameResult.subname,
+		rootDomain,
+	});
+	await c.env.BUCKET.put(mailboxSettingsKey(email), JSON.stringify(settings));
+
+	const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(email));
+	await stub.getFolders();
+
+	return c.json({
+		id: email,
+		email,
+		name: parsed.data.displayName,
+		displayName: parsed.data.displayName,
+		username: user.username,
+		subname: subnameResult.subname,
+		rootDomain,
+		userOwnedInbox: readUserOwnedInboxMetadata(settings),
+		settings,
+	}, 201);
 });
 
 // -- Mailboxes ------------------------------------------------------
 
 app.get("/api/v1/mailboxes", async (c) => {
 	const profiles = await listInboxProfiles(c.env);
-	return c.json(profiles.map((p) => ({ id: p.canonicalAddress, email: p.canonicalAddress, name: p.canonicalAddress })));
+	return c.json(profiles.filter((p) => userCanSeeProfile(c, p)).map(mailboxResponse));
 });
 
 app.post("/api/v1/mailboxes", async (c) => {
 	const { name, settings, email: rawEmail } = CreateMailboxBody.parse(await c.req.json());
 	const email = normalizeInboxAddress(rawEmail);
-	const allowedAddresses = (c.env.EMAIL_ADDRESSES ?? []) as string[];
+	const allowedAddresses = configuredEmailAddresses(c.env);
 	if (allowedAddresses.length > 0 && !allowedAddresses.map((a) => a.toLowerCase()).includes(email)) {
 		return c.json({ error: "Mailbox creation is restricted to configured EMAIL_ADDRESSES" }, 403);
 	}
@@ -131,7 +262,28 @@ app.get("/api/v1/mailboxes/:mailboxId", async (c) => {
 	const mailboxId = c.req.param("mailboxId")!;
 	const settings = await loadMailboxSettings(c.env, mailboxId);
 	if (settings === null) return c.json({ error: "Not found" }, 404);
-	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings });
+	const userOwnedInbox = readUserOwnedInboxMetadata(settings);
+	if (userOwnedInbox && c.var.requestIdentity?.email !== userOwnedInbox.ownerEmail) {
+		return c.json({ error: "Not found" }, 404);
+	}
+	const displayName = typeof settings.fromName === "string" && settings.fromName
+		? settings.fromName
+		: mailboxId;
+	return c.json({
+		id: mailboxId,
+		name: displayName,
+		displayName,
+		email: mailboxId,
+		settings,
+		userOwnedInbox,
+		...(userOwnedInbox
+			? {
+				username: userOwnedInbox.username,
+				subname: userOwnedInbox.subname,
+				rootDomain: userOwnedInbox.rootDomain,
+			}
+			: {}),
+	});
 });
 
 app.put("/api/v1/mailboxes/:mailboxId", async (c) => {

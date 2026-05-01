@@ -11,17 +11,20 @@
 import { createMiddleware } from "hono/factory";
 import type { MailboxDO } from "../durableObject";
 import type { Env } from "../types";
+import type { RequestIdentity } from "./request-identity";
 import {
 	getMailboxStubForInbox,
 	loadInboxProfile,
 	type InboxProfile,
 } from "./inbox-profile";
+import { readUserOwnedInboxMetadata } from "./user-owned-inbox";
 
 export type MailboxContext = {
 	Bindings: Env;
 	Variables: {
 		mailboxStub: DurableObjectStub<MailboxDO>;
 		inboxProfile: InboxProfile;
+		requestIdentity?: RequestIdentity;
 	};
 };
 
@@ -32,6 +35,12 @@ export const requireMailbox = createMiddleware<MailboxContext>(async (c, next) =
 
 	const profile = await loadInboxProfile(c.env, mailboxId);
 	if (!profile) {
+		return c.json({ error: "Not found" }, 404);
+	}
+
+	const userOwnedInbox = readUserOwnedInboxMetadata(profile.settings);
+	const identity = c.var.requestIdentity;
+	if (userOwnedInbox && identity?.email !== userOwnedInbox.ownerEmail) {
 		return c.json({ error: "Not found" }, 404);
 	}
 

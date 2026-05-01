@@ -4,7 +4,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import api from "~/services/api";
-import type { Mailbox } from "~/types";
+import type { InboxNamespace, Mailbox } from "~/types";
 import { queryKeys } from "./keys";
 
 export function useMailboxes() {
@@ -21,6 +21,28 @@ export function useMailbox(mailboxId: string | undefined) {
 			: ["mailboxes", "_disabled"],
 		queryFn: () => api.getMailbox(mailboxId!) as Promise<Mailbox>,
 		enabled: !!mailboxId,
+	});
+}
+
+export function useInboxNamespace(enabled: boolean) {
+	return useQuery<InboxNamespace>({
+		queryKey: queryKeys.inboxes.namespace,
+		queryFn: () => api.getInboxNamespace(),
+		enabled,
+	});
+}
+
+export function useCreateInbox() {
+	const qc = useQueryClient();
+	return useMutation({
+		mutationFn: ({
+			displayName,
+			subname,
+		}: { displayName: string; subname: string }) =>
+			api.createInbox(displayName, subname),
+		onSuccess: () => {
+			qc.invalidateQueries({ queryKey: queryKeys.mailboxes.all });
+		},
 	});
 }
 

@@ -14,12 +14,33 @@ export interface MailboxSettings {
 	signature?: SignatureSettings;
 	autoReply?: { enabled: boolean; subject: string; message: string };
 	agentSystemPrompt?: string;
+	userOwnedInbox?: UserOwnedInboxMetadata;
+}
+
+export interface UserOwnedInboxMetadata {
+	version: 1;
+	ownerEmail: string;
+	username: string;
+	subname: string;
+	rootDomain: string;
+	address: string;
+}
+
+export interface InboxNamespace {
+	email: string;
+	username: string;
+	rootDomain: string;
 }
 
 export interface Mailbox {
 	id: string;
 	email: string;
 	name: string;
+	displayName?: string;
+	username?: string;
+	subname?: string;
+	rootDomain?: string;
+	userOwnedInbox?: UserOwnedInboxMetadata | null;
 	settings?: MailboxSettings;
 }
 

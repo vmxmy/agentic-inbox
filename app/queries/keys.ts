@@ -8,6 +8,9 @@ export const queryKeys = {
 		all: ["mailboxes"] as const,
 		detail: (id: string) => ["mailboxes", id] as const,
 	},
+	inboxes: {
+		namespace: ["inboxes", "namespace"] as const,
+	},
 	emails: {
 		list: (mailboxId: string, params: Record<string, string>) =>
 			["emails", mailboxId, params] as const,
