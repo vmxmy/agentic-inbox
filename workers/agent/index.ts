@@ -43,6 +43,13 @@ type EmailAgentEnv = Env & {
  * Resolve the InboxProfile + AgentProfile for a mailbox. Falls back to a
  * default InboxProfile (and the default AgentProfile) if R2 has no
  * settings doc yet, preserving legacy behavior for unconfigured inboxes.
+ *
+ * Effective-time semantics (Phase 2 design decision):
+ * Every entry point — `onChatMessage` and `handleNewEmail` — calls this
+ * function fresh, so saved config changes apply to the *next* dispatch for
+ * an inbox. Already in-flight runs keep the InboxProfile/AgentProfile they
+ * resolved at start; we deliberately do not invalidate or broadcast into
+ * Durable Objects mid-run to avoid race conditions with active streams.
  */
 async function resolveProfiles(
 	env: Env,

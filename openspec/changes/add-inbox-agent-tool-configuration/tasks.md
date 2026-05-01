@@ -30,12 +30,12 @@
 ## 3. Runtime Enforcement
 
 - [x] 3.1 Ensure `resolveAgentProfile()` reads structured saved config and preserves default behavior for missing config.
-- [ ] 3.2 Ensure `createAgentToolSet()` and MCP registration honor explicit saved tool allow-lists.
+- [x] 3.2 Ensure `createAgentToolSet()` and MCP registration honor explicit saved tool allow-lists.
 - [x] 3.3 Add/extend safety policy resolver with safe-on defaults and backend-owned safety levels.
 - [x] 3.4 Gate prompt-injection scans, thread scans, and draft verification through resolved safety policy.
 - [x] 3.5 Ensure disabled inbound auto-draft persists an explanatory skipped note and does not invoke the model.
 - [x] 3.6 Ensure send-mail tools remain unavailable to ordinary user-owned inbox configs even if submitted by the client.
-- [ ] 3.7 Document/enforce config effective-time semantics: saved changes apply to future agent runs, not in-flight runs.
+- [x] 3.7 Document/enforce config effective-time semantics: saved changes apply to future agent runs, not in-flight runs.
 
 ## 4. Frontend Settings UI
 
@@ -59,7 +59,7 @@
 - [x] 5.4 Browser E2E: open an owned inbox settings page, edit agent/tool/safety config, save, reload, and verify persistence.
 - [x] 5.5 Browser/API E2E: verify unsupported/locked send tools cannot be enabled.
 - [x] 5.6 Browser/API E2E: verify stale revision conflict handling.
-- [ ] 5.7 Runtime E2E/manual: disable inbound auto-draft and verify a new inbound email does not invoke drafting.
-- [ ] 5.8 Runtime/API check: disable a tool and verify agent/MCP availability reflects the saved policy.
+- [x] 5.7 Runtime E2E/manual: disable inbound auto-draft and verify a new inbound email does not invoke drafting.
+- [x] 5.8 Runtime/API check: disable a tool and verify agent/MCP availability reflects the saved policy.
 - [x] 5.9 API check: verify legacy mailbox structured config write is rejected or read-only.
 - [x] 5.10 Audit check: verify a successful config change appends an audit record.

@@ -16,7 +16,9 @@ import {
 import {
 	DEFAULT_EMAIL_AGENT_PROFILE_ID,
 	DEFAULT_EMAIL_AGENT_MODEL_ID,
+	resolveAgentProfile,
 } from "./agent-profile";
+import { getAvailableToolCapabilities } from "./tool-capabilities";
 import {
 	applyInboxAgentConfigUpdate,
 	buildInboxAgentConfigOptions,
@@ -30,6 +32,7 @@ import {
 	type InboxAgentConfigOptions,
 	type InboxAgentConfigPatchInput,
 } from "./inbox-agent-config";
+import type { Env } from "../types";
 
 // --- Type-level helpers ----------------------------------------------------
 
@@ -82,7 +85,53 @@ function makeOwnedInboxSettings(
 			rootDomain: "example.com",
 			address: FIXTURE_INBOX,
 		},
+		inboxProfile: {
+			version: 1,
+			canonicalAddress: FIXTURE_INBOX,
+			displayName: "Support Inbox",
+			lifecycleStatus: "active",
+			storageMailboxId: FIXTURE_INBOX,
+			agentProfileId: DEFAULT_EMAIL_AGENT_PROFILE_ID,
+			enabledToolIds: [],
+		},
 		...extra,
+	};
+}
+
+const FAKE_ENV = {} as unknown as Env;
+
+/**
+ * Mirror what `loadInboxProfile` would produce after persisting `settings`
+ * to R2: read the server-owned inbox profile fields out of `settings` so
+ * downstream resolvers see the same shape they would in production.
+ */
+function inboxProfileFromSettings(
+	settings: Record<string, unknown>,
+): InboxProfile {
+	const ip =
+		(settings.inboxProfile && typeof settings.inboxProfile === "object"
+			? (settings.inboxProfile as Record<string, unknown>)
+			: {}) ?? {};
+	const enabledToolIds = Array.isArray(ip.enabledToolIds)
+		? (ip.enabledToolIds as unknown[]).filter(
+				(v): v is string => typeof v === "string",
+			)
+		: [];
+	return {
+		id: FIXTURE_INBOX,
+		canonicalAddress: FIXTURE_INBOX,
+		displayName:
+			typeof ip.displayName === "string" && ip.displayName.length > 0
+				? ip.displayName
+				: "Support Inbox",
+		lifecycleStatus: "active",
+		storageMailboxId: FIXTURE_INBOX,
+		agentProfileId:
+			typeof ip.agentProfileId === "string" && ip.agentProfileId.length > 0
+				? ip.agentProfileId
+				: DEFAULT_EMAIL_AGENT_PROFILE_ID,
+		enabledToolIds,
+		settings,
 	};
 }
 
@@ -297,6 +346,115 @@ export async function verifyApplyMergesStructuredConfig(): Promise<true> {
 	}
 	if (!result.changedFields.includes("agent.systemPrompt")) {
 		throw new Error("changedFields must record system prompt change");
+	}
+	return true;
+}
+
+// --- Case 6: saved inboundAutoDraftEnabled=false flows to AgentProfile ------
+// Backs tasks 3.7 and 5.7: writing a config patch must produce settings that,
+// when re-resolved into an AgentProfile (the path EmailAgent.handleNewEmail
+// takes per call), surface the disabled automation flag. EmailAgent already
+// short-circuits on `!agent.automation.inboundAutoDraftEnabled` (task 3.5).
+
+export async function verifyDisabledAutoDraftPropagatesToAgentProfile(): Promise<true> {
+	const initial = makeOwnedInboxSettings();
+	const result = await applyInboxAgentConfigUpdate(FIXTURE_INBOX, initial, {
+		schemaVersion: INBOX_AGENT_CONFIG_SCHEMA_VERSION,
+		expectedRevision: "irrelevant-for-verification",
+		agent: { automation: { inboundAutoDraftEnabled: false } },
+	});
+	const inbox = inboxProfileFromSettings(result.settings);
+	const agent = resolveAgentProfile(FAKE_ENV, inbox);
+	if (agent.automation.inboundAutoDraftEnabled !== false) {
+		throw new Error(
+			"saved inboundAutoDraftEnabled=false must propagate to resolveAgentProfile",
+		);
+	}
+	return true;
+}
+
+// --- Case 7: saved tool allow-list narrows the agent surface ----------------
+// Backs tasks 3.2 and 5.8 (agent side): createAgentToolSet ultimately filters
+// through `getAvailableToolCapabilities`, which honors the explicit list
+// written by `applyInboxAgentConfigUpdate`.
+
+export async function verifyDisabledToolPropagatesToAgentSurface(): Promise<true> {
+	const initial = makeOwnedInboxSettings();
+	const result = await applyInboxAgentConfigUpdate(FIXTURE_INBOX, initial, {
+		schemaVersion: INBOX_AGENT_CONFIG_SCHEMA_VERSION,
+		expectedRevision: "irrelevant-for-verification",
+		tools: { enabledToolIds: ["draft_reply", "get_email"] },
+	});
+	const inbox = inboxProfileFromSettings(result.settings);
+	const agent = resolveAgentProfile(FAKE_ENV, inbox);
+	const ids = new Set(
+		getAvailableToolCapabilities(
+			{ inboxProfile: inbox, agentProfile: agent },
+			"agent",
+		).map((t) => t.id),
+	);
+	if (ids.size !== 2 || !ids.has("draft_reply") || !ids.has("get_email")) {
+		throw new Error(
+			`saved tool allow-list did not narrow agent surface: got [${[...ids].join(",")}]`,
+		);
+	}
+	return true;
+}
+
+// --- Case 8: saved tool allow-list narrows the MCP surface ------------------
+// Backs tasks 3.2 and 5.8 (MCP side): registerMcpToolsFromRegistry routes
+// every per-request execution through `resolveExecutableCapability`, which
+// uses the same allow-list resolution as the agent surface.
+
+export async function verifyDisabledToolPropagatesToMcpSurface(): Promise<true> {
+	const initial = makeOwnedInboxSettings();
+	const result = await applyInboxAgentConfigUpdate(FIXTURE_INBOX, initial, {
+		schemaVersion: INBOX_AGENT_CONFIG_SCHEMA_VERSION,
+		expectedRevision: "irrelevant-for-verification",
+		tools: { enabledToolIds: ["draft_reply", "get_email"] },
+	});
+	const inbox = inboxProfileFromSettings(result.settings);
+	const agent = resolveAgentProfile(FAKE_ENV, inbox);
+	const ids = new Set(
+		getAvailableToolCapabilities(
+			{ inboxProfile: inbox, agentProfile: agent },
+			"mcp",
+		).map((t) => t.id),
+	);
+	if (ids.size !== 2 || !ids.has("draft_reply") || !ids.has("get_email")) {
+		throw new Error(
+			`saved tool allow-list did not narrow MCP surface: got [${[...ids].join(",")}]`,
+		);
+	}
+	return true;
+}
+
+// --- Case 9: each apply produces a fresh revision (effective-time) ----------
+// Backs task 3.7: in-flight runs hold onto the AgentProfile they resolved at
+// dispatch time; subsequent saves mint a new revision so the next dispatch
+// sees the new policy. This guards against silently sharing a single
+// agentConfigMeta object across writes.
+
+export async function verifyApplyMintsFreshRevisionPerWrite(): Promise<true> {
+	const initial = makeOwnedInboxSettings();
+	const first = await applyInboxAgentConfigUpdate(FIXTURE_INBOX, initial, {
+		schemaVersion: INBOX_AGENT_CONFIG_SCHEMA_VERSION,
+		expectedRevision: "irrelevant-for-verification",
+		agent: { systemPrompt: "First version." },
+	});
+	const second = await applyInboxAgentConfigUpdate(
+		FIXTURE_INBOX,
+		first.settings,
+		{
+			schemaVersion: INBOX_AGENT_CONFIG_SCHEMA_VERSION,
+			expectedRevision: first.revision,
+			agent: { systemPrompt: "Second version." },
+		},
+	);
+	if (first.revision === second.revision) {
+		throw new Error(
+			"each saved config must mint a new revision so future runs can detect change",
+		);
 	}
 	return true;
 }

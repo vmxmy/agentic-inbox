@@ -17,6 +17,8 @@ import {
 	CheckCircleIcon,
 	StopIcon,
 	PencilSimpleIcon,
+	WarningCircleIcon,
+	XIcon,
 } from "@phosphor-icons/react";
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router";
@@ -63,6 +65,40 @@ const TOOL_LABELS: Record<string, { label: string; icon: React.ReactNode }> = {
 		icon: <EnvelopeSimpleIcon size={14} weight="bold" />,
 	},
 };
+
+const ERROR_DETAIL_MAX_LENGTH = 240;
+
+function sanitizeErrorMessage(error: unknown): string | null {
+	if (!error) return null;
+	let raw =
+		error instanceof Error
+			? error.message
+			: typeof error === "string"
+				? error
+				: "";
+	if (!raw) {
+		try {
+			raw = JSON.stringify(error);
+		} catch {
+			raw = String(error);
+		}
+	}
+	if (!raw) return null;
+
+	const redacted = raw
+		// Redact API keys / virtual keys (sk-..., sk_live_..., etc.)
+		.replace(/\bsk[-_][A-Za-z0-9_-]{6,}\b/g, "sk-***")
+		// Redact bearer tokens
+		.replace(/\bBearer\s+[A-Za-z0-9._-]+/gi, "Bearer ***")
+		// Redact Received=... values that may contain key fragments
+		.replace(/Received=[^,\s]+/g, "Received=***")
+		// Collapse whitespace
+		.replace(/\s+/g, " ")
+		.trim();
+
+	if (redacted.length <= ERROR_DETAIL_MAX_LENGTH) return redacted;
+	return `${redacted.slice(0, ERROR_DETAIL_MAX_LENGTH - 1)}…`;
+}
 
 function ToolCallBadge({
 	toolName,
@@ -308,9 +344,18 @@ function AgentChatConnected({
 	const { startCompose } = useUIStore();
 
 	const agent = useAgent({ agent: "EmailAgent", name: mailboxId });
-	const { messages, sendMessage, status, setMessages, stop } =
-		useAgentChat({ agent });
+	const {
+		messages,
+		sendMessage,
+		status,
+		setMessages,
+		stop,
+		error,
+		clearError,
+	} = useAgentChat({ agent });
 	const isStreaming = status === "streaming" || status === "submitted";
+	const hasError = status === "error" || Boolean(error);
+	const sanitizedErrorDetail = sanitizeErrorMessage(error);
 
 	useEffect(() => {
 		const el = scrollRef.current;
@@ -325,6 +370,7 @@ function AgentChatConnected({
 		const text = inputValue.trim();
 		if (!text || isStreaming) return;
 		setInputValue("");
+		clearError?.();
 		sendMessage({ text });
 		if (inputRef.current) inputRef.current.style.height = "auto";
 	};
@@ -393,9 +439,10 @@ function AgentChatConnected({
 								<button
 									key={prompt}
 									type="button"
-									onClick={() =>
-										sendMessage({ text: prompt })
-									}
+									onClick={() => {
+										clearError?.();
+										sendMessage({ text: prompt });
+									}}
 									className="text-left px-3 py-2 rounded-lg border border-kumo-line text-xs text-kumo-strong hover:bg-kumo-tint hover:border-kumo-fill-hover transition-colors cursor-pointer bg-transparent"
 								>
 									{prompt}
@@ -469,6 +516,55 @@ function AgentChatConnected({
 					</div>
 				)}
 			</div>
+
+			{hasError && (
+				<div
+					role="alert"
+					aria-live="polite"
+					className="shrink-0 border-t border-kumo-line bg-kumo-error/5 px-3 py-2"
+				>
+					<div className="flex items-start gap-2">
+						<WarningCircleIcon
+							size={16}
+							weight="fill"
+							className="text-kumo-error shrink-0 mt-0.5"
+						/>
+						<div className="flex-1 min-w-0">
+							<p className="text-xs font-semibold text-kumo-error">
+								Agent provider error
+							</p>
+							<p className="text-[11px] text-kumo-subtle leading-relaxed mt-0.5">
+								Check LLM_API_KEY, model, or provider configuration.
+							</p>
+							{sanitizedErrorDetail && (
+								<p className="text-[11px] text-kumo-default leading-relaxed mt-1 break-words font-mono">
+									{sanitizedErrorDetail}
+								</p>
+							)}
+							<div className="flex gap-1.5 mt-2">
+								<Button
+									variant="secondary"
+									size="sm"
+									onClick={() => {
+										clearError?.();
+										inputRef.current?.focus();
+									}}
+								>
+									Try again
+								</Button>
+								<Button
+									variant="ghost"
+									size="sm"
+									icon={<XIcon size={12} />}
+									onClick={() => clearError?.()}
+								>
+									Dismiss
+								</Button>
+							</div>
+						</div>
+					</div>
+				</div>
+			)}
 
 			{/* Input */}
 			<div className="shrink-0 border-t border-kumo-line px-3 py-2">
