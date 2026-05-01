@@ -56,7 +56,7 @@
 - [x] 5.1 Run `openspec validate add-inbox-agent-tool-configuration --strict --no-interactive`.
 - [x] 5.2 Run `npm run typecheck`.
 - [x] 5.3 Run `npm run build`.
-- [ ] 5.4 Browser E2E: open an owned inbox settings page, edit agent/tool/safety config, save, reload, and verify persistence.
+- [x] 5.4 Browser E2E: open an owned inbox settings page, edit agent/tool/safety config, save, reload, and verify persistence.
 - [x] 5.5 Browser/API E2E: verify unsupported/locked send tools cannot be enabled.
 - [x] 5.6 Browser/API E2E: verify stale revision conflict handling.
 - [ ] 5.7 Runtime E2E/manual: disable inbound auto-draft and verify a new inbound email does not invoke drafting.
