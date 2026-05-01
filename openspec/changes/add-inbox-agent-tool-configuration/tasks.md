@@ -25,7 +25,7 @@
 - [x] 2.3 Add `PATCH /api/v1/inboxes/:mailboxId/agent-config` or equivalent constrained update endpoint with revision/ETag conflict handling.
 - [x] 2.4 Enforce ownership rules and reject structured config writes for legacy/non-user-owned mailboxes in Phase 2.
 - [x] 2.5 Return user-readable validation errors for invalid model, prompt, automation, safety, locked tool, or tool config.
-- [ ] 2.6 Ensure MCP config exposure, if added, is read-only in Phase 2.
+- [x] 2.6 Ensure MCP config exposure, if added, is read-only in Phase 2.
 
 ## 3. Runtime Enforcement
 
@@ -46,7 +46,7 @@
 - [x] 4.5 Let users enable/disable editable tool capabilities with permission/risk labels.
 - [x] 4.6 Show send-mail/elevated tools as locked or disabled with backend-provided lock reasons.
 - [x] 4.7 Let users inspect safety defaults and configure allowed safety controls.
-- [ ] 4.8 Provide reset-to-default affordances backed by server-provided defaults.
+- [x] 4.8 Provide reset-to-default affordances backed by server-provided defaults.
 - [x] 4.9 Save through the constrained config endpoint, include revision/ETag, and show conflict/success/error toasts.
 - [x] 4.10 Preserve display name/email account settings behavior.
 - [x] 4.11 Render legacy mailbox config as compatible/read-only for the new Agent/Tools/Safety flow.

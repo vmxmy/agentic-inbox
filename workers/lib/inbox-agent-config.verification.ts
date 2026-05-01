@@ -16,6 +16,8 @@ import {
 import {
 	DEFAULT_EMAIL_AGENT_PROFILE_ID,
 	DEFAULT_EMAIL_AGENT_MODEL_ID,
+	DEFAULT_EMAIL_AGENT_PROFILE,
+	DEFAULT_EMAIL_AGENT_SYSTEM_PROMPT,
 	resolveAgentProfile,
 } from "./agent-profile";
 import { getAvailableToolCapabilities } from "./tool-capabilities";
@@ -161,6 +163,12 @@ export function verifyOptionsExposesLockedTools(): InboxAgentConfigOptions {
 	}
 	if (opts.defaultModelId !== DEFAULT_EMAIL_AGENT_MODEL_ID) {
 		throw new Error("default model drift");
+	}
+	if (opts.defaults.agentDisplayName !== DEFAULT_EMAIL_AGENT_PROFILE.displayName) {
+		throw new Error("agent display-name default drift");
+	}
+	if (opts.defaults.systemPrompt !== DEFAULT_EMAIL_AGENT_SYSTEM_PROMPT) {
+		throw new Error("system-prompt default drift");
 	}
 	if (!opts.lockedToolIds.includes("send_email")) {
 		throw new Error("send_email must remain locked");

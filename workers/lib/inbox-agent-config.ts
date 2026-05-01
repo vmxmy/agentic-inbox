@@ -85,6 +85,7 @@ export interface InboxAgentConfigOptions {
 	defaultEnabledToolIds: string[];
 	safety: SafetyOptions;
 	defaults: {
+		agentDisplayName: string;
 		systemPrompt: string;
 		automation: AgentProfile["automation"];
 	};
@@ -368,6 +369,7 @@ export function buildInboxAgentConfigOptions(env?: Env): InboxAgentConfigOptions
 			levels: SAFETY_LEVEL_OPTIONS,
 		},
 		defaults: {
+			agentDisplayName: DEFAULT_EMAIL_AGENT_PROFILE.displayName,
 			systemPrompt: DEFAULT_EMAIL_AGENT_SYSTEM_PROMPT,
 			automation: DEFAULT_EMAIL_AGENT_PROFILE.automation,
 		},

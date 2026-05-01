@@ -111,6 +111,36 @@ export default function SettingsRoute() {
 		setSafety((prev) => (prev ? { ...prev, ...patch } : prev));
 	};
 
+	const resetAgentDefaults = () => {
+		const options = optionsQuery.data;
+		if (!options) return;
+		setAgentDisplayName(options.defaults.agentDisplayName);
+		setModelId(options.defaultModelId);
+		setSystemPrompt(options.defaults.systemPrompt);
+		setInboundAutoDraftEnabled(options.defaults.automation.inboundAutoDraftEnabled);
+		setConfigError(null);
+	};
+
+	const resetToolDefaults = () => {
+		const options = optionsQuery.data;
+		if (!options) return;
+		setEnabledToolIds([...options.defaultEnabledToolIds]);
+		setConfigError(null);
+	};
+
+	const resetSafetyDefaults = () => {
+		const options = optionsQuery.data;
+		if (!options) return;
+		setSafety({ ...options.safety.defaults });
+		setConfigError(null);
+	};
+
+	const resetAllDefaults = () => {
+		resetAgentDefaults();
+		resetToolDefaults();
+		resetSafetyDefaults();
+	};
+
 	const handleSaveConfig = async () => {
 		if (!mailboxId || !configQuery.data || !safety) return;
 		setIsSavingConfig(true);
@@ -278,12 +308,22 @@ export default function SettingsRoute() {
 							<>
 								{/* Agent */}
 								<div className="rounded-lg border border-kumo-line bg-kumo-base p-5">
-									<div className="flex items-center gap-2 mb-4">
-										<RobotIcon size={16} weight="duotone" className="text-kumo-subtle" />
-										<span className="text-sm font-medium text-kumo-default">Agent</span>
-										{configQuery.data.agent.modelDeprecated && (
-											<Badge variant="destructive">Model deprecated</Badge>
-										)}
+									<div className="flex items-center justify-between gap-3 mb-4">
+										<div className="flex items-center gap-2">
+											<RobotIcon size={16} weight="duotone" className="text-kumo-subtle" />
+											<span className="text-sm font-medium text-kumo-default">Agent</span>
+											{configQuery.data.agent.modelDeprecated && (
+												<Badge variant="destructive">Model deprecated</Badge>
+											)}
+										</div>
+										<Button
+											variant="ghost"
+											size="xs"
+											icon={<ArrowCounterClockwiseIcon size={14} />}
+											onClick={resetAgentDefaults}
+										>
+											Reset
+										</Button>
 									</div>
 
 									<div className="mb-4">
@@ -335,12 +375,22 @@ export default function SettingsRoute() {
 
 								{/* Tools */}
 								<div className="rounded-lg border border-kumo-line bg-kumo-base p-5">
-									<div className="flex items-center gap-2 mb-3">
-										<WrenchIcon size={16} weight="duotone" className="text-kumo-subtle" />
-										<span className="text-sm font-medium text-kumo-default">Tools</span>
-										{configQuery.data.tools.usingDefaultPreset && (
-											<Badge variant="secondary">Default preset</Badge>
-										)}
+									<div className="flex items-center justify-between gap-3 mb-3">
+										<div className="flex items-center gap-2">
+											<WrenchIcon size={16} weight="duotone" className="text-kumo-subtle" />
+											<span className="text-sm font-medium text-kumo-default">Tools</span>
+											{configQuery.data.tools.usingDefaultPreset && (
+												<Badge variant="secondary">Default preset</Badge>
+											)}
+										</div>
+										<Button
+											variant="ghost"
+											size="xs"
+											icon={<ArrowCounterClockwiseIcon size={14} />}
+											onClick={resetToolDefaults}
+										>
+											Reset
+										</Button>
 									</div>
 									<p className="text-xs text-kumo-subtle mb-3">
 										Toggle which tools the agent may call. Sending mail directly is
@@ -383,9 +433,19 @@ export default function SettingsRoute() {
 
 								{/* Safety */}
 								<div className="rounded-lg border border-kumo-line bg-kumo-base p-5">
-									<div className="flex items-center gap-2 mb-3">
-										<ShieldIcon size={16} weight="duotone" className="text-kumo-subtle" />
-										<span className="text-sm font-medium text-kumo-default">Safety</span>
+									<div className="flex items-center justify-between gap-3 mb-3">
+										<div className="flex items-center gap-2">
+											<ShieldIcon size={16} weight="duotone" className="text-kumo-subtle" />
+											<span className="text-sm font-medium text-kumo-default">Safety</span>
+										</div>
+										<Button
+											variant="ghost"
+											size="xs"
+											icon={<ArrowCounterClockwiseIcon size={14} />}
+											onClick={resetSafetyDefaults}
+										>
+											Reset
+										</Button>
 									</div>
 									<label className="block text-xs font-medium text-kumo-default mb-1">
 										Level
@@ -449,7 +509,13 @@ export default function SettingsRoute() {
 									</div>
 								)}
 
-								<div className="flex justify-end">
+								<div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+									<Button
+										variant="secondary"
+										onClick={resetAllDefaults}
+									>
+										Reset all to defaults
+									</Button>
 									<Button
 										variant="primary"
 										onClick={handleSaveConfig}

@@ -139,6 +139,7 @@ export interface InboxAgentConfigOptions {
 		levels: AgentSafetyLevelOption[];
 	};
 	defaults: {
+		agentDisplayName: string;
 		systemPrompt: string;
 		automation: { inboundAutoDraftEnabled: boolean };
 	};

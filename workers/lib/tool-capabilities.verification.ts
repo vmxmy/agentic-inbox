@@ -175,6 +175,25 @@ export function verifyMcpDefaultsExposeFullSurface(): void {
 	}
 }
 
+// --- Case 2b: MCP does not expose config mutation tools in Phase 2 ---------
+
+export function verifyMcpDoesNotExposeConfigMutators(): void {
+	const mutatingConfigPattern =
+		/^(set|update|patch|delete|create|reset|enable|disable)_.*(config|agent|tool|safety|policy)/;
+	const exposed = getAvailableToolCapabilities(
+		makeCtx(makeInbox(), makeAgent(), "mcp"),
+		"mcp",
+	);
+	const mutators = exposed
+		.map((tool) => tool.id)
+		.filter((id) => mutatingConfigPattern.test(id));
+	if (mutators.length > 0) {
+		throw new Error(
+			`mcp surface must not expose Phase 2 config mutators: ${mutators.join(", ")}`,
+		);
+	}
+}
+
 // --- Case 3: agent-only and mcp-only tools never bleed across surfaces -----
 
 export function verifySurfaceIsolation(): void {
