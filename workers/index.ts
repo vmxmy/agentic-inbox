@@ -38,6 +38,7 @@ import {
 	mailboxSettingsKey,
 	mergeSettingsPreservingInboxProfile,
 	normalizeInboxAddress,
+	profileFromSettings,
 	resolveInboundInboxProfile,
 } from "./lib/inbox-profile";
 import {
@@ -128,7 +129,11 @@ function mailboxResponse(profile: Awaited<ReturnType<typeof listInboxProfiles>>[
 function userCanSeeProfile(c: AppContext, profile: Awaited<ReturnType<typeof listInboxProfiles>>[number]) {
 	const userOwnedInbox = readUserOwnedInboxMetadata(profile.settings);
 	if (!userOwnedInbox) return true;
-	return c.var.requestIdentity?.email === userOwnedInbox.ownerEmail;
+	return sameEmail(c.var.requestIdentity?.email, userOwnedInbox.ownerEmail);
+}
+
+function sameEmail(a: string | null | undefined, b: string): boolean {
+	return Boolean(a && a.toLowerCase() === b.toLowerCase());
 }
 
 // -- App & middleware -----------------------------------------------
@@ -173,8 +178,15 @@ async function handleAgentConfigGet(c: AppContext) {
 
 async function handleAgentConfigPatch(c: AppContext) {
 	const mailboxId = c.req.param("mailboxId")!;
-	const profile = await loadInboxProfile(c.env, mailboxId);
-	if (!profile) return c.json({ error: "Not found" }, 404);
+	const key = mailboxSettingsKey(mailboxId);
+	const settingsObject = await c.env.BUCKET.get(key);
+	if (!settingsObject) return c.json({ error: "Not found" }, 404);
+	const parsedSettings = (await settingsObject.json()) as unknown;
+	const previousSettings =
+		parsedSettings && typeof parsedSettings === "object" && !Array.isArray(parsedSettings)
+			? (parsedSettings as Record<string, unknown>)
+			: {};
+	const profile = profileFromSettings(mailboxId, previousSettings);
 	const eligibility = checkStructuredConfigEligibility(
 		profile.settings,
 		c.var.requestIdentity?.email ?? null,
@@ -207,7 +219,6 @@ async function handleAgentConfigPatch(c: AppContext) {
 		);
 	}
 
-	const previousSettings = profile.settings;
 	const previousRevision = currentConfig.revision;
 	const updateResult = await applyInboxAgentConfigUpdate(
 		profile.storageMailboxId,
@@ -220,10 +231,20 @@ async function handleAgentConfigPatch(c: AppContext) {
 		return c.json(refreshed);
 	}
 
-	await c.env.BUCKET.put(
-		mailboxSettingsKey(mailboxId),
+	const putResult = await c.env.BUCKET.put(
+		key,
 		JSON.stringify(updateResult.settings),
+		{ onlyIf: { etagMatches: settingsObject.etag } },
 	);
+	if (!putResult) {
+		return c.json(
+			{
+				error: "Configuration was changed by another session. Reload and try again.",
+				code: "revision_conflict",
+			},
+			409,
+		);
+	}
 
 	c.executionCtx.waitUntil(
 		appendInboxAgentConfigAudit({
@@ -240,10 +261,9 @@ async function handleAgentConfigPatch(c: AppContext) {
 		}),
 	);
 
-	const refreshedProfile = await loadInboxProfile(c.env, mailboxId);
 	const refreshed = await buildInboxAgentConfigResponse(
 		c.env,
-		refreshedProfile ?? profile,
+		profileFromSettings(mailboxId, updateResult.settings),
 	);
 	return c.json(refreshed);
 }
@@ -375,7 +395,7 @@ app.get("/api/v1/mailboxes/:mailboxId", async (c) => {
 	const settings = await loadMailboxSettings(c.env, mailboxId);
 	if (settings === null) return c.json({ error: "Not found" }, 404);
 	const userOwnedInbox = readUserOwnedInboxMetadata(settings);
-	if (userOwnedInbox && c.var.requestIdentity?.email !== userOwnedInbox.ownerEmail) {
+	if (userOwnedInbox && !sameEmail(c.var.requestIdentity?.email, userOwnedInbox.ownerEmail)) {
 		return c.json({ error: "Not found" }, 404);
 	}
 	const displayName = typeof settings.fromName === "string" && settings.fromName
@@ -405,7 +425,7 @@ app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 	const existingSettings = await loadMailboxSettings(c.env, mailboxId);
 	if (existingSettings === null) return c.json({ error: "Not found" }, 404);
 	const userOwnedInbox = readUserOwnedInboxMetadata(existingSettings);
-	if (userOwnedInbox && c.var.requestIdentity?.email !== userOwnedInbox.ownerEmail) {
+	if (userOwnedInbox && !sameEmail(c.var.requestIdentity?.email, userOwnedInbox.ownerEmail)) {
 		return c.json({ error: "Not found" }, 404);
 	}
 	const finalSettings = mergeSettingsPreservingInboxProfile(existingSettings, settings, mailboxId);

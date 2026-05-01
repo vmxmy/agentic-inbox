@@ -24,6 +24,7 @@ import { getAvailableToolCapabilities } from "./tool-capabilities";
 import {
 	applyInboxAgentConfigUpdate,
 	buildInboxAgentConfigOptions,
+	buildInboxAgentConfigResponse,
 	checkStructuredConfigEligibility,
 	DEFAULT_AGENT_SAFETY_POLICY,
 	INBOX_AGENT_CONFIG_SCHEMA_VERSION,
@@ -293,10 +294,21 @@ export function verifyOwnershipGuardRejectsLegacyMailboxes(): true {
 	}
 
 	const owned = checkStructuredConfigEligibility(
-		makeOwnedInboxSettings(),
-		FIXTURE_OWNER,
+		makeOwnedInboxSettings({
+			userOwnedInbox: {
+				version: 1,
+				ownerEmail: "Owner@Example.com",
+				username: "owner",
+				subname: "support",
+				rootDomain: "example.com",
+				address: FIXTURE_INBOX,
+			},
+		}),
+		"owner@example.com",
 	);
-	if (!owned.ok) throw new Error("owner must be allowed for own inbox");
+	if (!owned.ok) {
+		throw new Error("owner must be allowed case-insensitively");
+	}
 
 	const otherOwner = checkStructuredConfigEligibility(
 		makeOwnedInboxSettings(),
@@ -433,6 +445,49 @@ export async function verifyDisabledToolPropagatesToMcpSurface(): Promise<true> 
 		throw new Error(
 			`saved tool allow-list did not narrow MCP surface: got [${[...ids].join(",")}]`,
 		);
+	}
+	return true;
+}
+
+export async function verifyExplicitEmptyToolListStaysEmpty(): Promise<true> {
+	const initial = makeOwnedInboxSettings();
+	const result = await applyInboxAgentConfigUpdate(FIXTURE_INBOX, initial, {
+		schemaVersion: INBOX_AGENT_CONFIG_SCHEMA_VERSION,
+		expectedRevision: "irrelevant-for-verification",
+		tools: { enabledToolIds: [] },
+	});
+	const inbox = inboxProfileFromSettings(result.settings);
+	const response = await buildInboxAgentConfigResponse(FAKE_ENV, inbox);
+	if (response.tools.enabledToolIds.length !== 0) {
+		throw new Error("explicit empty tool allow-list must stay empty");
+	}
+	if (response.tools.usingDefaultPreset) {
+		throw new Error(
+			"explicit empty tool allow-list must not report default preset",
+		);
+	}
+	return true;
+}
+
+export async function verifyEmptySafetyPatchIsNoop(): Promise<true> {
+	const validation = validateInboxAgentConfigPatch({
+		schemaVersion: INBOX_AGENT_CONFIG_SCHEMA_VERSION,
+		expectedRevision: "abc",
+		safety: {},
+	});
+	if (!validation.ok) {
+		throw new Error("empty safety patch should validate as a no-op");
+	}
+	if (validation.patch.safety !== undefined) {
+		throw new Error("empty safety patch must not produce a safety mutation");
+	}
+	const result = await applyInboxAgentConfigUpdate(
+		FIXTURE_INBOX,
+		makeOwnedInboxSettings(),
+		validation.patch,
+	);
+	if (result.changedFields.length !== 0) {
+		throw new Error("empty safety patch must not mark any changed fields");
 	}
 	return true;
 }

@@ -103,7 +103,7 @@ export function createDefaultInboxProfile(
  * Coerce raw settings into an InboxProfile. Falls back to defaults for
  * any missing fields so legacy mailbox docs remain resolvable.
  */
-function profileFromSettings(
+export function profileFromSettings(
 	mailboxId: string,
 	settings: Record<string, unknown>,
 ): InboxProfile {

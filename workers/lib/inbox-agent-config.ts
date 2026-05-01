@@ -435,6 +435,9 @@ function effectiveEnabledToolIds(
 	inbox: InboxProfile,
 	agent: AgentProfile,
 ): { ids: string[]; usingDefaultPreset: boolean } {
+	if (hasExplicitAgentToolPolicy(inbox.settings)) {
+		return { ids: [...agent.enabledToolIds], usingDefaultPreset: false };
+	}
 	const inboxIds = inbox.enabledToolIds ?? [];
 	const agentIds = agent.enabledToolIds ?? [];
 	const merged: string[] = [];
@@ -603,7 +606,9 @@ export function validateInboxAgentConfigPatch(
 							automationPatch.inboundAutoDraftEnabled = auto.inboundAutoDraftEnabled;
 						}
 					}
-					agentPatch.automation = automationPatch;
+					if (Object.keys(automationPatch).length > 0) {
+						agentPatch.automation = automationPatch;
+					}
 				}
 			}
 			if (Object.keys(agentPatch).length > 0) patch.agent = agentPatch;
@@ -676,7 +681,9 @@ export function validateInboxAgentConfigPatch(
 					safetyPatch.safetyModelId = null;
 				}
 			}
-			patch.safety = safetyPatch;
+			if (Object.keys(safetyPatch).length > 0) {
+				patch.safety = safetyPatch;
+			}
 		}
 	}
 
@@ -773,7 +780,7 @@ export async function applyInboxAgentConfigUpdate(
 		changedFields.push("tools.enabledToolIds");
 	}
 
-	if (patch.safety) {
+	if (patch.safety && Object.keys(patch.safety).length > 0) {
 		const existingSafety = readSafetyPolicy(settings);
 		const merged: AgentSafetyPolicy = {
 			...existingSafety,
@@ -905,6 +912,17 @@ function readAgentProfileEntry(
 	return entry as Record<string, unknown>;
 }
 
+function hasExplicitAgentToolPolicy(
+	settings: Record<string, unknown>,
+): boolean {
+	const profile = readAgentProfileEntry(settings);
+	return Boolean(
+		profile &&
+			Object.prototype.hasOwnProperty.call(profile, "enabledToolIds") &&
+			Array.isArray(profile.enabledToolIds),
+	);
+}
+
 function readEnabledToolIds(settings: Record<string, unknown>): string[] {
 	const profile = readAgentProfileEntry(settings);
 	if (profile && Array.isArray(profile.enabledToolIds)) {
@@ -984,7 +1002,7 @@ export function checkStructuredConfigEligibility(
 				"Structured Agent/Tools/Safety configuration is only available for user-owned inboxes in this phase.",
 		};
 	}
-	if (!actorEmail || actorEmail.toLowerCase() !== userOwned.ownerEmail) {
+	if (!actorEmail || actorEmail.toLowerCase() !== userOwned.ownerEmail.toLowerCase()) {
 		return {
 			ok: false,
 			code: "not_owner",

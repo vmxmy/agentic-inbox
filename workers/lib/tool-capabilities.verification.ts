@@ -251,6 +251,32 @@ export function verifyEnabledToolIntersection(): void {
 	}
 }
 
+export function verifyExplicitEmptyAgentPolicyDisablesAllTools(): void {
+	const agent = makeAgent({ enabledToolIds: [] });
+	const inbox = makeInbox({
+		enabledToolIds: [],
+		settings: {
+			agentProfiles: {
+				[agent.id]: {
+					id: agent.id,
+					enabledToolIds: [],
+				},
+			},
+		},
+	});
+	for (const surface of ["agent", "mcp"] as const) {
+		const tools = getAvailableToolCapabilities(
+			makeCtx(inbox, agent, surface),
+			surface,
+		);
+		if (tools.length !== 0) {
+			throw new Error(
+				`explicit empty tool policy should expose no ${surface} tools`,
+			);
+		}
+	}
+}
+
 // --- Case 6: unregistered or unauthorized tool ids resolve to null ---------
 
 export function verifyUnregisteredAndUnauthorizedRejection(): void {
