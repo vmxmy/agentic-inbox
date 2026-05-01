@@ -9,9 +9,10 @@ import {
 	Input,
 	Loader,
 	Text,
+	Tooltip,
 	useKumoToastManager,
 } from "@cloudflare/kumo";
-import { EnvelopeIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
+import { CheckIcon, CopyIcon, EnvelopeIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
 import { useQuery } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { Link as RouterLink } from "react-router";
@@ -59,6 +60,7 @@ export default function HomeRoute() {
 		email: string;
 	} | null>(null);
 	const [isDeleting, setIsDeleting] = useState(false);
+	const [copiedEmail, setCopiedEmail] = useState<string | null>(null);
 
 	// Auto-create mailboxes from config (run once when both data sources are ready)
 	const autoCreateDone = useRef(false);
@@ -126,6 +128,19 @@ export default function HomeRoute() {
 		}
 	};
 
+	const handleCopyEmail = async (email: string) => {
+		try {
+			await navigator.clipboard.writeText(email);
+			setCopiedEmail(email);
+			toastManager.add({ title: "Email address copied" });
+			window.setTimeout(() => {
+				setCopiedEmail((current) => current === email ? null : current);
+			}, 2000);
+		} catch {
+			toastManager.add({ title: "Failed to copy email address", variant: "error" });
+		}
+	};
+
 	const accounts = isConfigured
 		? emailAddresses.map((addr) => ({
 				id: addr,
@@ -186,10 +201,26 @@ export default function HomeRoute() {
 									<div className="text-sm font-medium text-kumo-default truncate">
 										{account.name}
 									</div>
-									<div className="text-sm text-kumo-subtle">
+									<div className="text-sm text-kumo-subtle truncate">
 										{account.email}
 									</div>
 								</div>
+								<Tooltip content={copiedEmail === account.email ? "Copied!" : "Copy email"} asChild>
+									<Button
+										variant="ghost"
+										size="sm"
+										shape="square"
+										icon={copiedEmail === account.email
+											? <CheckIcon size={16} weight="bold" className="text-kumo-success" />
+											: <CopyIcon size={16} />}
+										aria-label={`Copy email address ${account.email}`}
+										onClick={(e) => {
+											e.preventDefault();
+											e.stopPropagation();
+											void handleCopyEmail(account.email);
+										}}
+									/>
+								</Tooltip>
 								{!isConfigured && (
 									<Button
 										variant="ghost"
@@ -275,8 +306,22 @@ export default function HomeRoute() {
 							<p className="text-sm text-kumo-subtle">
 								Generated email address
 							</p>
-							<div className="mt-1 break-all font-mono text-sm text-kumo-default">
-								{generatedAddressPreview}
+							<div className="mt-1 flex items-center gap-2">
+								<div className="min-w-0 flex-1 break-all font-mono text-sm text-kumo-default">
+									{generatedAddressPreview}
+								</div>
+								<Tooltip content={copiedEmail === generatedAddressPreview ? "Copied!" : "Copy email"} asChild>
+									<Button
+										variant="ghost"
+										size="sm"
+										shape="square"
+										icon={copiedEmail === generatedAddressPreview
+											? <CheckIcon size={16} weight="bold" className="text-kumo-success" />
+											: <CopyIcon size={16} />}
+										aria-label="Copy generated email address"
+										onClick={() => void handleCopyEmail(generatedAddressPreview)}
+									/>
+								</Tooltip>
 							</div>
 						</div>
 						<p className="text-sm text-kumo-subtle">
