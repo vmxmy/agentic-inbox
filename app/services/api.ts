@@ -2,7 +2,15 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import type { Email, Folder, InboxNamespace, Mailbox } from "~/types";
+import type {
+	Email,
+	Folder,
+	InboxAgentConfigOptions,
+	InboxAgentConfigPatch,
+	InboxAgentConfigResponse,
+	InboxNamespace,
+	Mailbox,
+} from "~/types";
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -81,6 +89,17 @@ function put<T>(url: string, body?: unknown) {
 	});
 }
 
+function patch<T>(url: string, body?: unknown) {
+	return request<T>(url, {
+		method: "PATCH",
+		body: body != null ? JSON.stringify(body) : undefined,
+	});
+}
+
+function pathPart(value: string): string {
+	return encodeURIComponent(value);
+}
+
 function del<T>(url: string) {
 	return request<T>(url, { method: "DELETE" });
 }
@@ -115,6 +134,19 @@ const api = {
 		get<InboxNamespace>("/api/v1/inboxes/me"),
 	createInbox: (displayName: string, subname: string) =>
 		post<Mailbox>("/api/v1/inboxes", { displayName, subname }),
+
+	// Inbox agent configuration (Phase 2 control plane)
+	getInboxAgentConfigOptions: () =>
+		get<InboxAgentConfigOptions>("/api/v1/inbox-config/options"),
+	getInboxAgentConfig: (mailboxId: string) =>
+		get<InboxAgentConfigResponse>(
+			`/api/v1/inboxes/${pathPart(mailboxId)}/agent-config`,
+		),
+	updateInboxAgentConfig: (mailboxId: string, body: InboxAgentConfigPatch) =>
+		patch<InboxAgentConfigResponse>(
+			`/api/v1/inboxes/${pathPart(mailboxId)}/agent-config`,
+			body,
+		),
 
 	// Emails
 	listEmails: (mailboxId: string, params: Record<string, string>, opts?: { signal?: AbortSignal }) =>

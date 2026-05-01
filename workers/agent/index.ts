@@ -31,6 +31,7 @@ import {
 	type ToolExecutionContext,
 } from "../lib/tool-capabilities";
 import { resolveAgentModel } from "../lib/llm-provider";
+import { resolveSafetyPolicy } from "../lib/inbox-agent-config";
 import { Folders } from "../../shared/folders";
 import type { Env } from "../types";
 
@@ -42,6 +43,13 @@ type EmailAgentEnv = Env & {
  * Resolve the InboxProfile + AgentProfile for a mailbox. Falls back to a
  * default InboxProfile (and the default AgentProfile) if R2 has no
  * settings doc yet, preserving legacy behavior for unconfigured inboxes.
+ *
+ * Effective-time semantics (Phase 2 design decision):
+ * Every entry point — `onChatMessage` and `handleNewEmail` — calls this
+ * function fresh, so saved config changes apply to the *next* dispatch for
+ * an inbox. Already in-flight runs keep the InboxProfile/AgentProfile they
+ * resolved at start; we deliberately do not invalidate or broadcast into
+ * Durable Objects mid-run to avoid race conditions with active streams.
  */
 async function resolveProfiles(
 	env: Env,
@@ -183,6 +191,7 @@ export class EmailAgent extends AIChatAgent<any> {
 			inboxProfile: emailData.inboxProfile,
 			agentProfile: emailData.agentProfile,
 		});
+		const safety = resolveSafetyPolicy(inbox);
 		const tools = createAgentToolSet(
 			buildAgentExecutionContext(env, emailData.mailboxId, inbox, agent),
 		);
@@ -223,7 +232,9 @@ export class EmailAgent extends AIChatAgent<any> {
 		try {
 			const email = (await stub.getEmail(emailData.emailId)) as EmailFull | null;
 			if (email?.body) {
-				const isInjection = await isPromptInjection(env, email.body);
+				const isInjection = safety.promptInjectionScanEnabled
+					? await isPromptInjection(env, email.body)
+					: false;
 				if (isInjection) {
 					console.warn("Skipping auto-draft due to detected prompt injection:", emailData.emailId);
 					
@@ -270,7 +281,7 @@ export class EmailAgent extends AIChatAgent<any> {
 			// Scan thread context for prompt injection too -- an attacker
 			// could plant an injection in an earlier email in the thread
 			// that gets included in the agent's prompt.
-			if (threadContext) {
+			if (threadContext && safety.threadContextScanEnabled) {
 				const threadInjection = await isPromptInjection(env, threadContext);
 				if (threadInjection) {
 					console.warn("Skipping auto-draft due to prompt injection in thread context:", emailData.threadId);
@@ -353,8 +364,10 @@ Based on the email content and thread context above, draft a reply using draft_r
 			);
 
 			if (!draftToolCalled && result.text.trim()) {
-				// Model generated a draft inline as text -- verify with AI
-				const sanitizedText = await verifyDraft(env, result.text.trim());
+				// Model generated a draft inline as text -- optionally verify with AI
+				const sanitizedText = safety.draftVerificationEnabled
+					? await verifyDraft(env, result.text.trim())
+					: result.text.trim();
 				if (!sanitizedText) {
 					// Inline text was entirely agent commentary, skip
 				} else {

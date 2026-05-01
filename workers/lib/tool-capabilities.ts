@@ -28,10 +28,10 @@
  * ------------------------------------------
  * The default agent profile and most legacy inboxes have empty
  * `enabledToolIds`. To preserve current behavior for unconfigured
- * inboxes, an empty list is interpreted as "all built-in tools for this
- * surface are available". A non-empty list narrows availability to the
- * intersection. When a future phase introduces an explicit opt-in flow,
- * this transitional behavior can be tightened.
+ * inboxes, empty inherited lists are interpreted as "all built-in tools
+ * for this surface are available". Once a settings-backed agent profile
+ * explicitly stores `enabledToolIds`, that saved policy is authoritative,
+ * including an empty list that disables every editable tool.
  */
 
 import { z } from "zod";
@@ -897,10 +897,12 @@ function capabilitySupports(
  * Compute the effective enabled-tool allow-list for an inbox+agent pair.
  *
  * Transitional Phase 3 rule:
- *   - If both lists are empty → all built-in capabilities for the surface
- *     are allowed (preserves legacy behavior for unconfigured inboxes).
- *   - If only one list is non-empty → that list is the allow-list.
- *   - If both are non-empty → the intersection is the allow-list.
+ *   - If settings explicitly stores this agent's `enabledToolIds`, that
+ *     list is authoritative, including [] as "disable all editable tools".
+ *   - Otherwise, if both inherited lists are empty → all built-in
+ *     capabilities for the surface are allowed (legacy unconfigured inboxes).
+ *   - If only one inherited list is non-empty → that list is the allow-list.
+ *   - If both inherited lists are non-empty → the intersection is the allow-list.
  *
  * Returns null when "no narrowing applies" (i.e. allow all built-ins).
  */
@@ -910,11 +912,32 @@ function effectiveEnabledIds(
 ): Set<string> | null {
 	const inboxIds = inboxProfile?.enabledToolIds ?? [];
 	const agentIds = agentProfile?.enabledToolIds ?? [];
+	if (hasExplicitAgentToolPolicy(inboxProfile, agentProfile)) {
+		return new Set(agentIds);
+	}
 	if (inboxIds.length === 0 && agentIds.length === 0) return null;
 	if (inboxIds.length === 0) return new Set(agentIds);
 	if (agentIds.length === 0) return new Set(inboxIds);
 	const inboxSet = new Set(inboxIds);
 	return new Set(agentIds.filter((id) => inboxSet.has(id)));
+}
+
+function hasExplicitAgentToolPolicy(
+	inboxProfile: InboxProfile | null,
+	agentProfile: AgentProfile | null,
+): boolean {
+	const settings = inboxProfile?.settings;
+	const profileId = agentProfile?.id;
+	if (!settings || !profileId) return false;
+	const profiles = settings.agentProfiles;
+	if (!profiles || typeof profiles !== "object") return false;
+	const entry = (profiles as Record<string, unknown>)[profileId];
+	return Boolean(
+		entry &&
+			typeof entry === "object" &&
+			Object.prototype.hasOwnProperty.call(entry, "enabledToolIds") &&
+			Array.isArray((entry as Record<string, unknown>).enabledToolIds),
+	);
 }
 
 /**
