@@ -64,7 +64,7 @@
 - [x] 7.1 Run `openspec validate add-user-owned-ai-inbox-creation --strict --no-interactive`.
 - [x] 7.2 Run `npm run typecheck`.
 - [x] 7.3 Run `npm run build`.
-- [ ] 7.4 Browser E2E: create an AI inbox using display name + subname.
-- [ ] 7.5 API/E2E: verify the created inbox appears in the list and opens correctly.
+- [x] 7.4 Browser E2E: create an AI inbox using display name + subname.
+- [x] 7.5 API/E2E: verify the created inbox appears in the list and opens correctly.
 - [ ] 7.6 Inbound E2E or local email dev: verify mail to a registered derived address is accepted.
 - [ ] 7.7 Inbound negative check: verify mail to an unknown derived address is not persisted.
