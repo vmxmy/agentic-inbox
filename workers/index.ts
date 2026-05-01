@@ -19,6 +19,12 @@ import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
 import type { Env } from "./types";
 import { requireMailbox, type MailboxContext } from "./lib/mailbox";
+import { isAdminIdentity } from "./lib/admin-auth";
+import {
+	appendInboxOwnershipAudit,
+	assignInboxOwnerMetadata,
+	listAdminInboxOwnershipSummaries,
+} from "./lib/admin-inbox-ownership";
 import { resolveAgentProfile } from "./lib/agent-profile";
 import {
 	buildUserOwnedInboxSettings,
@@ -63,6 +69,13 @@ const CreateMailboxBody = z.object({
 const CreateInboxBody = z.object({
 	displayName: z.string().trim().min(1).max(120),
 	subname: z.string().trim().min(1).max(128),
+}).strict();
+
+const AssignInboxOwnerBody = z.object({
+	ownerEmail: z.string().trim().email().max(254),
+	subname: z.string().trim().min(1).max(128),
+	expectedEtag: z.string().trim().min(1),
+	confirmReplacement: z.boolean().optional(),
 }).strict();
 
 const DraftBody = z.object({
@@ -134,6 +147,14 @@ function userCanSeeProfile(c: AppContext, profile: Awaited<ReturnType<typeof lis
 
 function sameEmail(a: string | null | undefined, b: string): boolean {
 	return Boolean(a && a.toLowerCase() === b.toLowerCase());
+}
+
+function requireAdmin(c: AppContext): string | Response {
+	const identity = c.var.requestIdentity;
+	if (!isAdminIdentity(c.env, identity)) {
+		return c.json({ error: "Administrator access required", code: "admin_required" }, 403);
+	}
+	return identity!.email.toLowerCase();
 }
 
 // -- App & middleware -----------------------------------------------
@@ -282,6 +303,116 @@ app.get("/api/v1/config", (c) => {
 app.get("/api/v1/inbox-config/options", (c) => {
 	return c.json(buildInboxAgentConfigOptions(c.env));
 });
+
+
+// -- Admin: legacy inbox ownership migration ------------------------
+
+app.get("/api/v1/admin/legacy-inboxes", async (c) => {
+	const adminEmail = requireAdmin(c);
+	if (adminEmail instanceof Response) return adminEmail;
+	const includeOwned = boolQuery(c, "includeOwned") === true;
+	const inboxes = await listAdminInboxOwnershipSummaries(c.env, includeOwned);
+	return c.json({ inboxes });
+});
+
+async function handleAssignInboxOwner(c: AppContext) {
+	const adminEmail = requireAdmin(c);
+	if (adminEmail instanceof Response) return adminEmail;
+	const mailboxId = normalizeInboxAddress(decodeURIComponent(c.req.param("mailboxId")!));
+
+	let rawBody: unknown;
+	try {
+		rawBody = await c.req.json();
+	} catch {
+		return c.json({ error: "Invalid JSON body" }, 400);
+	}
+	const parsed = AssignInboxOwnerBody.safeParse(rawBody);
+	if (!parsed.success) {
+		return c.json({
+			error: parsed.error.issues[0]?.message ?? "Invalid owner assignment payload",
+			code: "invalid_assignment",
+		}, 400);
+	}
+
+	const rootDomain = defaultRootDomain(c.env);
+	if (!rootDomain) return c.json({ error: "No root domain configured" }, 500);
+	const subnameResult = validateInboxSubname(parsed.data.subname);
+	if (!subnameResult.ok || !subnameResult.subname) {
+		return c.json({
+			error: subnameResult.message ?? "Invalid inbox address name",
+			code: subnameResult.code,
+		}, 400);
+	}
+
+	const key = mailboxSettingsKey(mailboxId);
+	const settingsObject = await c.env.BUCKET.get(key);
+	if (!settingsObject) return c.json({ error: "Not found" }, 404);
+	if (settingsObject.etag !== parsed.data.expectedEtag) {
+		return c.json({
+			error: "Inbox settings changed. Reload and try again.",
+			code: "etag_conflict",
+			currentEtag: settingsObject.etag,
+		}, 409);
+	}
+	const parsedSettings = (await settingsObject.json()) as unknown;
+	const previousSettings = parsedSettings && typeof parsedSettings === "object" && !Array.isArray(parsedSettings)
+		? (parsedSettings as Record<string, unknown>)
+		: {};
+	const previousOwner = readUserOwnedInboxMetadata(previousSettings);
+	if (previousOwner && parsed.data.confirmReplacement !== true) {
+		return c.json({
+			error: "This inbox already has an owner. Confirm replacement before saving.",
+			code: "replacement_confirmation_required",
+			previousOwner,
+		}, 409);
+	}
+
+	const ownerEmail = parsed.data.ownerEmail.trim().toLowerCase();
+	const owner = await ensureUserMetadata(c.env, ownerEmail);
+	const assignment = assignInboxOwnerMetadata({
+		settings: previousSettings,
+		address: mailboxId,
+		ownerEmail,
+		username: owner.username,
+		subname: subnameResult.subname,
+		rootDomain,
+	});
+	const putResult = await c.env.BUCKET.put(
+		key,
+		JSON.stringify(assignment.settings),
+		{ onlyIf: { etagMatches: parsed.data.expectedEtag } },
+	);
+	if (!putResult) {
+		return c.json({
+			error: "Inbox settings changed. Reload and try again.",
+			code: "etag_conflict",
+		}, 409);
+	}
+	c.executionCtx.waitUntil(appendInboxOwnershipAudit({
+		env: c.env,
+		adminEmail,
+		inboxAddress: mailboxId,
+		previousOwner: assignment.previousOwner,
+		nextOwner: assignment.nextOwner,
+		action: assignment.action,
+	}));
+
+	const displayName = typeof assignment.settings.fromName === "string" && assignment.settings.fromName.length > 0
+		? assignment.settings.fromName
+		: mailboxId;
+	return c.json({
+		id: mailboxId,
+		email: mailboxId,
+		displayName,
+		etag: putResult.etag,
+		isOwned: true,
+		userOwnedInbox: assignment.nextOwner,
+		action: assignment.action,
+	});
+}
+
+app.post("/api/v1/admin/inboxes/:mailboxId/owner", handleAssignInboxOwner);
+app.patch("/api/v1/admin/inboxes/:mailboxId/owner", handleAssignInboxOwner);
 
 // -- AI Inboxes -----------------------------------------------------
 

@@ -8,6 +8,10 @@ export const queryKeys = {
 		all: ["mailboxes"] as const,
 		detail: (id: string) => ["mailboxes", id] as const,
 	},
+	admin: {
+		legacyInboxes: (includeOwned: boolean) =>
+			["admin", "legacy-inboxes", includeOwned] as const,
+	},
 	inboxes: {
 		namespace: ["inboxes", "namespace"] as const,
 		agentConfig: (mailboxId: string) =>

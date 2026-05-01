@@ -3,6 +3,9 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import type {
+	AdminLegacyInboxesResponse,
+	AssignInboxOwnerRequest,
+	AssignInboxOwnerResponse,
 	Email,
 	Folder,
 	InboxAgentConfigOptions,
@@ -134,6 +137,17 @@ const api = {
 		get<InboxNamespace>("/api/v1/inboxes/me"),
 	createInbox: (displayName: string, subname: string) =>
 		post<Mailbox>("/api/v1/inboxes", { displayName, subname }),
+
+	// Admin: legacy inbox ownership migration
+	listAdminLegacyInboxes: (includeOwned = false) =>
+		get<AdminLegacyInboxesResponse>("/api/v1/admin/legacy-inboxes", {
+			params: includeOwned ? { includeOwned: "true" } : undefined,
+		}),
+	assignInboxOwner: (mailboxId: string, body: AssignInboxOwnerRequest) =>
+		patch<AssignInboxOwnerResponse>(
+			`/api/v1/admin/inboxes/${pathPart(mailboxId)}/owner`,
+			body,
+		),
 
 	// Inbox agent configuration (Phase 2 control plane)
 	getInboxAgentConfigOptions: () =>

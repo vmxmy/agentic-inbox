@@ -5,6 +5,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import api from "~/services/api";
 import type {
+	AdminLegacyInboxesResponse,
+	AssignInboxOwnerRequest,
+	AssignInboxOwnerResponse,
 	InboxAgentConfigOptions,
 	InboxAgentConfigPatch,
 	InboxAgentConfigResponse,
@@ -119,6 +122,30 @@ export function useUpdateInboxAgentConfig() {
 			qc.setQueryData(queryKeys.inboxes.agentConfig(mailboxId), data);
 			qc.invalidateQueries({ queryKey: queryKeys.mailboxes.detail(mailboxId) });
 			qc.invalidateQueries({ queryKey: queryKeys.mailboxes.all });
+		},
+	});
+}
+
+export function useAdminLegacyInboxes(includeOwned: boolean) {
+	return useQuery<AdminLegacyInboxesResponse>({
+		queryKey: queryKeys.admin.legacyInboxes(includeOwned),
+		queryFn: () => api.listAdminLegacyInboxes(includeOwned),
+	});
+}
+
+export function useAssignInboxOwner() {
+	const qc = useQueryClient();
+	return useMutation<
+		AssignInboxOwnerResponse,
+		Error,
+		{ mailboxId: string; body: AssignInboxOwnerRequest; includeOwned: boolean }
+	>({
+		mutationFn: ({ mailboxId, body }) => api.assignInboxOwner(mailboxId, body),
+		onSuccess: (_data, { mailboxId, includeOwned }) => {
+			qc.invalidateQueries({ queryKey: queryKeys.admin.legacyInboxes(includeOwned) });
+			qc.invalidateQueries({ queryKey: queryKeys.admin.legacyInboxes(!includeOwned) });
+			qc.invalidateQueries({ queryKey: queryKeys.mailboxes.all });
+			qc.invalidateQueries({ queryKey: queryKeys.mailboxes.detail(mailboxId) });
 		},
 	});
 }

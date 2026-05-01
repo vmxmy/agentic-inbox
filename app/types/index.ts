@@ -32,6 +32,33 @@ export interface InboxNamespace {
 	rootDomain: string;
 }
 
+
+// -- Admin legacy inbox ownership migration ------------------------
+
+export interface AdminInboxOwnershipSummary {
+	id: string;
+	email: string;
+	displayName: string;
+	etag: string;
+	isOwned: boolean;
+	userOwnedInbox: UserOwnedInboxMetadata | null;
+}
+
+export interface AdminLegacyInboxesResponse {
+	inboxes: AdminInboxOwnershipSummary[];
+}
+
+export interface AssignInboxOwnerRequest {
+	ownerEmail: string;
+	subname: string;
+	expectedEtag: string;
+	confirmReplacement?: boolean;
+}
+
+export interface AssignInboxOwnerResponse extends AdminInboxOwnershipSummary {
+	action: "assign" | "replace";
+}
+
 export interface Mailbox {
 	id: string;
 	email: string;
