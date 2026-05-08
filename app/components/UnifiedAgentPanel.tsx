@@ -20,6 +20,10 @@ import {
 } from "./agent-chat/agents";
 import { MessageBubble } from "./agent-chat/MessageBubble";
 import MentionAutocomplete from "./agent-chat/MentionAutocomplete";
+import {
+	compareByCreatedAt,
+	type MessageWithCreatedAt,
+} from "./agent-chat/messageOrdering";
 
 // ── Empty state ──────────────────────────────────────────────────────
 
@@ -139,7 +143,10 @@ function UnifiedChatConnected({
 	const isStreaming = chat.status === "streaming" || chat.status === "submitted";
 
 	const timeline: TaggedMessage[] = useMemo(
-		() => chat.messages.map((msg): TaggedMessage => ({ msg, agentId: "router" })),
+		() =>
+			chat.messages
+				.map((msg): TaggedMessage => ({ msg, agentId: "router" }))
+				.sort((a, b) => compareByCreatedAt(a.msg, b.msg)),
 		[chat.messages],
 	);
 
@@ -223,9 +230,11 @@ function UnifiedChatConnected({
 					<div className="flex flex-col gap-3">
 						{timeline.map(({ msg, agentId }) => {
 							const agent = AGENTS_BY_ID[agentId];
+							const createdAt = (msg as MessageWithCreatedAt).createdAt;
+							const keyCreatedAt = createdAt ? new Date(createdAt).getTime() : "pending";
 							return (
 								<MessageBubble
-									key={`${agentId}-${msg.id}`}
+									key={`${agentId}-${msg.id}-${keyCreatedAt}`}
 									message={msg}
 									toolLabels={agent.toolLabels}
 									assistantIcon={agent.icon}

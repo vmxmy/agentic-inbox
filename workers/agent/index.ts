@@ -20,6 +20,7 @@ import {
 	textToHtml,
 } from "../lib/email-helpers";
 import { Folders } from "../../shared/folders";
+import { sortMessagesByCreatedAt } from "../../shared/messageOrdering";
 import { getAgentConfig } from "../lib/agent-config";
 import {
 	get as getCapability,
@@ -280,7 +281,7 @@ export class EmailAgent extends AIChatAgent<any> {
 		const result = streamText({
 			model: provider(modelId),
 			system: finalSystemPrompt,
-			messages: await convertToModelMessages(this.messages),
+			messages: await convertToModelMessages(sortMessagesByCreatedAt(this.messages)),
 			tools,
 			stopWhen: stepCountIs(5),
 			onFinish,

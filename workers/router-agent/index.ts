@@ -14,6 +14,7 @@ import { z } from "zod";
 import { getAgentConfig } from "../lib/agent-config";
 import { getLlmProvider, listLlmModels, pickModel, resolveLlmConfig } from "../lib/llm-models";
 import type { Env } from "../types";
+import { sortMessagesByCreatedAt } from "../../shared/messageOrdering";
 import { runAbortable } from "./abortable";
 
 function defineTool(def: {
@@ -83,7 +84,7 @@ export class RouterAgent extends AIChatAgent<any> {
 		const result = streamText({
 			model: provider(modelId),
 			system: ROUTER_SYSTEM_PROMPT,
-			messages: await convertToModelMessages(this.messages),
+			messages: await convertToModelMessages(sortMessagesByCreatedAt(this.messages)),
 			tools,
 			stopWhen: stepCountIs(4),
 			onFinish,
