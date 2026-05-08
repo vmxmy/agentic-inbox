@@ -789,6 +789,8 @@ function MembersCard({ mailboxId }: { mailboxId: string }) {
 	const [inviteExpires, setInviteExpires] = useState<number | null>(null);
 
 	const isOwner = !!(whoami?.email && members?.owner && members.owner === whoami.email);
+	const teamManaged = !!members?.teamManaged;
+	const canMutateMembers = isOwner && !teamManaged;
 
 	const handleAdd = async () => {
 		const value = addEmail.trim();
@@ -839,20 +841,54 @@ function MembersCard({ mailboxId }: { mailboxId: string }) {
 			<div className="flex items-center gap-2 mb-4">
 				<UsersIcon size={16} weight="duotone" className="text-kumo-subtle" />
 				<span className="text-sm font-medium text-kumo-default">Members</span>
-				{isOwner ? (
+				{teamManaged ? (
+					<Badge variant="primary">Team-managed</Badge>
+				) : isOwner ? (
 					<Badge variant="primary">Owner</Badge>
 				) : (
 					<Badge variant="secondary">Read-only (member)</Badge>
 				)}
 			</div>
-			<p className="text-xs text-kumo-subtle mb-3">
-				Members (with equal rw access) must already be allowed by the
-				Cloudflare Access policy. Only the owner can add or remove
-				members, or issue invite links.
-			</p>
+			{teamManaged ? (
+				<div className="mb-3 rounded-md border border-kumo-line bg-kumo-recessed p-3 text-xs text-kumo-subtle">
+					This mailbox belongs to{" "}
+					<span className="font-medium text-kumo-default">
+						{members?.team?.displayName ?? "a team"}
+					</span>
+					{members?.team?.kind === "team_user" && members.team.userSlug && (
+						<>
+							{" "}
+							(<code>{members.team.userSlug}</code>)
+						</>
+					)}
+					. Access follows team membership — add or remove people from the
+					Admin dashboard instead of editing this list.
+				</div>
+			) : (
+				<p className="text-xs text-kumo-subtle mb-3">
+					Members (with equal rw access) must already be allowed by the
+					Cloudflare Access policy. Only the owner can add or remove
+					members, or issue invite links.
+				</p>
+			)}
 
 			{isLoading ? (
 				<div className="flex justify-center py-4"><Loader size="sm" /></div>
+			) : teamManaged ? (
+				<div className="space-y-2 mb-4">
+					<div className="flex items-center justify-between text-xs text-kumo-default bg-kumo-recessed px-3 py-2 rounded">
+						<span className="truncate">{members?.team?.displayName ?? "Team mailbox"}</span>
+						<Badge variant="primary">
+							{members?.team?.kind === "team_user" ? "team user" : "team"}
+						</Badge>
+					</div>
+					{members?.team?.userSlug && (
+						<div className="flex items-center justify-between text-xs text-kumo-default bg-kumo-recessed px-3 py-2 rounded">
+							<span className="truncate">{members.team.userSlug}</span>
+							<Badge variant="secondary">user slug</Badge>
+						</div>
+					)}
+				</div>
 			) : (
 				<div className="space-y-2 mb-4">
 					<div className="flex items-center justify-between text-xs text-kumo-default bg-kumo-recessed px-3 py-2 rounded">
@@ -862,7 +898,7 @@ function MembersCard({ mailboxId }: { mailboxId: string }) {
 					{(members?.members ?? []).map((m) => (
 						<div key={m} className="flex items-center justify-between text-xs text-kumo-default bg-kumo-recessed px-3 py-2 rounded">
 							<span className="truncate">{m}</span>
-							{isOwner && (
+							{canMutateMembers && (
 								<Button
 									variant="ghost"
 									size="xs"
@@ -883,7 +919,7 @@ function MembersCard({ mailboxId }: { mailboxId: string }) {
 				</div>
 			)}
 
-			{isOwner && (
+			{canMutateMembers && (
 				<>
 					<div className="flex items-end gap-2 mb-3">
 						<div className="flex-1">

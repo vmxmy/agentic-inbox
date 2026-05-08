@@ -32,6 +32,8 @@ export const queryKeys = {
 		["capabilities", mailboxId, surface ?? "all"] as const,
 	members: (mailboxId: string) => ["members", mailboxId] as const,
 	adminMailboxes: ["admin", "mailboxes"] as const,
+	adminTeams: ["admin", "teams"] as const,
+	adminTeamUsers: (teamId: string) => ["admin", "teams", teamId, "users"] as const,
 	invoices: {
 		list: (mailboxId: string, filters: Record<string, unknown>) =>
 			["invoices", mailboxId, filters] as const,

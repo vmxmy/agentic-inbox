@@ -25,6 +25,11 @@ import {
 	removeMemberRecord,
 	upsertMailboxRecord,
 } from "./mailbox-directory";
+import {
+	hasTeamMailboxAccess,
+	isTeamManagedMailbox,
+	listTeamMailboxesForUser,
+} from "./teams";
 import type { Env } from "../types";
 
 export interface AuthUser {
@@ -151,13 +156,19 @@ export async function assertMailboxAccess(
 	mailboxId: string,
 	user: AuthUser,
 ): Promise<void> {
-	// D1-first existence + ACL check. `getMailboxAcl` self-heals from R2 if a
-	// legacy un-backfilled mailbox is encountered.
+	// D1-first existence check. Team-managed mailboxes may be ownerless:
+	// access comes from team state rather than manual owner/member ACL rows.
 	const acl = await getMailboxAcl(env, mailboxId);
 	if (!acl) throw new AuthzError(404, "Mailbox not found");
 
 	if (user.system) return;
 	if (isAdmin(env, user)) return;
+
+	const teamAccess = await hasTeamMailboxAccess(env, mailboxId, user);
+	if (teamAccess === true) return;
+	if (teamAccess === false) {
+		throw new AuthzError(403, "Not authorized for this team mailbox");
+	}
 
 	if (!acl.owner) {
 		throw new AuthzError(
@@ -180,6 +191,12 @@ export async function assertMailboxOwner(
 	if (!acl) throw new AuthzError(404, "Mailbox not found");
 	if (user.system) return;
 	if (isAdmin(env, user)) return;
+	if (await isTeamManagedMailbox(env, mailboxId)) {
+		throw new AuthzError(
+			403,
+			"Team-managed mailbox membership is controlled by admins",
+		);
+	}
 	if (!acl.owner) {
 		throw new AuthzError(
 			403,
@@ -231,10 +248,19 @@ export async function listUserMailboxes(
 	}
 	const ids = await listMailboxIdsForUser(env, user);
 	// Hide ownerless mailboxes for normal users.
+	const seen = new Set<string>();
 	const results: { id: string; email: string }[] = [];
+	for (const mailbox of await listTeamMailboxesForUser(env, user)) {
+		if (seen.has(mailbox.id)) continue;
+		seen.add(mailbox.id);
+		results.push({ id: mailbox.id, email: mailbox.email });
+	}
 	for (const id of ids) {
+		if (seen.has(id)) continue;
+		if (await isTeamManagedMailbox(env, id)) continue;
 		const record = await getMailboxRecord(env, id);
 		if (!record?.ownerEmail) continue;
+		seen.add(id);
 		results.push({ id, email: id });
 	}
 	return results;

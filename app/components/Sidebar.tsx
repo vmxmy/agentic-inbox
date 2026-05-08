@@ -144,6 +144,14 @@ export default function Sidebar() {
 					<div className="text-sm text-kumo-subtle truncate mt-0.5">
 						{currentMailbox?.email || mailboxId}
 					</div>
+					{currentMailbox?.team && (
+						<div className="mt-1.5 flex items-center gap-1.5 text-xs text-kumo-subtle">
+							<Badge variant="secondary">
+								{currentMailbox.team.kind === "team" ? "team" : "team user"}
+							</Badge>
+							<span className="truncate">{currentMailbox.team.displayName}</span>
+						</div>
+					)}
 				</div>
 			</div>
 

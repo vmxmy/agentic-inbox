@@ -9,6 +9,8 @@ import type {
 	Email,
 	Folder,
 	Mailbox,
+	Team,
+	TeamUser,
 	InvoiceFilters,
 	InvoiceListResponse,
 	InvoiceDetailResponse,
@@ -303,7 +305,12 @@ const api = {
 
 	// Members
 	listMembers: (mailboxId: string) =>
-		get<{ owner: string | null; members: string[] }>(`/api/v1/mailboxes/${mailboxId}/members`),
+		get<{
+			owner: string | null;
+			members: string[];
+			teamManaged?: boolean;
+			team?: Mailbox["team"] | null;
+		}>(`/api/v1/mailboxes/${mailboxId}/members`),
 	addMember: (mailboxId: string, email: string) =>
 		post<{ owner: string | null; members: string[] }>(
 			`/api/v1/mailboxes/${mailboxId}/members`,
@@ -333,9 +340,17 @@ const api = {
 			owner: string | null;
 			memberCount: number;
 			inboxCount: number | null;
+			team: Mailbox["team"] | null;
 		}>>("/api/v1/admin/mailboxes"),
 	adminCreateMailboxForUser: (userId: string, email: string, name: string, settings?: unknown) =>
 		post<Mailbox>(`/api/v1/admin/users/${userId}/mailboxes`, { email, name, settings }),
+	adminListTeams: () => get<Team[]>("/api/v1/admin/teams"),
+	adminCreateTeam: (name: string, displayName: string) =>
+		post<Team>("/api/v1/admin/teams", { name, displayName }),
+	adminListTeamUsers: (teamId: string) =>
+		get<TeamUser[]>(`/api/v1/admin/teams/${teamId}/users`),
+	adminCreateTeamUser: (teamId: string, userName: string, displayName: string) =>
+		post<TeamUser>(`/api/v1/admin/teams/${teamId}/users`, { userName, displayName }),
 
 	// Emails
 	listEmails: (mailboxId: string, params: Record<string, string>, opts?: { signal?: AbortSignal }) =>

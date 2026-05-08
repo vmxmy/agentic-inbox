@@ -16,7 +16,22 @@ import {
 	listMailboxes,
 	stripHtmlToText,
 } from "./lib/email-helpers";
+import { collectInboundRecipientAddresses } from "./lib/inbound-recipients";
 import { SendEmailRequestSchema } from "./lib/schemas";
+import { TeamAddressError } from "./lib/team-addresses";
+import {
+	activateRegisteredAddress,
+	createTeam,
+	createTeamUser,
+	deleteTeamForProvisioningRollback,
+	deleteTeamUserForProvisioningRollback,
+	getTeamMailboxMeta,
+	listTeams,
+	listTeamUsers,
+	resolveAddress,
+	TeamDirectoryError,
+} from "./lib/teams";
+import { issueToken } from "./lib/email-tokens";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
 import { getAgentByName } from "agents";
@@ -96,6 +111,16 @@ const CreateMailboxBody = z.object({
 	name: z.string().min(1),
 	settings: z.record(z.any()).optional(), // unvalidated — agentSystemPrompt goes straight to AI
 });
+
+const CreateTeamBody = z.object({
+	name: z.string().min(1),
+	displayName: z.string().min(1).max(100),
+}).strict();
+
+const CreateTeamUserBody = z.object({
+	userName: z.string().min(1),
+	displayName: z.string().min(1).max(100),
+}).strict();
 
 const DraftBody = z.object({
 	to: z.string().optional(),
@@ -249,32 +274,27 @@ app.get("/api/v1/mailboxes", async (c) => {
 	try { user = c.get("user") ?? getUserFromRequest(c); }
 	catch (e) { if (e instanceof AuthzError) return c.json({ error: e.message }, e.status); throw e; }
 	const visible = await listUserMailboxes(c.env, user);
-	return c.json(visible.map((m) => ({ ...m, name: m.id })));
+	const payload = await Promise.all(visible.map((m) => mailboxResponse(c.env, m.id)));
+	return c.json(payload);
 });
 
-async function createMailboxForOwner(
+async function provisionMailbox(
 	c: AppContext,
-	body: unknown,
-	ownerEmail: string | undefined,
+	args: {
+		email: string;
+		name: string;
+		settings?: Record<string, unknown>;
+		ownerEmail: string | null;
+	},
 ) {
-	const parsed = CreateMailboxBody.safeParse(body);
-	if (!parsed.success) {
-		return c.json({ error: "email and name are required" }, 400);
-	}
-	const { name, settings, email: rawEmail } = parsed.data;
-	const email = rawEmail.toLowerCase();
-	const allowedAddresses = (c.env.EMAIL_ADDRESSES ?? []) as string[];
-	if (allowedAddresses.length > 0 && !allowedAddresses.map((a) => a.toLowerCase()).includes(email)) {
-		return c.json({ error: "Mailbox creation is restricted to configured EMAIL_ADDRESSES" }, 403);
-	}
-	if (await getMailboxRecord(c.env, email)) {
-		return c.json({ error: "Mailbox already exists" }, 409);
-	}
+	const email = normalizeEmail(args.email);
+	const { name } = args;
+	const settings = args.settings;
 	// Strip any ACL fields the client may have supplied — ACL is owned by the
 	// server and seeded from the authenticated user's identity.
 	const { owner: _ignoredOwner, members: _ignoredMembers, ...cleanSettings } =
 		(settings ?? {}) as Record<string, unknown>;
-	const ownerNorm = ownerEmail ? normalizeEmail(ownerEmail) : null;
+	const ownerNorm = args.ownerEmail ? normalizeEmail(args.ownerEmail) : null;
 
 	// D1 mailbox-directory is the existence record. Insert before seeding the
 	// DO so a half-completed mailbox cannot be discovered by ACL queries.
@@ -306,7 +326,34 @@ async function createMailboxForOwner(
 		owner: ownerNorm ?? undefined,
 		members: [] as string[],
 	};
-	return c.json({ id: email, email, name, settings: finalSettings }, 201);
+	return { id: email, email, name, settings: finalSettings };
+}
+
+async function createMailboxForOwner(
+	c: AppContext,
+	body: unknown,
+	ownerEmail: string | undefined,
+) {
+	const parsed = CreateMailboxBody.safeParse(body);
+	if (!parsed.success) {
+		return c.json({ error: "email and name are required" }, 400);
+	}
+	const { name, settings, email: rawEmail } = parsed.data;
+	const email = normalizeEmail(rawEmail);
+	const allowedAddresses = (c.env.EMAIL_ADDRESSES ?? []) as string[];
+	if (allowedAddresses.length > 0 && !allowedAddresses.map((a) => a.toLowerCase()).includes(email)) {
+		return c.json({ error: "Mailbox creation is restricted to configured EMAIL_ADDRESSES" }, 403);
+	}
+	if (await getMailboxRecord(c.env, email)) {
+		return c.json({ error: "Mailbox already exists" }, 409);
+	}
+	const mailbox = await provisionMailbox(c, {
+		email,
+		name,
+		settings,
+		ownerEmail: ownerEmail ?? null,
+	});
+	return c.json(mailbox, 201);
 }
 
 app.post("/api/v1/mailboxes", async (c) => {
@@ -314,16 +361,13 @@ app.post("/api/v1/mailboxes", async (c) => {
 	try { user = c.get("user") ?? getUserFromRequest(c); }
 	catch (e) { if (e instanceof AuthzError) return c.json({ error: e.message }, e.status); throw e; }
 
-	// When EMAIL_ADDRESSES is configured, the instance is in "fixed mailbox"
-	// mode (e.g. shared finance@/support@ inboxes). Self-serve creation is
-	// disabled in that mode so the first user to log in cannot become owner of
-	// a shared mailbox by accident — admins must provision via
-	// POST /api/v1/admin/users/:id/mailboxes.
-	const allowedAddresses = (c.env.EMAIL_ADDRESSES ?? []) as string[];
-	if (allowedAddresses.length > 0 && !user.system && !isAdmin(c.env, user)) {
+	// Team/user mode disables ordinary self-serve mailbox creation. Admins may
+	// still use the legacy endpoint for fixed-mailbox migration/repair, but
+	// normal provisioning is now POST /api/v1/admin/teams and /users.
+	if (!user.system && !isAdmin(c.env, user)) {
 		return c.json({
 			error:
-				"Self-serve mailbox creation is disabled when EMAIL_ADDRESSES is configured. Ask an admin to provision your mailbox.",
+				"Self-serve mailbox creation is disabled. Ask an admin to create a team or team user.",
 		}, 403);
 	}
 
@@ -345,6 +389,41 @@ function handleAuthz<T>(c: AppContext, e: unknown): Response {
 	throw e;
 }
 
+function handleTeamDirectoryError(c: AppContext, e: unknown): Response {
+	if (e instanceof TeamDirectoryError) return c.json({ error: e.message }, e.status);
+	if (e instanceof TeamAddressError) return c.json({ error: e.message }, 400);
+	throw e;
+}
+
+function publicOrigin(c: AppContext): string {
+	const fromEnv = c.env.PUBLIC_BASE_URL?.trim();
+	if (fromEnv) return fromEnv.replace(/\/+$/, "");
+	return new URL(c.req.url).origin;
+}
+
+async function mailboxResponse(env: Env, mailboxId: string) {
+	const meta = await getTeamMailboxMeta(env, mailboxId);
+	const name = meta
+		? meta.address.kind === "team"
+			? meta.team.displayName
+			: `${meta.team.displayName} / ${meta.teamUser?.slug ?? meta.address.address}`
+		: mailboxId;
+	return {
+		id: mailboxId,
+		email: mailboxId,
+		name,
+		...(meta ? {
+			team: {
+				id: meta.team.id,
+				slug: meta.team.slug,
+				displayName: meta.team.displayName,
+				kind: meta.address.kind,
+				userSlug: meta.teamUser?.slug ?? null,
+			},
+		} : {}),
+	};
+}
+
 app.get("/api/v1/mailboxes/:mailboxId", async (c) => {
 	const mailboxId = c.req.param("mailboxId")!;
 	let user;
@@ -355,7 +434,7 @@ app.get("/api/v1/mailboxes/:mailboxId", async (c) => {
 	// helper short-circuits once the DO row is fully populated.
 	const doRow = await readUnifiedMailboxSettings(c.env, mailboxId);
 	const settings = doRow ? mailboxSettingsRowToR2Shape(doRow) : {};
-	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings });
+	return c.json({ ...await mailboxResponse(c.env, mailboxId), settings });
 });
 
 // Capability registry — discovery endpoint for the Rule editor and the
@@ -608,7 +687,19 @@ app.get("/api/v1/mailboxes/:mailboxId/members", async (c) => {
 	const mailboxId = c.req.param("mailboxId")!;
 	const acl = await getMailboxAcl(c.env, mailboxId);
 	if (!acl) return c.json({ error: "Not found" }, 404);
-	return c.json({ owner: acl.owner ?? null, members: acl.members });
+	const meta = await getTeamMailboxMeta(c.env, mailboxId);
+	return c.json({
+		owner: acl.owner ?? null,
+		members: acl.members,
+		teamManaged: !!meta,
+		team: meta ? {
+			id: meta.team.id,
+			slug: meta.team.slug,
+			displayName: meta.team.displayName,
+			kind: meta.address.kind,
+			userSlug: meta.teamUser?.slug ?? null,
+		} : null,
+	});
 });
 
 app.post("/api/v1/mailboxes/:mailboxId/members", async (c) => {
@@ -707,6 +798,124 @@ app.post("/api/v1/admin/users/:id/role", async (c) => {
 	return c.json({ ok: true });
 });
 
+app.get("/api/v1/admin/teams", async (c) => {
+	const guard = requireAdmin(c);
+	if (guard instanceof Response) return guard;
+	const teams = await listTeams(c.env);
+	return c.json(teams);
+});
+
+app.post("/api/v1/admin/teams", async (c) => {
+	const guard = requireAdmin(c);
+	if (guard instanceof Response) return guard;
+	const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+	if ("email" in body || "address" in body || "mailboxAddress" in body) {
+		return c.json({ error: "Team address is derived by the server" }, 400);
+	}
+	const parsed = CreateTeamBody.safeParse(body);
+	if (!parsed.success) {
+		return c.json({ error: "name and displayName are required" }, 400);
+	}
+	try {
+		const team = await createTeam(c.env, {
+			name: parsed.data.name,
+			displayName: parsed.data.displayName,
+			createdByUserId: guard.user.system ? null : guard.user.id,
+		});
+		let mailbox;
+		try {
+			mailbox = await provisionMailbox(c, {
+				email: team.primaryAddress,
+				name: team.displayName,
+				ownerEmail: null,
+			});
+			await activateRegisteredAddress(c.env, team.primaryAddress);
+		} catch (e) {
+			await deleteMailboxRecord(c.env, team.primaryAddress);
+			await deleteTeamForProvisioningRollback(c.env, team.id);
+			throw e;
+		}
+		return c.json({ ...team, mailbox }, 201);
+	} catch (e) {
+		return handleTeamDirectoryError(c, e);
+	}
+});
+
+app.get("/api/v1/admin/teams/:teamId/users", async (c) => {
+	const guard = requireAdmin(c);
+	if (guard instanceof Response) return guard;
+	try {
+		const rows = await listTeamUsers(c.env, c.req.param("teamId")!);
+		const payload = await Promise.all(rows.map(async (row) => {
+			const user = await findUserById(c.env, row.userId);
+			return {
+				...row,
+				email: user?.email ?? row.mailboxAddress,
+				displayName: user?.displayName ?? row.slug,
+			};
+		}));
+		return c.json(payload);
+	} catch (e) {
+		return handleTeamDirectoryError(c, e);
+	}
+});
+
+app.post("/api/v1/admin/teams/:teamId/users", async (c) => {
+	const guard = requireAdmin(c);
+	if (guard instanceof Response) return guard;
+	const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+	if ("email" in body || "address" in body || "mailboxAddress" in body) {
+		return c.json({ error: "Team-user address is derived by the server" }, 400);
+	}
+	const parsed = CreateTeamUserBody.safeParse(body);
+	if (!parsed.success) {
+		return c.json({ error: "userName and displayName are required" }, 400);
+	}
+	try {
+		const created = await createTeamUser(c.env, {
+			teamId: c.req.param("teamId")!,
+			userName: parsed.data.userName,
+			displayName: parsed.data.displayName,
+			createdByUserId: guard.user.system ? null : guard.user.id,
+		});
+		let mailbox;
+		let setupToken: Awaited<ReturnType<typeof issueToken>> | null = null;
+		try {
+			mailbox = await provisionMailbox(c, {
+				email: created.teamUser.mailboxAddress,
+				name: created.user.displayName ?? created.teamUser.slug,
+				ownerEmail: null,
+			});
+			setupToken = await issueToken(c.env, created.user.id, "reset");
+			await activateRegisteredAddress(c.env, created.teamUser.mailboxAddress);
+		} catch (e) {
+			await deleteMailboxRecord(c.env, created.teamUser.mailboxAddress);
+			await deleteTeamUserForProvisioningRollback(c.env, created.teamUser.id);
+			throw e;
+		}
+		if (!setupToken) throw new Error("Setup token was not issued");
+		const setupUrl = `${publicOrigin(c)}/reset-password?token=${setupToken.rawToken}`;
+		const publicUser = {
+			id: created.user.id,
+			email: created.user.email,
+			role: created.user.role,
+			displayName: created.user.displayName,
+			emailVerifiedAt: created.user.emailVerifiedAt,
+			createdAt: created.user.createdAt,
+		};
+		return c.json({
+			...created.teamUser,
+			user: publicUser,
+			team: created.team,
+			mailbox,
+			setupUrl,
+			setupExpiresAt: setupToken.expiresAt,
+		}, 201);
+	} catch (e) {
+		return handleTeamDirectoryError(c, e);
+	}
+});
+
 app.post("/api/v1/admin/users/:id/mailboxes", async (c) => {
 	let user;
 	try { user = resolveUser(c); } catch (e) { return handleAuthz(c, e); }
@@ -797,6 +1006,7 @@ app.get("/api/v1/admin/mailboxes", async (c) => {
 	const entries = await listUserMailboxes(c.env, user);
 	const detailed = await Promise.all(entries.map(async ({ id }) => {
 		const acl = await getMailboxAcl(c.env, id);
+		const meta = await getTeamMailboxMeta(c.env, id);
 		let inboxCount: number | null = null;
 		try {
 			const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(id));
@@ -808,6 +1018,13 @@ app.get("/api/v1/admin/mailboxes", async (c) => {
 			owner: acl?.owner ?? null,
 			memberCount: acl?.members.length ?? 0,
 			inboxCount,
+			team: meta ? {
+				id: meta.team.id,
+				slug: meta.team.slug,
+				displayName: meta.team.displayName,
+				kind: meta.address.kind,
+				userSlug: meta.teamUser?.slug ?? null,
+			} : null,
 		};
 	}));
 	return c.json(detailed);
@@ -1584,26 +1801,28 @@ async function streamToArrayBuffer(stream: ReadableStream, streamSize: number) {
 	return result;
 }
 
-async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env: Env, ctx: ExecutionContext) {
+async function receiveEmail(event: { raw: ReadableStream; rawSize: number; to?: string }, env: Env, ctx: ExecutionContext) {
 	const rawEmail = await streamToArrayBuffer(event.raw, event.rawSize);
 	const parsedEmail = await new PostalMime().parse(rawEmail);
 
-	if (!parsedEmail.to?.length || !parsedEmail.to[0].address) throw new Error("received email with empty to");
+	const allRecipients = collectInboundRecipientAddresses(event.to, parsedEmail.to);
+	if (allRecipients.length === 0) throw new Error("received email with empty to");
 
-	const allowedAddresses = ((env.EMAIL_ADDRESSES ?? []) as string[]).map((a) => a.toLowerCase());
-	const allRecipients = parsedEmail.to.map((t) => t.address?.toLowerCase()).filter(Boolean) as string[];
 	const ccRecipients = (parsedEmail.cc || []).map((e) => e.address?.toLowerCase()).filter(Boolean) as string[];
 	const bccRecipients = (parsedEmail.bcc || []).map((e) => e.address?.toLowerCase()).filter(Boolean) as string[];
 
-	let mailboxId: string | undefined;
-	if (allowedAddresses.length > 0) {
-		mailboxId = allRecipients.find((addr) => allowedAddresses.includes(addr));
-		if (!mailboxId) { console.log(`Ignoring email: no recipient matches EMAIL_ADDRESSES.`); return; }
-	} else { mailboxId = allRecipients[0]; }
-	if (!mailboxId) throw new Error("received email with no valid recipient address");
+	let resolvedRecipient: Awaited<ReturnType<typeof resolveAddress>> = null;
+	for (const recipient of allRecipients) {
+		resolvedRecipient = await resolveAddress(env, recipient);
+		if (resolvedRecipient) break;
+	}
+	if (!resolvedRecipient) {
+		console.log(`Ignoring email: no recipient matches an active team or legacy mailbox.`);
+		return;
+	}
+	const mailboxId = resolvedRecipient.mailboxId;
 
 	const messageId = crypto.randomUUID();
-	if (!(await env.BUCKET.head(`mailboxes/${mailboxId}.json`))) { console.log(`Ignoring email for ${mailboxId}: mailbox does not exist`); return; }
 
 	const stub = env.MAILBOX.get(env.MAILBOX.idFromName(mailboxId));
 
