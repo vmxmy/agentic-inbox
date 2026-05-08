@@ -23,3 +23,9 @@ worker-configuration.d.ts
 .codex/
 .worktrees/
 .gitnexus
+.superpowers/
+CLAUDE.md
+test-report/
+docs/analysis/
+docs/superpowers/
+docs/project-operating-model.md
