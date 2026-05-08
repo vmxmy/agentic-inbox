@@ -131,7 +131,10 @@ function UnifiedChatConnected({
 	}, []);
 
 	const routerAgent = useAgent({ agent: "RouterAgent", name: mailboxId });
-	const chat = useAgentChat({ agent: routerAgent });
+	// `resume: false` — disable the SDK's stream-resume on reconnect so a user-
+	// triggered stop() truly aborts the run instead of being instantly
+	// resurrected by the resume handshake.
+	const chat = useAgentChat({ agent: routerAgent, resume: false });
 
 	const isStreaming = chat.status === "streaming" || chat.status === "submitted";
 

@@ -206,6 +206,13 @@ export class EmailAgent extends AIChatAgent<any> {
 	 *  owner-only gate denies in that case, which is intentional. */
 	private currentUser: AuthUser | null = null;
 	private bearerCache = new Map<string, string>();
+	/**
+	 * In-flight `executeTask` AbortControllers keyed by the `taskId` the
+	 * caller (RouterAgent) supplies. Lets the router cancel a delegated
+	 * sub-task when the user hits stop on the chat. Cleared on completion
+	 * (success or error) so a missing entry implies "task already finished".
+	 */
+	private taskAborters = new Map<string, AbortController>();
 
 	override async fetch(request: Request): Promise<Response> {
 		this.currentUser = await readInternalAuthContextHeader(
@@ -215,7 +222,7 @@ export class EmailAgent extends AIChatAgent<any> {
 		return super.fetch(request);
 	}
 
-	async onChatMessage(onFinish: any) {
+	async onChatMessage(onFinish: any, options?: { abortSignal?: AbortSignal }) {
 		const env = this.env as Env;
 		const mailboxId = this.name;
 		const config = await getAgentConfig(env, mailboxId);
@@ -277,6 +284,10 @@ export class EmailAgent extends AIChatAgent<any> {
 			tools,
 			stopWhen: stepCountIs(5),
 			onFinish,
+			// Forward the SDK-supplied abortSignal so a stop() from the client
+			// actually halts the LLM stream + tool loop instead of letting the
+			// run finish in the background.
+			abortSignal: options?.abortSignal,
 		});
 
 		return result.toUIMessageStreamResponse();
@@ -745,7 +756,11 @@ Based on the email content and thread context above, draft a reply using draft_r
 		return stub.listMcpConnections();
 	}
 
-	async executeTask(task: string, contextSummary: string): Promise<string> {
+	async executeTask(
+		task: string,
+		contextSummary: string,
+		taskId?: string,
+	): Promise<string> {
 		const env = this.env as Env;
 		const mailboxId = this.name;
 		const config = await getAgentConfig(env, mailboxId);
@@ -758,14 +773,40 @@ Based on the email content and thread context above, draft a reply using draft_r
 		const contextPrefix = contextSummary
 			? `Conversation context from the user's session:\n${contextSummary}\n\n`
 			: "";
-		const result = await generateText({
-			model: provider(modelId),
-			system: contextPrefix + systemPrompt,
-			messages: [{ role: "user", content: task }],
-			tools,
-			stopWhen: stepCountIs(8),
-		});
-		return result.text || "(No response)";
+		// When the caller (RouterAgent) supplies a taskId, stash an
+		// AbortController so a later cancelTask(taskId) can abort the
+		// generateText loop. Without taskId we still allocate a controller
+		// — keeps the call shape uniform — but it's never reachable for
+		// cancellation.
+		const aborter = new AbortController();
+		if (taskId) this.taskAborters.set(taskId, aborter);
+		try {
+			const result = await generateText({
+				model: provider(modelId),
+				system: contextPrefix + systemPrompt,
+				messages: [{ role: "user", content: task }],
+				tools,
+				stopWhen: stepCountIs(8),
+				abortSignal: aborter.signal,
+			});
+			return result.text || "(No response)";
+		} finally {
+			if (taskId) this.taskAborters.delete(taskId);
+		}
+	}
+
+	/**
+	 * Cancel an in-flight {@link executeTask} previously started with the
+	 * given `taskId`. RouterAgent calls this when its own chat stream is
+	 * aborted by the user so a delegated sub-task does not keep burning
+	 * LLM tokens after the user clicked stop. Idempotent — a missing
+	 * entry (task already finished) is a no-op.
+	 */
+	async cancelTask(taskId: string): Promise<void> {
+		const aborter = this.taskAborters.get(taskId);
+		if (!aborter) return;
+		aborter.abort();
+		this.taskAborters.delete(taskId);
 	}
 
 	override async destroy(): Promise<void> {

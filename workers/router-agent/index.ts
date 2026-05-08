@@ -14,6 +14,7 @@ import { z } from "zod";
 import { getAgentConfig } from "../lib/agent-config";
 import { getLlmProvider, listLlmModels, pickModel, resolveLlmConfig } from "../lib/llm-models";
 import type { Env } from "../types";
+import { runAbortable } from "./abortable";
 
 function defineTool(def: {
 	description: string;
@@ -42,7 +43,10 @@ Rules:
 5. The user may speak Chinese or English. Match their language.`;
 
 export class RouterAgent extends AIChatAgent<any> {
-	async onChatMessage(onFinish: any) {
+	async onChatMessage(
+		onFinish: any,
+		options?: { abortSignal?: AbortSignal },
+	) {
 		const env = this.env as Env;
 		const mailboxId = this.name;
 		const config = await getAgentConfig(env, mailboxId);
@@ -50,6 +54,7 @@ export class RouterAgent extends AIChatAgent<any> {
 		const provider = getLlmProvider(env, cfg);
 		const catalog = await listLlmModels(env, { cfg });
 		const modelId = pickModel(catalog, config.model, cfg.defaultModel);
+		const abortSignal = options?.abortSignal;
 
 		const tools: ToolSet = {
 			ask_email_agent: defineTool({
@@ -64,7 +69,13 @@ export class RouterAgent extends AIChatAgent<any> {
 				}),
 				execute: async ({ task, context_summary }: { task: string; context_summary?: string }) => {
 					const stub = await getAgentByName(env.EMAIL_AGENT, mailboxId);
-					return stub.executeTask(task, context_summary ?? "");
+					const taskId = crypto.randomUUID();
+					return runAbortable(
+						abortSignal,
+						taskId,
+						(id) => stub.cancelTask(id),
+						() => stub.executeTask(task, context_summary ?? "", taskId),
+					);
 				},
 			}),
 		};
@@ -76,6 +87,10 @@ export class RouterAgent extends AIChatAgent<any> {
 			tools,
 			stopWhen: stepCountIs(4),
 			onFinish,
+			// Forward the SDK-supplied abortSignal so a stop() from the client
+			// halts both the router's own stream AND any in-flight delegated
+			// sub-task (via runAbortable above).
+			abortSignal,
 		});
 
 		return result.toUIMessageStreamResponse();
