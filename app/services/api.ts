@@ -338,13 +338,37 @@ const api = {
 		}>>("/api/v1/admin/mailboxes"),
 	adminCreateMailboxForUser: (userId: string, email: string, name: string, settings?: unknown) =>
 		post<Mailbox>(`/api/v1/admin/users/${userId}/mailboxes`, { email, name, settings }),
+	adminAssignMailboxOwner: (mailboxId: string, email: string) =>
+		post<{ id: string; owner: string | null; members: string[] }>(
+			`/api/v1/admin/mailboxes/${encodeURIComponent(mailboxId)}/owner`,
+			{ email },
+		),
+	adminListUsers: () =>
+		get<Array<{
+			id: string;
+			email: string;
+			role: "user" | "admin";
+			displayName: string | null;
+			emailVerifiedAt: number | null;
+			createdAt: number;
+		}>>("/api/v1/admin/users"),
+	adminUpdateUserRole: (userId: string, role: string) =>
+		post<{ ok: true }>(`/api/v1/admin/users/${userId}/role`, { role }),
 	adminListTeams: () => get<Team[]>("/api/v1/admin/teams"),
 	adminCreateTeam: (name: string, displayName: string) =>
 		post<Team>("/api/v1/admin/teams", { name, displayName }),
+	adminUpdateTeam: (teamId: string, body: { displayName?: string; disabled?: boolean }) =>
+		put<Team>(`/api/v1/admin/teams/${teamId}`, body),
 	adminListTeamUsers: (teamId: string) =>
 		get<TeamUser[]>(`/api/v1/admin/teams/${teamId}/users`),
 	adminCreateTeamUser: (teamId: string, userName: string, displayName: string) =>
 		post<TeamUser>(`/api/v1/admin/teams/${teamId}/users`, { userName, displayName }),
+	adminUpdateTeamUser: (teamId: string, userId: string, body: { displayName?: string; disabled?: boolean }) =>
+		put<TeamUser>(`/api/v1/admin/teams/${teamId}/users/${userId}`, body),
+	adminReissueSetupLink: (teamId: string, userId: string) =>
+		post<{ setupUrl: string; setupExpiresAt: number }>(
+			`/api/v1/admin/teams/${teamId}/users/${userId}/setup-link`,
+		),
 
 	// Emails
 	listEmails: (mailboxId: string, params: Record<string, string>, opts?: { signal?: AbortSignal }) =>

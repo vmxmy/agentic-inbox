@@ -38,6 +38,43 @@ export function useCreateTeam() {
 	});
 }
 
+export function useUpdateTeam() {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: ({
+			teamId,
+			body,
+		}: { teamId: string; body: { displayName?: string; disabled?: boolean } }) =>
+			api.adminUpdateTeam(teamId, body),
+		onSuccess: () => {
+			queryClient.invalidateQueries({ queryKey: queryKeys.adminTeams });
+			queryClient.invalidateQueries({ queryKey: queryKeys.adminMailboxes });
+		},
+	});
+}
+
+export function useUpdateTeamUser(teamId: string) {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: ({ userId, body }: { userId: string; body: { displayName?: string; disabled?: boolean } }) =>
+			api.adminUpdateTeamUser(teamId, userId, body),
+		onSuccess: () => {
+			queryClient.invalidateQueries({ queryKey: queryKeys.adminTeamUsers(teamId) });
+		},
+	});
+}
+
+export function useReissueSetupLink(teamId: string) {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: ({ userId }: { userId: string }) =>
+			api.adminReissueSetupLink(teamId, userId),
+		onSuccess: () => {
+			queryClient.invalidateQueries({ queryKey: queryKeys.adminTeamUsers(teamId) });
+		},
+	});
+}
+
 export function useCreateTeamUser() {
 	const qc = useQueryClient();
 	return useMutation({

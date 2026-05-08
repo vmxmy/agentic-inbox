@@ -26,10 +26,13 @@ import {
 	deleteTeamForProvisioningRollback,
 	deleteTeamUserForProvisioningRollback,
 	getTeamMailboxMeta,
+	getTeamUserByTeamAndId,
 	listTeams,
 	listTeamUsers,
 	resolveAddress,
 	TeamDirectoryError,
+	updateTeam,
+	updateTeamUser,
 } from "./lib/teams";
 import { issueToken } from "./lib/email-tokens";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
@@ -99,7 +102,12 @@ import {
 	toPublic,
 	updateProvider,
 } from "./lib/llm-providers";
-import { MCP_AUTH_TYPES } from "./lib/mcp-connections";
+import {
+	EnterpriseCredentialsSchema,
+	encryptJson,
+	MCP_AUTH_TYPES,
+	ServerConfigSchema,
+} from "./lib/mcp-connections";
 import { redactTokenFromText } from "./lib/mcp-token-crypto";
 
 type AppContext = Context<MailboxContext>;
@@ -117,9 +125,19 @@ const CreateTeamBody = z.object({
 	displayName: z.string().min(1).max(100),
 }).strict();
 
+const UpdateTeamBody = z.object({
+	displayName: z.string().min(1).max(100).optional(),
+	disabled: z.boolean().optional(),
+}).strict();
+
 const CreateTeamUserBody = z.object({
 	userName: z.string().min(1),
 	displayName: z.string().min(1).max(100),
+}).strict();
+
+const UpdateTeamUserBody = z.object({
+	displayName: z.string().min(1).max(100).optional(),
+	disabled: z.boolean().optional(),
 }).strict();
 
 const DraftBody = z.object({
@@ -841,6 +859,22 @@ app.post("/api/v1/admin/teams", async (c) => {
 	}
 });
 
+app.put("/api/v1/admin/teams/:id", async (c) => {
+	const guard = requireAdmin(c);
+	if (guard instanceof Response) return guard;
+	const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+	const parsed = UpdateTeamBody.safeParse(body);
+	if (!parsed.success) {
+		return c.json({ error: "displayName must be a non-empty string and disabled must be boolean" }, 400);
+	}
+	try {
+		const team = await updateTeam(c.env, c.req.param("id")!, parsed.data);
+		return c.json(team);
+	} catch (e) {
+		return handleTeamDirectoryError(c, e);
+	}
+});
+
 app.get("/api/v1/admin/teams/:teamId/users", async (c) => {
 	const guard = requireAdmin(c);
 	if (guard instanceof Response) return guard;
@@ -855,6 +889,27 @@ app.get("/api/v1/admin/teams/:teamId/users", async (c) => {
 			};
 		}));
 		return c.json(payload);
+	} catch (e) {
+		return handleTeamDirectoryError(c, e);
+	}
+});
+
+app.put("/api/v1/admin/teams/:teamId/users/:userId", async (c) => {
+	const guard = requireAdmin(c);
+	if (guard instanceof Response) return guard;
+	const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+	const parsed = UpdateTeamUserBody.safeParse(body);
+	if (!parsed.success) {
+		return c.json({ error: "disabled must be boolean" }, 400);
+	}
+	try {
+		const teamUser = await updateTeamUser(
+			c.env,
+			c.req.param("teamId")!,
+			c.req.param("userId")!,
+			parsed.data,
+		);
+		return c.json(teamUser);
 	} catch (e) {
 		return handleTeamDirectoryError(c, e);
 	}
@@ -911,6 +966,26 @@ app.post("/api/v1/admin/teams/:teamId/users", async (c) => {
 			setupUrl,
 			setupExpiresAt: setupToken.expiresAt,
 		}, 201);
+	} catch (e) {
+		return handleTeamDirectoryError(c, e);
+	}
+});
+
+app.post("/api/v1/admin/teams/:teamId/users/:userId/setup-link", async (c) => {
+	const guard = requireAdmin(c);
+	if (guard instanceof Response) return guard;
+	try {
+		const teamUser = await getTeamUserByTeamAndId(
+			c.env,
+			c.req.param("teamId")!,
+			c.req.param("userId")!,
+		);
+		if (!teamUser) throw new TeamDirectoryError(404, "Team user not found");
+		const setupToken = await issueToken(c.env, teamUser.userId, "reset");
+		return c.json({
+			setupUrl: `${publicOrigin(c)}/reset-password?token=${setupToken.rawToken}`,
+			setupExpiresAt: setupToken.expiresAt,
+		});
 	} catch (e) {
 		return handleTeamDirectoryError(c, e);
 	}
@@ -1387,6 +1462,8 @@ const McpConnectionBaseBody = {
 	url: z.string().url(),
 	name: z.string().min(1).max(64),
 	displayName: z.string().min(1).max(128).optional(),
+	serverConfig: ServerConfigSchema.optional(),
+	enterpriseCredentials: EnterpriseCredentialsSchema.optional(),
 };
 
 const PostMcpConnectionBody = z.preprocess((value) => {
@@ -1421,6 +1498,12 @@ app.post("/api/v1/mailboxes/:mailboxId/mcp-connections", async (c) => {
 		return c.json({ error: "invalid_body", details: parsed.error.message }, 400);
 	}
 
+	if (parsed.data.enterpriseCredentials) {
+		if (!c.env.MCP_BEARER_KEK_CURRENT) {
+			return c.json({ error: "enterprise_credentials_feature_disabled" }, 503);
+		}
+	}
+
 	const reqUrl = new URL(c.req.url);
 	const callbackHost = `${reqUrl.protocol}//${reqUrl.host}`;
 	const stub = await getAgentByName(c.env.EMAIL_AGENT, mailboxId);
@@ -1442,6 +1525,10 @@ app.post("/api/v1/mailboxes/:mailboxId/mcp-connections", async (c) => {
 						displayName: parsed.data.displayName,
 						addedByUserId: user.id,
 						callbackHost,
+						serverConfig: parsed.data.serverConfig ?? null,
+						enterpriseCredentialsEncryptedJson: parsed.data.enterpriseCredentials
+							? await encryptJson(c.env, parsed.data.enterpriseCredentials)
+							: null,
 					},
 		);
 		return c.json(result);

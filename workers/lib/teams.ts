@@ -219,6 +219,18 @@ export async function getTeamById(
 	return rows[0] ? rowToTeam(rows[0]) : null;
 }
 
+async function getAnyTeamById(
+	env: Env,
+	teamId: string,
+): Promise<TeamRecord | null> {
+	const rows = await db(env)
+		.select()
+		.from(teams)
+		.where(eq(teams.id, teamId))
+		.limit(1);
+	return rows[0] ? rowToTeam(rows[0]) : null;
+}
+
 export async function getTeamBySlug(
 	env: Env,
 	slugInput: string,
@@ -254,6 +266,19 @@ export async function getTeamUserById(
 		.select()
 		.from(teamUsers)
 		.where(activeTeamUserWhere(teamUserId))
+		.limit(1);
+	return rows[0] ? rowToTeamUser(rows[0]) : null;
+}
+
+export async function getTeamUserByTeamAndId(
+	env: Env,
+	teamId: string,
+	teamUserId: string,
+): Promise<TeamUserRecord | null> {
+	const rows = await db(env)
+		.select()
+		.from(teamUsers)
+		.where(and(eq(teamUsers.teamId, teamId), eq(teamUsers.id, teamUserId)))
 		.limit(1);
 	return rows[0] ? rowToTeamUser(rows[0]) : null;
 }
@@ -476,6 +501,70 @@ export async function createTeamUser(
 	const teamUser = await getTeamUserById(env, id);
 	if (!teamUser) throw new TeamDirectoryError(404, "Team user was not created");
 	return { teamUser, user, team };
+}
+
+
+export interface UpdateTeamInput {
+	displayName?: string;
+	disabled?: boolean;
+}
+
+export async function updateTeam(
+	env: Env,
+	teamId: string,
+	input: UpdateTeamInput,
+): Promise<TeamRecord> {
+	const existing = await getAnyTeamById(env, teamId);
+	if (!existing) throw new TeamDirectoryError(404, "Team not found");
+
+	const ts = now();
+	const patch: Partial<TeamRow> = { updatedAt: ts };
+	if (input.displayName !== undefined) {
+		const displayName = input.displayName.trim();
+		if (!displayName) throw new TeamDirectoryError(400, "displayName is required");
+		patch.displayName = displayName;
+	}
+	if (input.disabled !== undefined) {
+		patch.disabledAt = input.disabled ? ts : null;
+	}
+
+	await db(env).update(teams).set(patch).where(eq(teams.id, teamId));
+	const updated = await getAnyTeamById(env, teamId);
+	if (!updated) throw new TeamDirectoryError(404, "Team not found");
+	return updated;
+}
+
+export interface UpdateTeamUserInput {
+	displayName?: string;
+	disabled?: boolean;
+}
+
+export async function updateTeamUser(
+	env: Env,
+	teamId: string,
+	teamUserId: string,
+	input: UpdateTeamUserInput,
+): Promise<TeamUserRecord> {
+	const team = await getAnyTeamById(env, teamId);
+	if (!team) throw new TeamDirectoryError(404, "Team not found");
+	const existing = await getTeamUserByTeamAndId(env, teamId, teamUserId);
+	if (!existing) throw new TeamDirectoryError(404, "Team user not found");
+
+	const ts = now();
+	const patch: Partial<TeamUserRow> = { updatedAt: ts };
+	if (input.displayName !== undefined) {
+		const displayName = input.displayName.trim();
+		if (!displayName) throw new TeamDirectoryError(400, "displayName is required");
+		patch.displayName = displayName;
+	}
+	if (input.disabled !== undefined) {
+		patch.disabledAt = input.disabled ? ts : null;
+	}
+
+	await db(env).update(teamUsers).set(patch).where(eq(teamUsers.id, teamUserId));
+	const updated = await getTeamUserByTeamAndId(env, teamId, teamUserId);
+	if (!updated) throw new TeamDirectoryError(404, "Team user not found");
+	return updated;
 }
 
 export async function activateRegisteredAddress(
