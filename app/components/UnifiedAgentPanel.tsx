@@ -176,13 +176,13 @@ function UnifiedChatConnected({
 		chat.stop();
 	};
 
-	const handleClearAll = () => {
+	const handleClearAll = async () => {
 		if (
 			window.confirm(
-				"Clear chat history on this device? Server-side history may reappear on reload.",
+				"Clear chat history for this mailbox? This cannot be undone.",
 			)
 		) {
-			chat.setMessages([]);
+			await chat.clearHistory();
 		}
 	};
 
