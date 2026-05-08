@@ -155,6 +155,10 @@ export const mailboxSettings = sqliteTable("mailbox_settings", {
  * "expose nothing" — a kill-switch that keeps the connection healthy but
  * hides every tool from the LLM.
  *
+ * `server_config_json` stores non-sensitive provider-specific configuration.
+ * `enterprise_credentials_encrypted_json` stores encrypted BYOC credential
+ * envelopes only; plaintext credentials must never be persisted.
+ *
  * `transport_type` is filled lazily once the SDK negotiates a transport
  * (`streamable-http` or `sse`); it stays `NULL` until the first successful
  * connection.
@@ -170,6 +174,10 @@ export const mcpConnections = sqliteTable("mcp_connections", {
 	last_state: text("last_state").notNull(),
 	last_error: text("last_error"),
 	enabled_tools_json: text("enabled_tools_json"),
+	server_config_json: text("server_config_json"),
+	enterprise_credentials_encrypted_json: text(
+		"enterprise_credentials_encrypted_json",
+	),
 	// L4 P8 — Bearer auth additions (migration 19). Defaults to 'oauth' for
 	// rows persisted before P8 cutover; the encrypted-blob columns are only
 	// populated when auth_type='bearer'.

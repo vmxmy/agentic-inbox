@@ -451,4 +451,15 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX IF NOT EXISTS idx_mcp_audit_auth_type ON mcp_audit_log(auth_type);
         `,
 	},
+	{
+		// Flexible MCP provider configuration. `server_config_json` carries
+		// non-sensitive provider metadata; enterprise credentials are stored
+		// only as an encrypted JSON envelope and remain NULL when platform
+		// credentials should be used.
+		name: "21_add_mcp_flexible_config_columns",
+		sql: `
+            ALTER TABLE mcp_connections ADD COLUMN server_config_json TEXT;
+            ALTER TABLE mcp_connections ADD COLUMN enterprise_credentials_encrypted_json TEXT;
+        `,
+	},
 ];

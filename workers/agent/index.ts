@@ -35,7 +35,12 @@ import {
 	type AddExternalMcpServerInput,
 	type AddExternalMcpServerResult,
 	type PublicMcpConnection,
+	type McpConnection,
 } from "../lib/mcp-connections";
+import {
+	resolveOAuthCredentials,
+	ProviderCredentialsNotConfiguredError,
+} from "../lib/mcp-credential-resolver";
 import {
 	buildBearerFetch,
 	connectBearerMcpServer,
@@ -45,7 +50,10 @@ import {
 	decryptBearerToken,
 	encryptBearerToken,
 } from "../lib/mcp-token-crypto";
-import { MailboxBoundOAuthProvider } from "../lib/mcp-oauth-provider";
+import {
+	MailboxBoundOAuthProvider,
+	type ResolvedCredentials,
+} from "../lib/mcp-oauth-provider";
 import { parseSdkToolKey, namespaceTool } from "../lib/mcp-tool-namespace";
 import {
 	MCP_INJECTION_WARNING,
@@ -207,6 +215,7 @@ export class EmailAgent extends AIChatAgent<any> {
 	 *  owner-only gate denies in that case, which is intentional. */
 	private currentUser: AuthUser | null = null;
 	private bearerCache = new Map<string, string>();
+	private _pendingOAuthCredentials: ResolvedCredentials | undefined = undefined;
 	/**
 	 * In-flight `executeTask` AbortControllers keyed by the `taskId` the
 	 * caller (RouterAgent) supplies. Lets the router cancel a delegated
@@ -239,7 +248,9 @@ export class EmailAgent extends AIChatAgent<any> {
 		if (l4Enabled) {
 			const externalRaw = this.mcp.getAITools();
 			const stub = getMailboxStub(env, this.name);
-			const conns = await stub.listMcpConnections();
+			const conns = await (stub as unknown as {
+				listMcpConnections(): Promise<readonly PublicMcpConnection[]>;
+			}).listMcpConnections();
 			const knownConnIds = conns.map((c) => c.id);
 			const connById = new Map(conns.map((c) => [c.id, c]));
 			const screener = (text: string) => isPromptInjection(env.AI, text);
@@ -614,7 +625,11 @@ Based on the email content and thread context above, draft a reply using draft_r
 		const env = this.env as Env;
 		if (!isL4BearerEnabled(env)) return;
 		const stub = getMailboxStub(env, this.name);
-		const connections = await stub.listBearerMcpConnectionsForRehydrate();
+		const bearerStub = stub as unknown as {
+			listBearerMcpConnectionsForRehydrate(): Promise<readonly McpConnection[]>;
+			upsertMcpConnection(input: McpConnection): Promise<PublicMcpConnection>;
+		};
+		const connections = await bearerStub.listBearerMcpConnectionsForRehydrate();
 		for (const connection of connections) {
 			try {
 				const envelope = bearerEnvelopeFromConnection(connection);
@@ -626,7 +641,7 @@ Based on the email content and thread context above, draft a reply using draft_r
 					url: connection.serverUrl,
 					resetExisting: true,
 				});
-				await stub.upsertMcpConnection({
+				await bearerStub.upsertMcpConnection({
 					...connection,
 					transportType: connection.transportType ?? "streamable-http",
 					lastState: "ready",
@@ -636,7 +651,7 @@ Based on the email content and thread context above, draft a reply using draft_r
 				const category = categoriseError(err);
 				this.bearerCache.delete(connection.id);
 				await this.mcp.removeServer(connection.id).catch(() => undefined);
-				await stub.upsertMcpConnection({
+				await bearerStub.upsertMcpConnection({
 					...connection,
 					lastState: "error",
 					lastError: category,
@@ -648,36 +663,134 @@ Based on the email content and thread context above, draft a reply using draft_r
 		}
 	}
 
+	private inferCallbackHostForConnection(connectionId: string): string | undefined {
+		const servers = this.mcp.listServers();
+		const server = servers.find((s) => s.id === connectionId);
+		if (server?.callback_url) {
+			try {
+				return new URL(server.callback_url).origin;
+			} catch {
+				return undefined;
+			}
+		}
+		return undefined;
+	}
+
+	private async rehydrateOAuthMcpServers(): Promise<void> {
+		const env = this.env as Env;
+		const stub = getMailboxStub(env, this.name);
+		const connections = await (stub as unknown as {
+			listOAuthMcpConnectionsForRehydrate(): Promise<readonly McpConnection[]>;
+		}).listOAuthMcpConnectionsForRehydrate();
+		for (const connection of connections.filter((c) => c.lastState !== "error")) {
+			try {
+				const resolved = await resolveOAuthCredentials(
+					env as unknown as Parameters<typeof resolveOAuthCredentials>[0],
+					connection,
+				);
+				this._pendingOAuthCredentials = resolved as ResolvedCredentials;
+				try {
+					const callbackHost = this.inferCallbackHostForConnection(connection.id);
+					if (callbackHost) {
+						await this.addMcpServer(connection.serverName, connection.serverUrl, {
+							callbackHost,
+						});
+					} else {
+						// No callback URL stored — prime DO storage directly so the
+						// SDK restore path finds credentials via clientInformation().
+						const provider = new MailboxBoundOAuthProvider(
+							this.ctx.storage,
+							this.name,
+							"",
+							this.name,
+							() => "",
+							resolved as ResolvedCredentials,
+						);
+						provider.serverId = connection.id;
+						await provider.clientInformation();
+					}
+				} finally {
+					this._pendingOAuthCredentials = undefined;
+				}
+			} catch (e) {
+				if (e instanceof ProviderCredentialsNotConfiguredError) {
+					console.warn(
+						`[MCP] Skipping OAuth restore for ${connection.serverName}: ${e.message}`,
+					);
+				} else {
+					console.warn(
+						`[MCP] OAuth restore failed for ${connection.serverName}:`,
+						e,
+					);
+				}
+			}
+		}
+	}
+
 	override async onStart(props?: Record<string, unknown>): Promise<void> {
 		await super.onStart(props);
 		await this.rehydrateBearerMcpServers();
+		await this.rehydrateOAuthMcpServers();
 	}
 
 	private async addExternalOAuthMcpServer(
 		input: Extract<AddExternalMcpServerInput, { authType: "oauth" }>,
 	): Promise<AddExternalMcpServerResult> {
 		const env = this.env as Env;
-		const sdk = await this.addMcpServer(input.serverName, input.url, {
-			callbackHost: input.callbackHost,
-		});
-		const connectionInput = buildConnectionFromSdkResult({
-			serverName: input.serverName,
-			serverUrl: input.url,
-			displayName: input.displayName,
-			addedByUserId: input.addedByUserId,
-			addedAt: Date.now(),
-			sdk,
-		});
-		const stub = getMailboxStub(env, this.name);
-		const connection = await stub.upsertMcpConnection(connectionInput);
-		if (sdk.state === "authenticating") {
-			return {
-				state: "authenticating",
-				connection,
-				authUrl: sdk.authUrl,
-			};
+		try {
+			if (input.enterpriseCredentials) {
+				this._pendingOAuthCredentials = input.enterpriseCredentials;
+			} else {
+				const pseudoConn = {
+					enterpriseCredentialsEncryptedJson:
+						input.enterpriseCredentialsEncryptedJson ?? null,
+					serverConfig: input.serverConfig ?? null,
+				};
+				const resolved = await resolveOAuthCredentials(
+					env as unknown as Parameters<typeof resolveOAuthCredentials>[0],
+					pseudoConn,
+				);
+				this._pendingOAuthCredentials = resolved as ResolvedCredentials;
+			}
+		} catch (e) {
+			if (e instanceof ProviderCredentialsNotConfiguredError) {
+				this._pendingOAuthCredentials = undefined;
+				console.warn(
+					`Skipping MCP connection ${input.serverName}: ${e.message}`,
+				);
+				throw e;
+			}
+			throw e;
 		}
-		return { state: "ready", connection };
+
+		try {
+			const sdk = await this.addMcpServer(input.serverName, input.url, {
+				callbackHost: input.callbackHost,
+			});
+			const connectionInput = buildConnectionFromSdkResult({
+				serverName: input.serverName,
+				serverUrl: input.url,
+				displayName: input.displayName,
+				addedByUserId: input.addedByUserId,
+				addedAt: Date.now(),
+				sdk,
+				serverConfig: input.serverConfig ?? null,
+				enterpriseCredentialsEncryptedJson:
+					input.enterpriseCredentialsEncryptedJson ?? null,
+			});
+			const stub = getMailboxStub(env, this.name);
+			const connection = await stub.upsertMcpConnection(connectionInput);
+			if (sdk.state === "authenticating") {
+				return {
+					state: "authenticating",
+					connection,
+					authUrl: sdk.authUrl,
+				};
+			}
+			return { state: "ready", connection };
+		} finally {
+			this._pendingOAuthCredentials = undefined;
+		}
 	}
 
 	private async addExternalBearerMcpServer(
@@ -738,6 +851,7 @@ Based on the email content and thread context above, draft a reply using draft_r
 			callbackUrl,
 			this.name, // mailboxId === DO instance id
 			() => this.currentUser?.id ?? "",
+			this._pendingOAuthCredentials,
 		);
 	}
 

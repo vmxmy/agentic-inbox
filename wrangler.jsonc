@@ -42,6 +42,15 @@
 		// `MCP_BEARER_KEK_CURRENT` secret to be present before Bearer add /
 		// rehydrate paths run.
 		"L4_MCP_BEARER_ENABLED": "true",
+		// G7 — Platform OAuth credentials for MCP providers (optional secrets).
+		// These are NOT listed here as values; they are set via:
+		//   wrangler secret put GOOGLE_CONTACTS_CLIENT_ID
+		//   wrangler secret put GOOGLE_CONTACTS_CLIENT_SECRET
+		//   wrangler secret put MICROSOFT_GRAPH_CLIENT_ID
+		//   wrangler secret put MICROSOFT_GRAPH_CLIENT_SECRET
+		//   wrangler secret put MICROSOFT_GRAPH_TENANT_ID
+		// Each providerType in server_config_json maps to the
+		// {PROVIDER_SCREAMING_SNAKE}_CLIENT_ID / _CLIENT_SECRET convention above.
 	},
 	"d1_databases": [
 		{

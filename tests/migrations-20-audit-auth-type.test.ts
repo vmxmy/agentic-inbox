@@ -13,10 +13,8 @@ describe("Migration 20 — mcp_audit_log.auth_type", () => {
 		(m) => m.name === "20_add_mcp_audit_auth_type",
 	);
 
-	it("is registered and is the newest migration", () => {
+	it("is registered", () => {
 		expect(m20).toBeDefined();
-		const last = mailboxMigrations[mailboxMigrations.length - 1];
-		expect(last?.name).toBe("20_add_mcp_audit_auth_type");
 	});
 
 	it("comes immediately after migration 19", () => {

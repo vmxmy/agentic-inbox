@@ -29,3 +29,5 @@ test-report/
 docs/analysis/
 docs/superpowers/
 docs/project-operating-model.md
+.vercel
+.env*.local

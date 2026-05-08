@@ -39,10 +39,22 @@ import {
 	validateBoundState,
 	type BoundStateRow,
 } from "./mcp-connections";
+import type {
+	OAuthClientInformation,
+	OAuthClientInformationFull,
+	OAuthClientMetadata,
+} from "@modelcontextprotocol/sdk/shared/auth.js";
+
+export type ResolvedCredentials = {
+	clientId: string;
+	clientSecret?: string;
+	scopes?: string[];
+};
 
 export class MailboxBoundOAuthProvider extends DurableObjectOAuthClientProvider {
 	readonly mailboxId: string;
 	private readonly readCurrentUserId: () => string;
+	private readonly _resolvedCredentials?: ResolvedCredentials;
 
 	constructor(
 		storage: DurableObjectStorage,
@@ -50,10 +62,50 @@ export class MailboxBoundOAuthProvider extends DurableObjectOAuthClientProvider 
 		baseRedirectUrl: string,
 		mailboxId: string,
 		readCurrentUserId: () => string,
+		resolvedCredentials?: ResolvedCredentials,
 	) {
 		super(storage, clientName, baseRedirectUrl);
+		if (resolvedCredentials) {
+			void this.saveClientInformation({
+				client_id: resolvedCredentials.clientId,
+				...(resolvedCredentials.clientSecret && {
+					client_secret: resolvedCredentials.clientSecret,
+				}),
+			} as OAuthClientInformationFull);
+		}
 		this.mailboxId = mailboxId;
 		this.readCurrentUserId = readCurrentUserId;
+		this._resolvedCredentials = resolvedCredentials;
+	}
+
+	override get clientId(): string {
+		if (this._resolvedCredentials) {
+			return this._resolvedCredentials.clientId;
+		}
+		return super.clientId;
+	}
+
+	override get clientMetadata(): OAuthClientMetadata {
+		const base = super.clientMetadata;
+		if (this._resolvedCredentials?.scopes?.length) {
+			return {
+				...base,
+				scope: this._resolvedCredentials.scopes.join(" "),
+			};
+		}
+		return base;
+	}
+
+	override async clientInformation(): Promise<OAuthClientInformation | undefined> {
+		if (this._resolvedCredentials) {
+			return {
+				client_id: this._resolvedCredentials.clientId,
+				...(this._resolvedCredentials.clientSecret && {
+					client_secret: this._resolvedCredentials.clientSecret,
+				}),
+			};
+		}
+		return super.clientInformation();
 	}
 
 	override async state(): Promise<string> {

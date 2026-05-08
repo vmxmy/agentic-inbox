@@ -1024,6 +1024,29 @@ app.post("/api/v1/admin/mailboxes/:mailboxId/owner", async (c) => {
 	} catch (e) { return handleAuthz(c, e); }
 });
 
+app.delete("/api/v1/admin/mailboxes/:mailboxId", async (c) => {
+	const guard = requireAdmin(c);
+	if (guard instanceof Response) return guard;
+	const mailboxId = normalizeEmail(c.req.param("mailboxId")!);
+
+	const record = await getMailboxRecord(c.env, mailboxId);
+	if (!record) return c.json({ error: "Mailbox not found" }, 404);
+
+	if (await getTeamMailboxMeta(c.env, mailboxId)) {
+		return c.json({
+			error: "Team-managed mailbox. Use /admin/teams or /admin/team-users to disable instead.",
+		}, 409);
+	}
+
+	await deleteMailboxRecord(c.env, mailboxId);
+	try {
+		await c.env.BUCKET.delete(`mailboxes/${mailboxId}.json`);
+	} catch (e) {
+		console.warn(`[admin-delete] orphan R2 blob delete failed for "${mailboxId}":`, e);
+	}
+	return c.body(null, 204);
+});
+
 // Reconcile the D1 mailbox directory + membership index against the
 // authoritative R2 ACL blobs. Use case during the dual-write phase (PR 3):
 // - new mailbox/member writes occasionally fail to shadow into D1 if the

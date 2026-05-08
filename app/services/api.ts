@@ -343,6 +343,8 @@ const api = {
 			`/api/v1/admin/mailboxes/${encodeURIComponent(mailboxId)}/owner`,
 			{ email },
 		),
+	adminDeleteMailbox: (mailboxId: string) =>
+		del<void>(`/api/v1/admin/mailboxes/${encodeURIComponent(mailboxId)}`),
 	adminListUsers: () =>
 		get<Array<{
 			id: string;

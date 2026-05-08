@@ -64,4 +64,22 @@ export interface Env extends Cloudflare.Env {
 	MCP_BEARER_KEK_CURRENT?: string;
 	MCP_BEARER_KEK_PREVIOUS?: string;
 	MCP_BEARER_KEK_VERSION?: string;
+	/**
+	 * Google People API (Google Contacts) OAuth platform credentials.
+	 * Optional secrets — set via:
+	 *   wrangler secret put GOOGLE_CONTACTS_CLIENT_ID
+	 *   wrangler secret put GOOGLE_CONTACTS_CLIENT_SECRET
+	 */
+	GOOGLE_CONTACTS_CLIENT_ID?: string;
+	GOOGLE_CONTACTS_CLIENT_SECRET?: string;
+	/**
+	 * Microsoft Graph OAuth platform credentials.
+	 * Optional secrets — set via:
+	 *   wrangler secret put MICROSOFT_GRAPH_CLIENT_ID
+	 *   wrangler secret put MICROSOFT_GRAPH_CLIENT_SECRET
+	 *   wrangler secret put MICROSOFT_GRAPH_TENANT_ID
+	 */
+	MICROSOFT_GRAPH_CLIENT_ID?: string;
+	MICROSOFT_GRAPH_CLIENT_SECRET?: string;
+	MICROSOFT_GRAPH_TENANT_ID?: string;
 }

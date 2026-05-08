@@ -14,6 +14,7 @@ import type { RuleCondition, RuleAction } from "../lib/rules";
 import {
 	mcpConnectionToRow,
 	rowToMcpConnection,
+	encryptJson,
 	type McpConnection,
 	type McpConnectionInput,
 	type McpConnectionRow,
@@ -1238,10 +1239,31 @@ export class MailboxDO extends DurableObject<Env> {
 		return rows.map((row) => rowToMcpConnection(row as McpConnectionRow));
 	}
 
+	async listOAuthMcpConnectionsForRehydrate(): Promise<readonly McpConnection[]> {
+		const rows = this.db
+			.select()
+			.from(schema.mcpConnections)
+			.where(eq(schema.mcpConnections.auth_type, "oauth"))
+			.orderBy(asc(schema.mcpConnections.added_at))
+			.all();
+		return rows.map((row) => rowToMcpConnection(row as McpConnectionRow));
+	}
+
 	async upsertMcpConnection(
 		input: McpConnectionInput,
 	): Promise<PublicMcpConnection> {
-		const row = mcpConnectionToRow(input);
+		let enterpriseCredentialsEncryptedJson: string | null =
+			input.enterpriseCredentialsEncryptedJson ?? null;
+		if (input.enterpriseCredentials) {
+			enterpriseCredentialsEncryptedJson = await encryptJson(
+				this.env,
+				input.enterpriseCredentials,
+			);
+		}
+		const row = mcpConnectionToRow({
+			...input,
+			enterpriseCredentialsEncryptedJson,
+		});
 		this.db
 			.insert(schema.mcpConnections)
 			.values(row)
@@ -1257,6 +1279,9 @@ export class MailboxDO extends DurableObject<Env> {
 					last_state: row.last_state,
 					last_error: row.last_error,
 					enabled_tools_json: row.enabled_tools_json,
+					server_config_json: row.server_config_json,
+					enterprise_credentials_encrypted_json:
+						row.enterprise_credentials_encrypted_json,
 					auth_type: row.auth_type,
 					encrypted_token_b64: row.encrypted_token_b64,
 					token_iv_b64: row.token_iv_b64,

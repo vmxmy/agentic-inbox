@@ -53,6 +53,8 @@ describe("MCP transport probe (Phase 7)", () => {
 			lastState: "ready",
 			enabledTools: null,
 			authType: "oauth",
+			serverConfig: null,
+			enterpriseCredentialsEncryptedJson: null,
 			encryptedTokenB64: null,
 			tokenIvB64: null,
 			tokenSaltB64: null,

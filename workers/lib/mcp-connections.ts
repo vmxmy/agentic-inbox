@@ -22,6 +22,11 @@
 
 import { z } from "zod";
 import type { EnvelopeV1 } from "./mcp-token-crypto";
+import {
+	type BearerKekEnv,
+	encryptBearerToken,
+	decryptBearerToken,
+} from "./mcp-token-crypto";
 
 /**
  * The three states our metadata layer records for a connection at the
@@ -62,6 +67,56 @@ export type McpAuthType = (typeof MCP_AUTH_TYPES)[number];
 const McpAuthTypeSchema = z.enum(MCP_AUTH_TYPES);
 
 /**
+ * Plaintext provider metadata stored in `server_config_json`.
+ * Provider-specific branches keep known config narrow while allowing
+ * forward-compatible display/routing fields.
+ */
+export type ServerConfig =
+	| { providerType: "google-contacts"; scopes?: string[]; [k: string]: unknown }
+	| {
+			providerType: "microsoft-graph";
+			scopes?: string[];
+			tenantId?: string;
+			[k: string]: unknown;
+		}
+	| { providerType: "generic"; [k: string]: unknown };
+
+export const ServerConfigSchema = z.discriminatedUnion("providerType", [
+	z.object({
+		providerType: z.literal("google-contacts"),
+		scopes: z.array(z.string()).optional(),
+	}).passthrough(),
+	z.object({
+		providerType: z.literal("microsoft-graph"),
+		scopes: z.array(z.string()).optional(),
+		tenantId: z.string().optional(),
+	}).passthrough(),
+	z.object({
+		providerType: z.literal("generic"),
+	}).passthrough(),
+]);
+
+export const PROVIDER_CREDENTIAL_REGISTRY: Record<
+	string,
+	{ envPrefix: string; defaultScopes: string[] }
+> = {
+	"google-contacts": {
+		envPrefix: "GOOGLE_CONTACTS",
+		defaultScopes: ["https://www.googleapis.com/auth/contacts.readonly"],
+	},
+	"microsoft-graph": {
+		envPrefix: "MICROSOFT_GRAPH",
+		defaultScopes: ["Contacts.Read"],
+	},
+};
+
+export const EnterpriseCredentialsSchema = z.object({
+	clientId: z.string(),
+	clientSecret: z.string(),
+	scopes: z.array(z.string()).optional(),
+});
+
+/**
  * Per-server tool allowlist. `null` means "no allowlist — every tool
  * published by the server flows into the LLM". An empty array is the
  * kill-switch: the connection stays healthy but no tools reach the model.
@@ -81,6 +136,10 @@ export interface McpConnectionRow {
 	last_state: McpConnectionState;
 	last_error: string | null;
 	enabled_tools_json: string | null;
+	// Flexible config (migration 21). `server_config_json` is plaintext;
+	// `enterprise_credentials_encrypted_json` is an encrypted JSON envelope.
+	server_config_json: string | null;
+	enterprise_credentials_encrypted_json: string | null;
 	// L4 P8 — Bearer auth (migration 19). The five encrypted-blob columns
 	// are NULL for `oauth` rows. For `bearer` rows they together form an
 	// `EnvelopeV1` (see `workers/lib/mcp-token-crypto.ts`).
@@ -105,6 +164,10 @@ export interface McpConnection {
 	lastError: string | null;
 	enabledTools: EnabledTools | null;
 	authType: McpAuthType;
+	/** Plaintext provider-specific config, parsed from `server_config_json`. */
+	serverConfig: ServerConfig | null;
+	/** Encrypted enterprise credentials blob, NULL when using platform credentials. */
+	enterpriseCredentialsEncryptedJson: string | null;
 	/** Encrypted bearer token blob, NULL for `oauth` rows. */
 	encryptedTokenB64: string | null;
 	tokenIvB64: string | null;
@@ -118,17 +181,28 @@ type McpConnectionSecretFields =
 	| "tokenIvB64"
 	| "tokenSaltB64"
 	| "tokenEnvelopeVersion"
-	| "tokenKekVersion";
+	| "tokenKekVersion"
+	| "enterpriseCredentialsEncryptedJson";
 
 /**
  * Public / cross-DO DTO for connection lists and route responses. The
  * encrypted Bearer envelope is intentionally absent: only the MailboxDO row
  * writer and the future Phase 3 rehydrate RPC may handle those columns.
  */
-export type PublicMcpConnection = Omit<
-	McpConnection,
-	McpConnectionSecretFields
->;
+export interface PublicMcpConnection {
+	id: string;
+	serverName: string;
+	displayName: string | null;
+	serverUrl: string;
+	transportType: McpTransportType | null;
+	addedByUserId: string;
+	addedAt: number;
+	lastState: McpConnectionState;
+	lastError: string | null;
+	enabledTools: EnabledTools | null;
+	authType: McpAuthType;
+	serverConfig: ServerConfig | null;
+}
 
 /**
  * Patch shape used when upserting. `lastError` is optional so the common
@@ -137,6 +211,8 @@ export type PublicMcpConnection = Omit<
  */
 export type McpConnectionInput = Omit<McpConnection, "lastError"> & {
 	lastError?: string | null;
+	/** Plaintext enterprise credentials — encrypted at write time. */
+	enterpriseCredentials?: object;
 };
 
 /**
@@ -188,6 +264,18 @@ export function serializeEnabledTools(
 	return JSON.stringify(tools);
 }
 
+function parseServerConfig(json: string | null): ServerConfig | null {
+	if (json === null) return null;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(json);
+	} catch {
+		return null;
+	}
+	const result = ServerConfigSchema.safeParse(parsed);
+	return result.success ? (result.data as ServerConfig) : null;
+}
+
 export function rowToMcpConnection(row: McpConnectionRow): McpConnection {
 	return {
 		id: row.id,
@@ -201,6 +289,8 @@ export function rowToMcpConnection(row: McpConnectionRow): McpConnection {
 		lastError: row.last_error,
 		enabledTools: parseEnabledTools(row.enabled_tools_json),
 		authType: row.auth_type,
+		serverConfig: parseServerConfig(row.server_config_json),
+		enterpriseCredentialsEncryptedJson: row.enterprise_credentials_encrypted_json,
 		encryptedTokenB64: row.encrypted_token_b64,
 		tokenIvB64: row.token_iv_b64,
 		tokenSaltB64: row.token_salt_b64,
@@ -224,6 +314,7 @@ export function toPublicMcpConnection(
 		lastError: connection.lastError,
 		enabledTools: connection.enabledTools,
 		authType: connection.authType,
+		serverConfig: connection.serverConfig,
 	};
 }
 
@@ -265,6 +356,8 @@ export function mcpConnectionToRow(
 		last_state: input.lastState,
 		last_error: input.lastError ?? null,
 		enabled_tools_json: serializeEnabledTools(input.enabledTools),
+		server_config_json: input.serverConfig ? JSON.stringify(input.serverConfig) : null,
+		enterprise_credentials_encrypted_json: input.enterpriseCredentialsEncryptedJson ?? null,
 		auth_type: input.authType,
 		encrypted_token_b64: input.encryptedTokenB64,
 		token_iv_b64: input.tokenIvB64,
@@ -272,6 +365,47 @@ export function mcpConnectionToRow(
 		token_envelope_version: input.tokenEnvelopeVersion,
 		token_kek_version: input.tokenKekVersion,
 	};
+}
+
+// ── Encryption helpers (ZII-185 / ZII-189) ─────────────────────────────────
+
+/**
+ * Generic JSON encryption that reuses the bearer-token DEK+KEK three-layer
+ * envelope. `payload` is JSON-stringified before encryption; the returned
+ * string is a JSON-serialised {@link EnvelopeV1} ready for column storage.
+ */
+export async function encryptJson(
+	env: BearerKekEnv,
+	payload: object,
+): Promise<string> {
+	const plaintext = JSON.stringify(payload);
+	const envelope = await encryptBearerToken(env, plaintext);
+	return JSON.stringify(envelope);
+}
+
+/**
+ * Decrypt a ciphertext produced by {@link encryptJson}. Validates the
+ * envelope then JSON-parses the plaintext back to `T`.
+ */
+export async function decryptJson<T>(
+	env: BearerKekEnv,
+	ciphertext: string,
+): Promise<T> {
+	const envelope = JSON.parse(ciphertext) as EnvelopeV1;
+	const plaintext = await decryptBearerToken(env, envelope);
+	return JSON.parse(plaintext) as T;
+}
+
+/**
+ * Convenience helper for reading `enterprise_credentials_encrypted_json`.
+ * Returns `null` when the column is NULL; otherwise decrypts and parses.
+ */
+export async function decryptEnterpriseCredentials(
+	env: BearerKekEnv,
+	connection: Pick<McpConnection, "enterpriseCredentialsEncryptedJson">,
+): Promise<Record<string, unknown> | null> {
+	if (connection.enterpriseCredentialsEncryptedJson === null) return null;
+	return decryptJson<Record<string, unknown>>(env, connection.enterpriseCredentialsEncryptedJson);
 }
 
 /**
@@ -353,6 +487,13 @@ type BuildConnectionBaseArgs = {
 	addedAt: number;
 	sdk: SdkAddResult;
 	transportType?: McpTransportType | null;
+	serverConfig?: ServerConfig | null;
+	enterpriseCredentialsEncryptedJson?: string | null;
+	enterpriseCredentials?: {
+		clientId: string;
+		clientSecret?: string;
+		scopes?: string[];
+	};
 };
 
 type BuildConnectionArgs =
@@ -391,6 +532,8 @@ export function buildConnectionFromSdkResult(
 		lastState: isMcpConnectionState(args.sdk.state) ? args.sdk.state : "error",
 		enabledTools: null,
 		authType,
+		serverConfig: args.serverConfig ?? null,
+		enterpriseCredentialsEncryptedJson: args.enterpriseCredentialsEncryptedJson ?? null,
 		encryptedTokenB64: encryptedBlob?.ciphertextB64 ?? null,
 		tokenIvB64: encryptedBlob?.ivB64 ?? null,
 		tokenSaltB64: encryptedBlob?.saltB64 ?? null,
@@ -404,6 +547,13 @@ type AddExternalMcpServerBaseInput = {
 	url: string;
 	displayName?: string;
 	addedByUserId: string;
+	serverConfig?: ServerConfig | null;
+	enterpriseCredentialsEncryptedJson?: string | null;
+	enterpriseCredentials?: {
+		clientId: string;
+		clientSecret?: string;
+		scopes?: string[];
+	};
 };
 
 export type AddExternalMcpServerInput =

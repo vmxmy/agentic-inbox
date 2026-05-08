@@ -116,7 +116,7 @@ export default function HomeRoute() {
 							const hasChildren = group.userMailboxes.length > 0;
 							return (
 								<div key={group.teamId} className={groupIdx > 0 ? "border-t border-kumo-line" : ""}>
-									{/* Group header — merged with team inbox link */}
+									{/* Team header row */}
 									<div className="flex items-center">
 										<button
 											type="button"
@@ -132,23 +132,17 @@ export default function HomeRoute() {
 										{group.teamMailbox ? (
 											<RouterLink
 												to={`/mailbox/${group.teamMailbox.id}`}
-												className="group flex flex-1 items-center gap-4 pr-5 py-4 no-underline transition-colors hover:bg-kumo-tint"
+												className="flex flex-1 items-center gap-4 pr-5 py-4 no-underline transition-colors hover:bg-kumo-tint"
 											>
 												<div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-kumo-fill text-sm font-bold text-kumo-default">
 													{group.teamDisplayName.charAt(0).toUpperCase()}
 												</div>
 												<div className="min-w-0 flex-1">
-													<div className="text-sm font-semibold text-kumo-default truncate">
-														{group.teamDisplayName}
-													</div>
-													<div className="text-sm text-kumo-subtle truncate">
-														{group.teamMailbox.email}
-													</div>
+													<div className="text-sm font-semibold text-kumo-default truncate">{group.teamDisplayName}</div>
+													<div className="text-sm text-kumo-subtle truncate">{group.teamMailbox.email}</div>
 												</div>
 												{hasChildren && (
-													<span className="shrink-0 text-xs text-kumo-subtle">
-														{group.userMailboxes.length}
-													</span>
+													<span className="shrink-0 text-xs text-kumo-subtle">{group.userMailboxes.length}</span>
 												)}
 											</RouterLink>
 										) : (
@@ -160,31 +154,22 @@ export default function HomeRoute() {
 													{group.teamDisplayName}
 												</div>
 												{hasChildren && (
-													<span className="shrink-0 text-xs text-kumo-subtle">
-														{group.userMailboxes.length}
-													</span>
+													<span className="shrink-0 text-xs text-kumo-subtle">{group.userMailboxes.length}</span>
 												)}
 											</div>
 										)}
 									</div>
 
-									{/* User mailboxes — shown when expanded */}
-									{isExpanded && group.userMailboxes.map(mailbox => (
+									{/* User mailboxes */}
+									{isExpanded && group.userMailboxes.map((mailbox) => (
 										<RouterLink
 											key={mailbox.id}
 											to={`/mailbox/${mailbox.id}`}
-											className="flex items-center gap-3 border-t border-kumo-line bg-kumo-recessed pl-10 pr-5 py-3 no-underline transition-colors hover:bg-kumo-tint"
+											className="flex items-center gap-4 border-t border-kumo-line bg-kumo-recessed py-3 pr-5 pl-10 no-underline transition-colors hover:bg-kumo-tint"
 										>
-											<div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-kumo-fill text-xs font-medium text-kumo-default">
-												{mailbox.name.charAt(0).toUpperCase()}
-											</div>
 											<div className="min-w-0 flex-1">
-												<div className="text-sm font-medium text-kumo-default truncate">
-													{mailbox.name}
-												</div>
-												<div className="text-xs text-kumo-subtle truncate">
-													{mailbox.email}
-												</div>
+												<div className="text-sm font-medium text-kumo-default truncate">{mailbox.name}</div>
+												<div className="text-xs text-kumo-subtle truncate">{mailbox.email}</div>
 											</div>
 										</RouterLink>
 									))}
@@ -197,7 +182,7 @@ export default function HomeRoute() {
 							<RouterLink
 								key={mailbox.id}
 								to={`/mailbox/${mailbox.id}`}
-								className={`group flex items-center gap-4 px-5 py-4 no-underline transition-colors hover:bg-kumo-tint ${
+								className={`flex items-center gap-4 px-5 py-4 no-underline transition-colors hover:bg-kumo-tint ${
 									groups.length > 0 || idx > 0 ? "border-t border-kumo-line" : ""
 								}`}
 							>
@@ -205,12 +190,8 @@ export default function HomeRoute() {
 									{mailbox.name.charAt(0).toUpperCase()}
 								</div>
 								<div className="min-w-0 flex-1">
-									<div className="text-sm font-medium text-kumo-default truncate">
-										{mailbox.name}
-									</div>
-									<div className="text-sm text-kumo-subtle truncate">
-										{mailbox.email}
-									</div>
+									<div className="text-sm font-medium text-kumo-default truncate">{mailbox.name}</div>
+									<div className="text-sm text-kumo-subtle truncate">{mailbox.email}</div>
 								</div>
 							</RouterLink>
 						))}

@@ -33,5 +33,6 @@ export const queryKeys = {
 	members: (mailboxId: string) => ["members", mailboxId] as const,
 	adminMailboxes: ["admin", "mailboxes"] as const,
 	adminTeams: ["admin", "teams"] as const,
+	adminUsers: ["admin", "users"] as const,
 	adminTeamUsers: (teamId: string) => ["admin", "teams", teamId, "users"] as const,
 };
