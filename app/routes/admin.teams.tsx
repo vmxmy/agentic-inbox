@@ -143,8 +143,8 @@ export default function AdminTeamsRoute() {
 												onKeyDown={(e) => { if (e.key === "Enter") void handleSaveTeamEdit(); if (e.key === "Escape") handleCancelTeamEdit(); }}
 												autoFocus
 											/>
-											<Button size="xs" variant="primary" shape="square" type="button" icon={<CheckIcon size={12} weight="bold" />} onClick={() => void handleSaveTeamEdit()} loading={updateTeam.isPending} />
-											<Button size="xs" variant="ghost" shape="square" type="button" icon={<XIcon size={12} />} onClick={handleCancelTeamEdit} />
+											<Button size="xs" variant="primary" shape="square" type="button" aria-label="Save" icon={<CheckIcon size={12} weight="bold" />} onClick={() => void handleSaveTeamEdit()} loading={updateTeam.isPending} />
+											<Button size="xs" variant="ghost" shape="square" type="button" aria-label="Cancel" icon={<XIcon size={12} />} onClick={handleCancelTeamEdit} />
 										</div>
 									) : (
 										<div className="group flex min-w-0 flex-1 items-start gap-1">
@@ -156,7 +156,7 @@ export default function AdminTeamsRoute() {
 												<code className="block truncate text-xs text-kumo-subtle">{team.primaryAddress}</code>
 												<div className="text-xs text-kumo-subtle">team: {team.slug}</div>
 											</Link>
-											<Button size="xs" variant="ghost" shape="square" type="button" icon={<PencilSimpleIcon size={12} />} onClick={() => handleStartTeamEdit(team)} />
+											<Button size="xs" variant="ghost" shape="square" type="button" aria-label="Edit team name" icon={<PencilSimpleIcon size={12} />} onClick={() => handleStartTeamEdit(team)} />
 										</div>
 									)}
 									<Button variant={team.disabledAt ? "secondary" : "ghost"} size="xs" type="button" onClick={() => handleToggleTeam(team)} loading={updateTeam.isPending && editingTeamId === null}>{team.disabledAt ? "Enable" : "Disable"}</Button>

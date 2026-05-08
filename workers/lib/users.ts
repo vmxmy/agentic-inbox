@@ -142,6 +142,17 @@ export async function setRole(
 		.where(eq(users.id, userId));
 }
 
+export async function updateUserDisplayName(
+	env: Env,
+	userId: string,
+	displayName: string,
+): Promise<void> {
+	await db(env)
+		.update(users)
+		.set({ displayName, updatedAt: Date.now() })
+		.where(eq(users.id, userId));
+}
+
 export async function listUsers(env: Env): Promise<UserRecord[]> {
 	const rows = await db(env).select().from(users);
 	return rows.map(toRecord);

@@ -27,7 +27,7 @@ import {
 	requireAddressSlug,
 } from "./team-addresses";
 import { getMailboxRecord } from "./mailbox-directory";
-import { createUser, findUserByEmail, type UserRecord } from "./users";
+import { createUser, findUserByEmail, updateUserDisplayName, type UserRecord } from "./users";
 import type { Env } from "../types";
 
 export type AddressKind = "team" | "team_user" | "legacy_fixed";
@@ -550,13 +550,14 @@ export async function updateTeamUser(
 	const existing = await getTeamUserByTeamAndId(env, teamId, teamUserId);
 	if (!existing) throw new TeamDirectoryError(404, "Team user not found");
 
-	const ts = now();
-	const patch: Partial<TeamUserRow> = { updatedAt: ts };
 	if (input.displayName !== undefined) {
 		const displayName = input.displayName.trim();
 		if (!displayName) throw new TeamDirectoryError(400, "displayName is required");
-		patch.displayName = displayName;
+		await updateUserDisplayName(env, existing.userId, displayName);
 	}
+
+	const ts = now();
+	const patch: Partial<TeamUserRow> = { updatedAt: ts };
 	if (input.disabled !== undefined) {
 		patch.disabledAt = input.disabled ? ts : null;
 	}

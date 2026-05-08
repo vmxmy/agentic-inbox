@@ -189,8 +189,8 @@ export default function AdminTeamUsersRoute() {
 														onKeyDown={(e) => { if (e.key === "Enter") void handleSaveUserEdit(); if (e.key === "Escape") handleCancelUserEdit(); }}
 														autoFocus
 													/>
-													<Button size="xs" variant="primary" shape="square" type="button" icon={<CheckIcon size={12} weight="bold" />} onClick={() => void handleSaveUserEdit()} loading={updateTeamUser.isPending} />
-													<Button size="xs" variant="ghost" shape="square" type="button" icon={<XIcon size={12} />} onClick={handleCancelUserEdit} />
+													<Button size="xs" variant="primary" shape="square" type="button" aria-label="Save" icon={<CheckIcon size={12} weight="bold" />} onClick={() => void handleSaveUserEdit()} loading={updateTeamUser.isPending} />
+													<Button size="xs" variant="ghost" shape="square" type="button" aria-label="Cancel" icon={<XIcon size={12} />} onClick={handleCancelUserEdit} />
 												</div>
 											) : (
 												<div className="group flex items-start gap-1">
@@ -198,7 +198,7 @@ export default function AdminTeamUsersRoute() {
 														<div className="flex flex-wrap items-center gap-2"><span className="font-medium">{user.displayName ?? user.slug}</span>{user.disabledAt && <Badge variant="destructive">Disabled</Badge>}</div>
 														<div className="text-kumo-subtle">{user.slug}</div>
 													</div>
-													<Button size="xs" variant="ghost" shape="square" type="button" icon={<PencilSimpleIcon size={12} />} onClick={() => handleStartUserEdit(user)} />
+													<Button size="xs" variant="ghost" shape="square" type="button" aria-label="Edit display name" icon={<PencilSimpleIcon size={12} />} onClick={() => handleStartUserEdit(user)} />
 												</div>
 											)}
 										</td>
