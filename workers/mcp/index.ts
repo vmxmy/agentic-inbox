@@ -32,10 +32,10 @@ import {
 } from "../lib/capabilities";
 import {
 	addMailboxMember,
+	assertMailboxAccess,
 	assertMailboxOwner,
 	AuthzError,
 	getMailboxAcl,
-	hasMailboxAccess,
 	isAdmin,
 	listUserMailboxes,
 	normalizeEmail,
@@ -135,17 +135,17 @@ export class EmailMCP extends McpAgent<Env> {
 			if (!user) {
 				return mcpError("MCP request missing authenticated user context.");
 			}
-			const acl = await getMailboxAcl(env, mailboxId);
-			if (!acl) {
-				return mcpError(`Mailbox "${mailboxId}" not found. Use list_mailboxes to see available mailboxes.`);
-			}
-			// Legacy mailbox with no owner → treat as not-yet-claimed; surface a
-			// targeted error instead of silently auto-claiming through MCP.
-			if (!acl.owner) {
-				return mcpError(`Mailbox "${mailboxId}" has no owner yet — open it in the web UI once to claim it.`);
-			}
-			if (!hasMailboxAccess(acl, user)) {
-				return mcpError(`Not authorized for mailbox "${mailboxId}".`);
+			try {
+				await assertMailboxAccess(env, mailboxId, user);
+			} catch (e) {
+				if (e instanceof AuthzError) {
+					return mcpError(
+						e.status === 404
+							? `Mailbox "${mailboxId}" not found. Use list_mailboxes to see available mailboxes.`
+							: e.message,
+					);
+				}
+				throw e;
 			}
 			return null;
 		};

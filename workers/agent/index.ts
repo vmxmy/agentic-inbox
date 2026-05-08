@@ -745,6 +745,29 @@ Based on the email content and thread context above, draft a reply using draft_r
 		return stub.listMcpConnections();
 	}
 
+	async executeTask(task: string, contextSummary: string): Promise<string> {
+		const env = this.env as Env;
+		const mailboxId = this.name;
+		const config = await getAgentConfig(env, mailboxId);
+		const tools = createEmailTools(env, mailboxId, config.emailReplyEnabledSkills, null);
+		const systemPrompt = resolveSystemPrompt(config.customSystemPrompt);
+		const cfg = await resolveLlmConfig(env);
+		const provider = getLlmProvider(env, cfg);
+		const catalog = await listLlmModels(env, { cfg });
+		const modelId = pickModel(catalog, config.emailReplyModel ?? config.model, cfg.defaultModel);
+		const contextPrefix = contextSummary
+			? `Conversation context from the user's session:\n${contextSummary}\n\n`
+			: "";
+		const result = await generateText({
+			model: provider(modelId),
+			system: contextPrefix + systemPrompt,
+			messages: [{ role: "user", content: task }],
+			tools,
+			stopWhen: stepCountIs(8),
+		});
+		return result.text || "(No response)";
+	}
+
 	override async destroy(): Promise<void> {
 		this.bearerCache.clear();
 		await super.destroy();

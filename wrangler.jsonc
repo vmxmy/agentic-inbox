@@ -84,6 +84,10 @@
 			{
 				"name": "INVOICE_AGENT",
 				"class_name": "InvoiceAgent"
+			},
+			{
+				"name": "ROUTER_AGENT",
+				"class_name": "RouterAgent"
 			}
 		]
 	},
@@ -107,9 +111,19 @@
 			]
 		},
 		{
-			"tag": "v4",
+			// v4/v5 are already present on the deployed Worker migration stream
+			// without these classes. Keep them as no-op historical tags and add
+			// the agent Durable Objects in v6 so production can advance safely.
+			"tag": "v4"
+		},
+		{
+			"tag": "v5"
+		},
+		{
+			"tag": "v6",
 			"new_sqlite_classes": [
-				"InvoiceAgent"
+				"InvoiceAgent",
+				"RouterAgent"
 			]
 		}
 	]

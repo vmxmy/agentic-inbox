@@ -17,11 +17,58 @@ export interface MailboxSettings {
 	invoiceAgentSystemPrompt?: string;
 }
 
+export interface TeamMailboxInfo {
+	id: string;
+	slug: string;
+	displayName: string;
+	kind: "team" | "team_user";
+	userSlug: string | null;
+}
+
 export interface Mailbox {
 	id: string;
 	email: string;
 	name: string;
 	settings?: MailboxSettings;
+	team?: TeamMailboxInfo;
+}
+
+export interface Team {
+	id: string;
+	slug: string;
+	displayName: string;
+	primaryAddress: string;
+	createdByUserId: string | null;
+	createdAt: number;
+	updatedAt: number;
+	disabledAt: number | null;
+	mailbox?: Mailbox;
+}
+
+export interface TeamUser {
+	id: string;
+	teamId: string;
+	userId: string;
+	slug: string;
+	mailboxAddress: string;
+	email?: string;
+	displayName?: string | null;
+	createdByUserId: string | null;
+	createdAt: number;
+	updatedAt: number;
+	disabledAt: number | null;
+	user?: {
+		id: string;
+		email: string;
+		displayName: string | null;
+		role: "user" | "admin";
+		emailVerifiedAt?: number | null;
+		createdAt?: number;
+	};
+	team?: Team;
+	mailbox?: Mailbox;
+	setupUrl?: string;
+	setupExpiresAt?: number;
 }
 
 export interface Email {

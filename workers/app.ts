@@ -36,6 +36,7 @@ export { MailboxDO } from "./durableObject";
 export { EmailAgent } from "./agent";
 export { EmailMCP } from "./mcp";
 export { InvoiceAgent } from "./invoice-agent";
+export { RouterAgent } from "./router-agent";
 
 declare module "react-router" {
 	export interface AppLoadContext {
@@ -293,7 +294,7 @@ app.all("*", (c) => {
 export default {
 	fetch: app.fetch,
 	async email(
-		event: { raw: ReadableStream; rawSize: number },
+		event: ForwardableEmailMessage,
 		env: Env,
 		ctx: ExecutionContext,
 	) {
