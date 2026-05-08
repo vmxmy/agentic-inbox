@@ -172,7 +172,7 @@ export function MessageBubble({
 						return (
 							<div
 								key={key}
-								className={`rounded-lg px-3 py-2 text-[13px] leading-relaxed break-words overflow-wrap-anywhere ${
+								className={`rounded-lg px-3 py-2 text-[13px] leading-relaxed break-words [overflow-wrap:anywhere] ${
 									isUser
 										? "bg-kumo-brand text-kumo-inverse rounded-br-sm"
 										: "bg-kumo-elevated text-kumo-default border border-kumo-line rounded-bl-sm overflow-hidden"
