@@ -3,6 +3,7 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import { AIChatAgent } from "@cloudflare/ai-chat";
+import { getAgentByName } from "agents";
 import {
 	streamText,
 	convertToModelMessages,
@@ -62,7 +63,7 @@ export class RouterAgent extends AIChatAgent<any> {
 						.describe("Relevant context from prior conversation turns"),
 				}),
 				execute: async ({ task, context_summary }: { task: string; context_summary?: string }) => {
-					const stub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName(mailboxId));
+					const stub = await getAgentByName(env.EMAIL_AGENT, mailboxId);
 					return stub.executeTask(task, context_summary ?? "");
 				},
 			}),
@@ -78,7 +79,7 @@ export class RouterAgent extends AIChatAgent<any> {
 						.describe("Relevant context from prior conversation turns"),
 				}),
 				execute: async ({ task, context_summary }: { task: string; context_summary?: string }) => {
-					const stub = env.INVOICE_AGENT.get(env.INVOICE_AGENT.idFromName(mailboxId));
+					const stub = await getAgentByName(env.INVOICE_AGENT, mailboxId);
 					return stub.executeTask(task, context_summary ?? "");
 				},
 			}),
