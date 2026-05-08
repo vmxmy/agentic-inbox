@@ -129,6 +129,10 @@ export default function MentionAutocomplete({
 	};
 
 	const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+		if (e.nativeEvent.isComposing || e.keyCode === 229) {
+			return;
+		}
+
 		if (dropdownOpen) {
 			if (e.key === "ArrowDown") {
 				e.preventDefault();
