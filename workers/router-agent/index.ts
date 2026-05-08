@@ -28,18 +28,18 @@ function defineTool(def: {
 }
 
 const ROUTER_SYSTEM_PROMPT = `\
-You are a routing assistant for an email and invoice management system.
-You coordinate two specialized agents:
-- EmailAgent: inbox search, reading emails, drafting replies, thread management
-- InvoiceAgent: invoice search, bundle creation and management, reimbursement workflows
+You are a routing assistant for an email management system. Today the
+only registered specialist is the EmailAgent (inbox search, reading
+emails, drafting replies, thread management). Future external agents
+will register through the agent-register interface.
 
 Rules:
 1. If the user's message starts with [→email], route to EmailAgent.
-2. If the user's message starts with [→invoice], route to InvoiceAgent.
-3. Otherwise, infer the intent and route to the most appropriate agent.
-4. Pass a concise context_summary to the sub-agent when prior conversation is relevant.
-5. Return the sub-agent's response directly without paraphrasing.
-6. The user may speak Chinese or English. Match their language.`;
+2. Otherwise, infer the intent and route to the most appropriate agent
+   that is currently registered.
+3. Pass a concise context_summary to the sub-agent when prior conversation is relevant.
+4. Return the sub-agent's response directly without paraphrasing.
+5. The user may speak Chinese or English. Match their language.`;
 
 export class RouterAgent extends AIChatAgent<any> {
 	async onChatMessage(onFinish: any) {
@@ -64,22 +64,6 @@ export class RouterAgent extends AIChatAgent<any> {
 				}),
 				execute: async ({ task, context_summary }: { task: string; context_summary?: string }) => {
 					const stub = await getAgentByName(env.EMAIL_AGENT, mailboxId);
-					return stub.executeTask(task, context_summary ?? "");
-				},
-			}),
-
-			ask_invoice_agent: defineTool({
-				description:
-					"Delegate to InvoiceAgent: invoice search, bundle management, reimbursement workflows",
-				parameters: z.object({
-					task: z.string().describe("Task for the invoice agent"),
-					context_summary: z
-						.string()
-						.optional()
-						.describe("Relevant context from prior conversation turns"),
-				}),
-				execute: async ({ task, context_summary }: { task: string; context_summary?: string }) => {
-					const stub = await getAgentByName(env.INVOICE_AGENT, mailboxId);
 					return stub.executeTask(task, context_summary ?? "");
 				},
 			}),

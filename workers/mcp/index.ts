@@ -11,16 +11,6 @@ import {
 	toolDeleteEmail,
 	toolSendReply,
 	toolForwardEmail,
-	toolListInvoices,
-	toolGetInvoice,
-	toolDeleteInvoice,
-	toolReprocessInvoicesForEmail,
-	toolExtractInvoiceFromPdf,
-	toolUploadInvoiceFile,
-	toolCreateBundle,
-	toolListBundles,
-	toolAddToBundle,
-	toolDownloadBundle,
 } from "../lib/tools";
 // list_emails, get_email, get_thread, search_emails, draft_reply, send_email,
 // mark_email_read, move_email — all served by the capability-driven loop at
@@ -534,9 +524,7 @@ export class EmailMCP extends McpAgent<Env> {
 					autoDraft: config.autoDraft,
 					model: config.model,
 					emailReplyModel: config.emailReplyModel,
-					invoiceModel: config.invoiceModel,
 					customSystemPrompt: config.customSystemPrompt,
-					invoiceAgentSystemPrompt: config.invoiceAgentSystemPrompt,
 					rules: config.rules,
 					availableModels: catalog.map((m) => m.id),
 				});
@@ -546,17 +534,15 @@ export class EmailMCP extends McpAgent<Env> {
 		// ── update_agent_config ────────────────────────────────────
 		this.server.tool(
 			"update_agent_config",
-			`Patch the per-mailbox agent config. Omitted fields stay unchanged. Pass customSystemPrompt / invoiceAgentSystemPrompt as null to clear them. Each agent has its own model field (emailReplyModel / invoiceModel) — pass null on a per-agent field to clear it (it then falls back to the legacy shared agentModel, then env default). Model ids must exist on the configured LLM endpoint's /v1/models list (call get_agent_config to see availableModels).`,
+			`Patch the per-mailbox agent config. Omitted fields stay unchanged. Pass customSystemPrompt as null to clear it. Pass null on emailReplyModel to clear it (it then falls back to the legacy shared agentModel, then env default). Model ids must exist on the configured LLM endpoint's /v1/models list (call get_agent_config to see availableModels).`,
 			{
 				mailboxId: z.string().describe("The mailbox email address"),
 				autoDraft: z.boolean().optional().describe("Whether inbound email triggers an automatic draft"),
-				agentModel: z.string().optional().describe("Legacy shared model — kept for back-compat. Prefer emailReplyModel / invoiceModel."),
+				agentModel: z.string().optional().describe("Legacy shared model — kept for back-compat. Prefer emailReplyModel."),
 				emailReplyModel: z.string().nullable().optional().describe("Model id used by the EmailAgent. Null clears the per-agent override."),
-				invoiceModel: z.string().nullable().optional().describe("Model id used by the InvoiceAgent. Null clears the per-agent override."),
 				agentSystemPrompt: z.string().nullable().optional().describe("Custom system prompt for the email agent. Null clears it."),
-				invoiceAgentSystemPrompt: z.string().nullable().optional().describe("Custom system prompt for the invoice agent chat. Null clears it."),
 			},
-			async ({ mailboxId, autoDraft, agentModel, emailReplyModel, invoiceModel, agentSystemPrompt, invoiceAgentSystemPrompt }) => {
+			async ({ mailboxId, autoDraft, agentModel, emailReplyModel, agentSystemPrompt }) => {
 				const denied = await verifyMailbox(mailboxId);
 				if (denied) return denied;
 				try {
@@ -564,17 +550,13 @@ export class EmailMCP extends McpAgent<Env> {
 						autoDraft,
 						agentModel,
 						emailReplyModel,
-						invoiceModel,
 						agentSystemPrompt,
-						invoiceAgentSystemPrompt,
 					});
 					return mcpText({
 						autoDraft: config.autoDraft,
 						model: config.model,
 						emailReplyModel: config.emailReplyModel,
-						invoiceModel: config.invoiceModel,
 						customSystemPrompt: config.customSystemPrompt,
-						invoiceAgentSystemPrompt: config.invoiceAgentSystemPrompt,
 					});
 				} catch (e) {
 					return mcpError((e as Error).message);
@@ -760,191 +742,6 @@ export class EmailMCP extends McpAgent<Env> {
 				if ("error" in result) {
 					return mcpResult(result);
 				}
-				return mcpText(result);
-			},
-		);
-
-		// ── list_invoices ──────────────────────────────────────────
-		this.server.tool(
-			"list_invoices",
-			"List structured invoice records persisted from inbound XML 全电/增值税发票 attachments. Filters are AND-combined; sorted by issue_date DESC.",
-			{
-				mailboxId: z.string().describe("The mailbox email address"),
-				dateFrom: z.string().optional().describe("Issue date lower bound, ISO YYYY-MM-DD inclusive"),
-				dateTo: z.string().optional().describe("Issue date upper bound, ISO YYYY-MM-DD inclusive"),
-				sellerContains: z.string().optional().describe("Substring match on seller_name (case-insensitive in SQLite by default)"),
-				buyerContains: z.string().optional().describe("Substring match on buyer_name"),
-				invoiceNumber: z.string().optional().describe("Exact invoice_number match"),
-				minAmount: z.number().optional().describe("Lower bound on amount_incl_tax"),
-				maxAmount: z.number().optional().describe("Upper bound on amount_incl_tax"),
-				page: z.number().int().positive().optional().describe("1-indexed page number (default 1)"),
-				limit: z.number().int().positive().max(200).optional().describe("Page size (default 50, max 200)"),
-				itemContains: z.string().optional().describe("Filter by invoice line-item name (LIKE %X%) — finds invoices containing items whose name matches."),
-			},
-			async ({ mailboxId, ...filters }) => {
-				const denied = await verifyMailbox(mailboxId);
-				if (denied) return denied;
-				const result = await toolListInvoices(env, mailboxId, filters);
-				return mcpText(result);
-			},
-		);
-
-		// ── get_invoice ────────────────────────────────────────────
-		this.server.tool(
-			"get_invoice",
-			"Read one invoice by id. Returns the full header (including raw_xml) plus all line items ordered by their original sequence.",
-			{
-				mailboxId: z.string().describe("The mailbox email address"),
-				invoiceId: z.string().describe("The invoice id from list_invoices"),
-			},
-			async ({ mailboxId, invoiceId }) => {
-				const denied = await verifyMailbox(mailboxId);
-				if (denied) return denied;
-				const result = await toolGetInvoice(env, mailboxId, invoiceId);
-				if ("error" in result) return mcpError(result.error);
-				return mcpText(result);
-			},
-		);
-
-		// ── delete_invoice ─────────────────────────────────────────
-		this.server.tool(
-			"delete_invoice",
-			"Delete one invoice and all its line items. Cascade only on the invoice tables — does NOT delete the source email or attachment.",
-			{
-				mailboxId: z.string().describe("The mailbox email address"),
-				invoiceId: z.string().describe("The invoice id"),
-			},
-			async ({ mailboxId, invoiceId }) => {
-				const denied = await verifyMailbox(mailboxId);
-				if (denied) return denied;
-				const result = await toolDeleteInvoice(env, mailboxId, invoiceId);
-				return mcpResult(result);
-			},
-		);
-
-		// ── reprocess_invoices_for_email ────────────────────────────
-		this.server.tool(
-			"reprocess_invoices_for_email",
-			"Re-read XML attachments of an existing email from R2, re-run the invoice parser, and persist the results. Idempotent — replaces any prior invoice rows tied to the same attachment. Use after a parser fix to avoid asking the sender to re-forward the email.",
-			{
-				mailboxId: z.string().describe("The mailbox email address"),
-				emailId: z.string().describe("The email id whose XML attachments should be re-parsed"),
-			},
-			async ({ mailboxId, emailId }) => {
-				const denied = await verifyMailbox(mailboxId);
-				if (denied) return denied;
-				const result = await toolReprocessInvoicesForEmail(env, mailboxId, emailId);
-				return mcpText(result);
-			},
-		);
-
-		// ── extract_invoice_from_pdf ────────────────────────────────
-		this.server.tool(
-			"extract_invoice_from_pdf",
-			"Run PDF OCR (DeepRead) on a specific attachment to extract invoice fields. Use as a fallback when an email only contains a PDF — no XML/OFD source. Synchronously submits + polls (up to 90s). Requires DEEPREAD_API_KEY configured on the Worker. Flags `needs_review=true` when any field requires human verification (e.g. ambiguous dates, unreadable numbers).",
-			{
-				mailboxId: z.string().describe("The mailbox email address"),
-				attachmentId: z.string().describe("The attachment id of a PDF invoice"),
-			},
-			async ({ mailboxId, attachmentId }) => {
-				const denied = await verifyMailbox(mailboxId);
-				if (denied) return denied;
-				const result = await toolExtractInvoiceFromPdf(env, mailboxId, attachmentId);
-				return mcpResult(result as unknown as Record<string, unknown>);
-			},
-		);
-
-		// ── create_bundle ──────────────────────────────────────────
-		this.server.tool(
-			"create_bundle",
-			"Create a new reimbursement bundle (报销单). A bundle is a named collection of invoices intended for accounting submission. Returns the new bundle id.",
-			{
-				mailboxId: z.string().describe("The mailbox email address"),
-				name: z.string().min(1).describe("Display name (e.g. '2026-04 出差报销')"),
-				note: z.string().optional().describe("Optional free-text note"),
-			},
-			async ({ mailboxId, name, note }) => {
-				const denied = await verifyMailbox(mailboxId);
-				if (denied) return denied;
-				const result = await toolCreateBundle(env, mailboxId, {
-					name,
-					note: note ?? null,
-				});
-				return mcpText(result);
-			},
-		);
-
-		// ── list_bundles ───────────────────────────────────────────
-		this.server.tool(
-			"list_bundles",
-			"List all reimbursement bundles for a mailbox, with invoice count and total amount per bundle. Sorted by created_at DESC.",
-			{
-				mailboxId: z.string().describe("The mailbox email address"),
-			},
-			async ({ mailboxId }) => {
-				const denied = await verifyMailbox(mailboxId);
-				if (denied) return denied;
-				const result = await toolListBundles(env, mailboxId);
-				return mcpText(result);
-			},
-		);
-
-		// ── add_to_bundle ──────────────────────────────────────────
-		this.server.tool(
-			"add_to_bundle",
-			"Add an invoice to a reimbursement bundle. Refuses voided invoices and red-credit (negative-correction) invoices — those have no place in a reimbursement packet. Idempotent: re-adding an already-present invoice is a no-op.",
-			{
-				mailboxId: z.string().describe("The mailbox email address"),
-				bundleId: z.string().describe("The bundle id"),
-				invoiceId: z.string().describe("The invoice id"),
-			},
-			async ({ mailboxId, bundleId, invoiceId }) => {
-				const denied = await verifyMailbox(mailboxId);
-				if (denied) return denied;
-				const result = await toolAddToBundle(env, mailboxId, {
-					bundleId,
-					invoiceId,
-				});
-				return mcpResult(result);
-			},
-		);
-
-		// ── download_bundle ────────────────────────────────────────
-		this.server.tool(
-			"download_bundle",
-			"Pack a bundle into a ZIP (manifest.csv + every invoice's authoritative original file from R2) and return the bytes inline as base64. For browser downloads use the HTTP endpoint instead — this tool exists so chat clients can hand the packet to the user without a separate fetch.",
-			{
-				mailboxId: z.string().describe("The mailbox email address"),
-				bundleId: z.string().describe("The bundle id"),
-			},
-			async ({ mailboxId, bundleId }) => {
-				const denied = await verifyMailbox(mailboxId);
-				if (denied) return denied;
-				const result = await toolDownloadBundle(env, mailboxId, bundleId);
-				if ("error" in result) return mcpError(result.error);
-				return mcpText(result);
-			},
-		);
-
-		// ── upload_invoice_file ────────────────────────────────────
-		this.server.tool(
-			"upload_invoice_file",
-			"Attach an invoice file (XML / OFD / PDF / ZIP) to an existing email and run the extraction pipeline on it. Use for emails whose body only contains a short-link to a SPA preview page (e.g. 百望 u.baiwang.com short links) with no downloadable attachment — the user downloads the real invoice file themselves in a browser, then pipes the bytes here as base64. The uploaded file is persisted to R2 with origin='manual-upload'; any invoice fields found are saved via the normal pipeline (ZIP/OFD are unpacked recursively; XML inside is treated as the authoritative source).",
-			{
-				mailboxId: z.string().describe("The mailbox email address"),
-				emailId: z.string().describe("The email id to attach the file to"),
-				filename: z.string().describe("The file name including extension (e.g. 26949...xml)"),
-				mimetype: z.string().optional().describe("Optional MIME type; inferred from filename when omitted"),
-				content_base64: z.string().describe("File bytes encoded as base64. data: URL prefix is accepted but optional."),
-			},
-			async ({ mailboxId, emailId, filename, mimetype, content_base64 }) => {
-				const denied = await verifyMailbox(mailboxId);
-				if (denied) return denied;
-				const result = await toolUploadInvoiceFile(env, mailboxId, emailId, {
-					filename,
-					mimetype,
-					content_base64,
-				});
 				return mcpText(result);
 			},
 		);

@@ -10,14 +10,6 @@ import * as schema from "../db/schema";
 import { Folders } from "../../shared/folders";
 import type { Env } from "../types";
 import { applyMigrations, mailboxMigrations } from "./migrations";
-import { parseChinaEInvoiceXml, type ParsedInvoice } from "../lib/invoice-parser";
-import { looksLikeXml } from "../lib/attachment-extract";
-import {
-	processEmailForInvoices,
-	type EntryUnit,
-	type ExistingAttachment,
-	type PipelineStub,
-} from "../lib/invoice-pipeline";
 import type { RuleCondition, RuleAction } from "../lib/rules";
 import {
 	mcpConnectionToRow,
@@ -29,19 +21,6 @@ import {
 	type PublicMcpConnection,
 } from "../lib/mcp-connections";
 import type { McpAuditRow } from "../lib/mcp-audit";
-
-export interface InvoiceFilters {
-	dateFrom?: string;
-	dateTo?: string;
-	sellerContains?: string;
-	buyerContains?: string;
-	invoiceNumber?: string;
-	minAmount?: number;
-	maxAmount?: number;
-	itemContains?: string;
-	page?: number;
-	limit?: number;
-}
 
 /**
  * SQL expression to normalize email subjects by stripping common
@@ -902,571 +881,6 @@ export class MailboxDO extends DurableObject<Env> {
 		}
 	}
 
-	// ── Invoices (Drizzle) ─────────────────────────────────────────
-
-	/**
-	 * Atomically persist a parsed invoice + its line items. Returns the new
-	 * invoice id. Uses storage.transactionSync so a partial write can never
-	 * leave dangling header/items.
-	 */
-	async saveInvoice(
-		emailId: string,
-		attachmentId: string,
-		parsed: ParsedInvoice,
-		opts: { sourceKind?: "xml" | "pdf-ocr"; needsReview?: boolean } = {},
-	): Promise<string> {
-		const invoiceId = crypto.randomUUID();
-		const createdAt = new Date().toISOString();
-
-		const itemsRows = parsed.items.map((it, idx) => ({
-			id: crypto.randomUUID(),
-			invoice_id: invoiceId,
-			ord: idx,
-			item_name: it.item_name,
-			spec: it.spec,
-			unit: it.unit,
-			quantity: it.quantity,
-			unit_price: it.unit_price,
-			amount: it.amount,
-			tax_rate: it.tax_rate,
-			tax_amount: it.tax_amount,
-		}));
-
-		this.ctx.storage.transactionSync(() => {
-			// Check if a red invoice already points at this normal invoice number,
-			// meaning this invoice should be marked voided on arrival.
-			const alreadyVoided =
-				parsed.original_invoice_number == null
-					? (this.db
-						.select({ one: sql<number>`1` })
-						.from(schema.invoices)
-						.where(eq(schema.invoices.original_invoice_number, parsed.invoice_number))
-						.get() != null)
-					: false;
-
-			this.db
-				.insert(schema.invoices)
-				.values({
-					id: invoiceId,
-					email_id: emailId,
-					attachment_id: attachmentId,
-					invoice_number: parsed.invoice_number,
-					invoice_code: parsed.invoice_code,
-					invoice_type: parsed.invoice_type,
-					issue_date: parsed.issue_date,
-					seller_name: parsed.seller.name,
-					seller_tax_id: parsed.seller.tax_id,
-					buyer_name: parsed.buyer.name,
-					buyer_tax_id: parsed.buyer.tax_id,
-					amount_excl_tax: parsed.amount_excl_tax,
-					tax_amount: parsed.tax_amount,
-					amount_incl_tax: parsed.amount_incl_tax,
-					remark: parsed.remark,
-					raw_xml: parsed.raw_xml,
-					created_at: createdAt,
-					source_kind: opts.sourceKind ?? "xml",
-					needs_review: opts.needsReview ? 1 : 0,
-					original_invoice_number: parsed.original_invoice_number ?? null,
-					is_voided: alreadyVoided ? 1 : 0,
-				})
-				.run();
-
-			if (parsed.original_invoice_number != null) {
-				// This is a red invoice — mark its predecessor as voided.
-				this.db
-					.update(schema.invoices)
-					.set({ is_voided: 1 })
-					.where(
-						and(
-							eq(schema.invoices.invoice_number, parsed.original_invoice_number),
-							sql`${schema.invoices.id} != ${invoiceId}`,
-						),
-					)
-					.run();
-			}
-
-			if (itemsRows.length > 0) {
-				this.db.insert(schema.invoiceItems).values(itemsRows).run();
-			}
-		});
-
-		return invoiceId;
-	}
-
-	async getInvoice(invoiceId: string) {
-		const invoice = this.db
-			.select()
-			.from(schema.invoices)
-			.where(eq(schema.invoices.id, invoiceId))
-			.get();
-		if (!invoice) return null;
-		const items = this.db
-			.select()
-			.from(schema.invoiceItems)
-			.where(eq(schema.invoiceItems.invoice_id, invoiceId))
-			.orderBy(asc(schema.invoiceItems.ord))
-			.all();
-		return { invoice, items };
-	}
-
-	async listInvoices(filters: InvoiceFilters = {}) {
-		const limit = Math.min(Math.max(filters.limit ?? 50, 1), 200);
-		const page = Math.max(filters.page ?? 1, 1);
-		const offset = (page - 1) * limit;
-
-		const conditions: SQL[] = [];
-		if (filters.dateFrom) {
-			conditions.push(gte(schema.invoices.issue_date, filters.dateFrom));
-		}
-		if (filters.dateTo) {
-			conditions.push(lte(schema.invoices.issue_date, filters.dateTo));
-		}
-		if (filters.sellerContains) {
-			conditions.push(
-				like(schema.invoices.seller_name, `%${filters.sellerContains}%`),
-			);
-		}
-		if (filters.buyerContains) {
-			conditions.push(
-				like(schema.invoices.buyer_name, `%${filters.buyerContains}%`),
-			);
-		}
-		if (filters.invoiceNumber) {
-			conditions.push(eq(schema.invoices.invoice_number, filters.invoiceNumber));
-		}
-		if (filters.minAmount !== undefined) {
-			conditions.push(gte(schema.invoices.amount_incl_tax, filters.minAmount));
-		}
-		if (filters.maxAmount !== undefined) {
-			conditions.push(lte(schema.invoices.amount_incl_tax, filters.maxAmount));
-		}
-		if (filters.itemContains) {
-			conditions.push(
-				inArray(
-					schema.invoices.id,
-					this.db.select({ id: schema.invoiceItems.invoice_id })
-						.from(schema.invoiceItems)
-						.where(like(schema.invoiceItems.item_name, `%${filters.itemContains}%`)),
-				),
-			);
-		}
-		const where = conditions.length ? and(...conditions) : undefined;
-
-		// Exclude raw_xml from list payload — bulk JSON is wasteful; callers
-		// load it via getInvoice when they need the full document.
-		const rows = this.db
-			.select({
-				id: schema.invoices.id,
-				email_id: schema.invoices.email_id,
-				attachment_id: schema.invoices.attachment_id,
-				invoice_number: schema.invoices.invoice_number,
-				invoice_code: schema.invoices.invoice_code,
-				invoice_type: schema.invoices.invoice_type,
-				issue_date: schema.invoices.issue_date,
-				seller_name: schema.invoices.seller_name,
-				seller_tax_id: schema.invoices.seller_tax_id,
-				buyer_name: schema.invoices.buyer_name,
-				buyer_tax_id: schema.invoices.buyer_tax_id,
-				amount_excl_tax: schema.invoices.amount_excl_tax,
-				tax_amount: schema.invoices.tax_amount,
-				amount_incl_tax: schema.invoices.amount_incl_tax,
-				currency: schema.invoices.currency,
-				remark: schema.invoices.remark,
-				source_kind: schema.invoices.source_kind,
-				needs_review: schema.invoices.needs_review,
-				original_invoice_number: schema.invoices.original_invoice_number,
-				is_voided: schema.invoices.is_voided,
-				created_at: schema.invoices.created_at,
-			})
-			.from(schema.invoices)
-			.where(where)
-			.orderBy(desc(schema.invoices.issue_date), desc(schema.invoices.created_at))
-			.limit(limit)
-			.offset(offset)
-			.all();
-
-		const totalRow = this.db
-			.select({ count: sql<number>`COUNT(*)`.mapWith(Number) })
-			.from(schema.invoices)
-			.where(where)
-			.get();
-
-		return {
-			invoices: rows,
-			totalCount: totalRow?.count ?? 0,
-			page,
-			limit,
-		};
-	}
-
-	async deleteInvoice(invoiceId: string): Promise<boolean> {
-		const existing = this.db
-			.select({ id: schema.invoices.id })
-			.from(schema.invoices)
-			.where(eq(schema.invoices.id, invoiceId))
-			.get();
-		if (!existing) return false;
-		this.db
-			.delete(schema.invoices)
-			.where(eq(schema.invoices.id, invoiceId))
-			.run();
-		return true;
-	}
-
-	/**
-	 * Insert an attachment row for a derived file (a ZIP/OFD container child,
-	 * or an external-URL download). Caller must have already written the bytes
-	 * to R2 at `attachments/<emailId>/<id>/<filename>`.
-	 */
-	async saveDerivedAttachment(
-		emailId: string,
-		args: {
-			id: string;
-			filename: string;
-			mimetype: string;
-			size: number;
-			origin: "unpacked" | "external-url" | "manual-upload";
-			parent_attachment_id?: string;
-			source_url?: string;
-			content_id?: string | null;
-			disposition?: string | null;
-		},
-	): Promise<string> {
-		this.db
-			.insert(schema.attachments)
-			.values({
-				id: args.id,
-				email_id: emailId,
-				filename: args.filename,
-				mimetype: args.mimetype,
-				size: args.size,
-				content_id: args.content_id ?? null,
-				disposition: args.disposition ?? "attachment",
-				origin: args.origin,
-				source_url: args.source_url ?? null,
-				parent_attachment_id: args.parent_attachment_id ?? null,
-			})
-			.run();
-		return args.id;
-	}
-
-	/** List all attachments for an email, including derived/external-url rows. */
-	async listEmailAttachments(emailId: string) {
-		return this.db
-			.select()
-			.from(schema.attachments)
-			.where(eq(schema.attachments.email_id, emailId))
-			.all();
-	}
-
-	/** Look up a single attachment by id (scoped to this mailbox's DB). */
-	async findAttachmentById(attachmentId: string) {
-		const row = this.db
-			.select()
-			.from(schema.attachments)
-			.where(eq(schema.attachments.id, attachmentId))
-			.get();
-		return row ?? null;
-	}
-
-	// ── Reimbursement bundles ──────────────────────────────────────
-
-	async createBundle(args: { name: string; note?: string | null }) {
-		const id = crypto.randomUUID();
-		const created_at = new Date().toISOString();
-		const row = {
-			id,
-			name: args.name,
-			note: args.note ?? null,
-			status: "draft" as const,
-			created_at,
-		};
-		this.db
-			.insert(schema.bundles)
-			.values(row)
-			.run();
-		return row;
-	}
-
-	async listBundles() {
-		const rows = this.db
-			.select({
-				id: schema.bundles.id,
-				name: schema.bundles.name,
-				note: schema.bundles.note,
-				status: schema.bundles.status,
-				created_at: schema.bundles.created_at,
-				invoice_count: sql<number>`COUNT(${schema.bundleInvoices.invoice_id})`.mapWith(Number),
-				total_amount: sql<number | null>`SUM(${schema.invoices.amount_incl_tax})`.mapWith((v) =>
-					v === null || v === undefined ? null : Number(v),
-				),
-			})
-			.from(schema.bundles)
-			.leftJoin(
-				schema.bundleInvoices,
-				eq(schema.bundleInvoices.bundle_id, schema.bundles.id),
-			)
-			.leftJoin(
-				schema.invoices,
-				eq(schema.invoices.id, schema.bundleInvoices.invoice_id),
-			)
-			.groupBy(schema.bundles.id)
-			.orderBy(desc(schema.bundles.created_at))
-			.all();
-		return rows;
-	}
-
-	async getBundle(bundleId: string) {
-		const bundle = this.db
-			.select()
-			.from(schema.bundles)
-			.where(eq(schema.bundles.id, bundleId))
-			.get();
-		if (!bundle) return null;
-		const invoices = this.db
-			.select({
-				id: schema.invoices.id,
-				email_id: schema.invoices.email_id,
-				attachment_id: schema.invoices.attachment_id,
-				invoice_number: schema.invoices.invoice_number,
-				invoice_code: schema.invoices.invoice_code,
-				invoice_type: schema.invoices.invoice_type,
-				issue_date: schema.invoices.issue_date,
-				seller_name: schema.invoices.seller_name,
-				seller_tax_id: schema.invoices.seller_tax_id,
-				buyer_name: schema.invoices.buyer_name,
-				buyer_tax_id: schema.invoices.buyer_tax_id,
-				amount_excl_tax: schema.invoices.amount_excl_tax,
-				tax_amount: schema.invoices.tax_amount,
-				amount_incl_tax: schema.invoices.amount_incl_tax,
-				currency: schema.invoices.currency,
-				remark: schema.invoices.remark,
-				source_kind: schema.invoices.source_kind,
-				needs_review: schema.invoices.needs_review,
-				original_invoice_number: schema.invoices.original_invoice_number,
-				is_voided: schema.invoices.is_voided,
-				created_at: schema.invoices.created_at,
-				position: schema.bundleInvoices.position,
-			})
-			.from(schema.bundleInvoices)
-			.innerJoin(
-				schema.invoices,
-				eq(schema.invoices.id, schema.bundleInvoices.invoice_id),
-			)
-			.where(eq(schema.bundleInvoices.bundle_id, bundleId))
-			.orderBy(asc(schema.bundleInvoices.position), asc(schema.invoices.issue_date))
-			.all();
-		return { bundle, invoices };
-	}
-
-	async updateBundle(
-		bundleId: string,
-		patch: { name?: string; note?: string | null; status?: string },
-	) {
-		const data: { name?: string; note?: string | null; status?: string } = {};
-		if (patch.name !== undefined) data.name = patch.name;
-		if (patch.note !== undefined) data.note = patch.note;
-		if (patch.status !== undefined) data.status = patch.status;
-		if (Object.keys(data).length === 0) {
-			return (
-				this.db
-					.select()
-					.from(schema.bundles)
-					.where(eq(schema.bundles.id, bundleId))
-					.get() ?? null
-			);
-		}
-		this.db
-			.update(schema.bundles)
-			.set(data)
-			.where(eq(schema.bundles.id, bundleId))
-			.run();
-		return (
-			this.db
-				.select()
-				.from(schema.bundles)
-				.where(eq(schema.bundles.id, bundleId))
-				.get() ?? null
-		);
-	}
-
-	async deleteBundle(bundleId: string): Promise<boolean> {
-		const existing = this.db
-			.select({ id: schema.bundles.id })
-			.from(schema.bundles)
-			.where(eq(schema.bundles.id, bundleId))
-			.get();
-		if (!existing) return false;
-		this.db
-			.delete(schema.bundles)
-			.where(eq(schema.bundles.id, bundleId))
-			.run();
-		return true;
-	}
-
-	/**
-	 * Add an invoice to a bundle. Refuses voided invoices and red-credit
-	 * (negative-correction) invoices — neither belongs in a reimbursement
-	 * packet. Idempotent: re-adding an already-present invoice is a no-op.
-	 */
-	async addInvoiceToBundle(
-		bundleId: string,
-		invoiceId: string,
-	): Promise<{ ok: boolean; error?: string }> {
-		const bundle = this.db
-			.select({ id: schema.bundles.id })
-			.from(schema.bundles)
-			.where(eq(schema.bundles.id, bundleId))
-			.get();
-		if (!bundle) return { ok: false, error: "bundle not found" };
-
-		const invoice = this.db
-			.select({
-				id: schema.invoices.id,
-				is_voided: schema.invoices.is_voided,
-				original_invoice_number: schema.invoices.original_invoice_number,
-			})
-			.from(schema.invoices)
-			.where(eq(schema.invoices.id, invoiceId))
-			.get();
-		if (!invoice) return { ok: false, error: "invoice not found" };
-		if (invoice.is_voided) {
-			return { ok: false, error: "此发票已被红冲，不能加入报销单" };
-		}
-		if (invoice.original_invoice_number) {
-			return { ok: false, error: "红字发票不能单独加入报销单" };
-		}
-
-		const existing = this.db
-			.select({ bundle_id: schema.bundleInvoices.bundle_id })
-			.from(schema.bundleInvoices)
-			.where(
-				and(
-					eq(schema.bundleInvoices.bundle_id, bundleId),
-					eq(schema.bundleInvoices.invoice_id, invoiceId),
-				),
-			)
-			.get();
-		if (existing) return { ok: true };
-
-		const maxRow = this.db
-			.select({
-				max: sql<number | null>`MAX(${schema.bundleInvoices.position})`.mapWith(
-					(v) => (v === null || v === undefined ? null : Number(v)),
-				),
-			})
-			.from(schema.bundleInvoices)
-			.where(eq(schema.bundleInvoices.bundle_id, bundleId))
-			.get();
-		const nextPosition = (maxRow?.max ?? -1) + 1;
-
-		this.db
-			.insert(schema.bundleInvoices)
-			.values({
-				bundle_id: bundleId,
-				invoice_id: invoiceId,
-				position: nextPosition,
-			})
-			.run();
-		return { ok: true };
-	}
-
-	async removeInvoiceFromBundle(
-		bundleId: string,
-		invoiceId: string,
-	): Promise<boolean> {
-		const existing = this.db
-			.select({ bundle_id: schema.bundleInvoices.bundle_id })
-			.from(schema.bundleInvoices)
-			.where(
-				and(
-					eq(schema.bundleInvoices.bundle_id, bundleId),
-					eq(schema.bundleInvoices.invoice_id, invoiceId),
-				),
-			)
-			.get();
-		if (!existing) return false;
-		this.db
-			.delete(schema.bundleInvoices)
-			.where(
-				and(
-					eq(schema.bundleInvoices.bundle_id, bundleId),
-					eq(schema.bundleInvoices.invoice_id, invoiceId),
-				),
-			)
-			.run();
-		return true;
-	}
-
-	/**
-	 * Re-run the invoice-extraction pipeline against an existing email. Walks
-	 * email-origin attachments, follows external download links in the body,
-	 * unpacks ZIP/OFD containers — all via `invoice-pipeline.ts` so fresh
-	 * receives and reprocess paths stay aligned. Idempotent.
-	 */
-	async reprocessInvoicesForEmail(
-		emailId: string,
-		opts: { allowedDomains: readonly string[] },
-	) {
-		const email = this.db
-			.select({ body: schema.emails.body })
-			.from(schema.emails)
-			.where(eq(schema.emails.id, emailId))
-			.get();
-		if (!email) {
-			return { saved: [], skipped: [{ source: emailId, reason: "email not found" }] };
-		}
-
-		const allAtts = this.db
-			.select()
-			.from(schema.attachments)
-			.where(eq(schema.attachments.email_id, emailId))
-			.all();
-
-		// Entry units = email-origin attachments with their R2 bytes materialised.
-		const entryUnits: EntryUnit[] = [];
-		const existing: ExistingAttachment[] = [];
-		for (const a of allAtts) {
-			existing.push({
-				id: a.id,
-				filename: a.filename,
-				mimetype: a.mimetype,
-				size: a.size,
-				origin: a.origin ?? "email",
-				source_url: a.source_url ?? null,
-				parent_attachment_id: a.parent_attachment_id ?? null,
-			});
-			if ((a.origin ?? "email") !== "email") continue;
-			const key = `attachments/${emailId}/${a.id}/${a.filename}`;
-			const obj = await this.env.BUCKET.get(key);
-			if (!obj) continue;
-			const bytes = new Uint8Array(await obj.arrayBuffer());
-			entryUnits.push({
-				attachmentId: a.id,
-				filename: a.filename,
-				mimetype: a.mimetype,
-				bytes,
-			});
-		}
-
-		// Self-adapter so the DO can call the pipeline without going through its
-		// own stub (which would deadlock on the input gate).
-		const selfStub: PipelineStub = {
-			listInvoices: (f) => this.listInvoices(f),
-			saveInvoice: (eId, aId, p) => this.saveInvoice(eId, aId, p),
-			saveDerivedAttachment: (eId, a) => this.saveDerivedAttachment(eId, a),
-		};
-
-		return processEmailForInvoices({
-			env: this.env,
-			stub: selfStub,
-			emailId,
-			entryUnits,
-			bodyHtml: email.body,
-			existingAttachments: existing,
-			allowedDomains: opts.allowedDomains,
-		});
-	}
 
 	// ── Rules engine (persistence layer) ────────────────────────────────
 	//
@@ -1744,12 +1158,8 @@ export class MailboxDO extends DurableObject<Env> {
 					auto_draft: row.auto_draft,
 					agent_model: row.agent_model,
 					email_reply_model: row.email_reply_model,
-					invoice_model: row.invoice_model,
 					agent_system_prompt: row.agent_system_prompt,
-					invoice_agent_system_prompt: row.invoice_agent_system_prompt,
-					invoice_source_domains_json: row.invoice_source_domains_json,
 					email_reply_enabled_skills_json: row.email_reply_enabled_skills_json,
-					invoice_enabled_skills_json: row.invoice_enabled_skills_json,
 					non_agent_settings_json: row.non_agent_settings_json,
 					updated_at: row.updated_at,
 				},
@@ -1774,30 +1184,14 @@ export class MailboxDO extends DurableObject<Env> {
 				patch.emailReplyModel !== undefined
 					? patch.emailReplyModel
 					: existing?.emailReplyModel ?? null,
-			invoiceModel:
-				patch.invoiceModel !== undefined
-					? patch.invoiceModel
-					: existing?.invoiceModel ?? null,
 			agentSystemPrompt:
 				patch.agentSystemPrompt !== undefined
 					? patch.agentSystemPrompt
 					: existing?.agentSystemPrompt ?? null,
-			invoiceAgentSystemPrompt:
-				patch.invoiceAgentSystemPrompt !== undefined
-					? patch.invoiceAgentSystemPrompt
-					: existing?.invoiceAgentSystemPrompt ?? null,
-			invoiceSourceDomains:
-				patch.invoiceSourceDomains !== undefined
-					? patch.invoiceSourceDomains
-					: existing?.invoiceSourceDomains ?? null,
 			emailReplyEnabledSkills:
 				patch.emailReplyEnabledSkills !== undefined
 					? patch.emailReplyEnabledSkills
 					: existing?.emailReplyEnabledSkills ?? null,
-			invoiceEnabledSkills:
-				patch.invoiceEnabledSkills !== undefined
-					? patch.invoiceEnabledSkills
-					: existing?.invoiceEnabledSkills ?? null,
 			nonAgentSettings:
 				patch.nonAgentSettings !== undefined
 					? patch.nonAgentSettings
@@ -1905,12 +1299,8 @@ export interface MailboxSettingsRow {
 	autoDraft: boolean | null;
 	agentModel: string | null;
 	emailReplyModel: string | null;
-	invoiceModel: string | null;
 	agentSystemPrompt: string | null;
-	invoiceAgentSystemPrompt: string | null;
-	invoiceSourceDomains: readonly string[] | null;
 	emailReplyEnabledSkills: readonly string[] | null;
-	invoiceEnabledSkills: readonly string[] | null;
 	/** Opaque JSON object: fromName / forwarding / signature / autoReply / etc.
 	 *  The DO does not introspect this — it is round-tripped between the
 	 *  settings UI and the API as-is. */
@@ -1922,12 +1312,8 @@ export interface MailboxSettingsInput {
 	autoDraft: boolean | null;
 	agentModel: string | null;
 	emailReplyModel: string | null;
-	invoiceModel: string | null;
 	agentSystemPrompt: string | null;
-	invoiceAgentSystemPrompt: string | null;
-	invoiceSourceDomains: readonly string[] | null;
 	emailReplyEnabledSkills: readonly string[] | null;
-	invoiceEnabledSkills: readonly string[] | null;
 	nonAgentSettings: Record<string, unknown> | null;
 }
 
@@ -1936,12 +1322,8 @@ export interface MailboxSettingsPatch {
 	autoDraft?: boolean | null;
 	agentModel?: string | null;
 	emailReplyModel?: string | null;
-	invoiceModel?: string | null;
 	agentSystemPrompt?: string | null;
-	invoiceAgentSystemPrompt?: string | null;
-	invoiceSourceDomains?: readonly string[] | null;
 	emailReplyEnabledSkills?: readonly string[] | null;
-	invoiceEnabledSkills?: readonly string[] | null;
 	nonAgentSettings?: Record<string, unknown> | null;
 }
 
@@ -1950,12 +1332,8 @@ interface MailboxSettingsRawRow {
 	auto_draft: number | null;
 	agent_model: string | null;
 	email_reply_model: string | null;
-	invoice_model: string | null;
 	agent_system_prompt: string | null;
-	invoice_agent_system_prompt: string | null;
-	invoice_source_domains_json: string | null;
 	email_reply_enabled_skills_json: string | null;
-	invoice_enabled_skills_json: string | null;
 	non_agent_settings_json: string | null;
 	updated_at: number;
 }
@@ -1983,12 +1361,8 @@ function rowToMailboxSettings(row: MailboxSettingsRawRow): MailboxSettingsRow {
 		autoDraft: row.auto_draft === null ? null : row.auto_draft !== 0,
 		agentModel: row.agent_model,
 		emailReplyModel: row.email_reply_model,
-		invoiceModel: row.invoice_model,
 		agentSystemPrompt: row.agent_system_prompt,
-		invoiceAgentSystemPrompt: row.invoice_agent_system_prompt,
-		invoiceSourceDomains: parseStringArrayJson(row.invoice_source_domains_json),
 		emailReplyEnabledSkills: parseStringArrayJson(row.email_reply_enabled_skills_json),
-		invoiceEnabledSkills: parseStringArrayJson(row.invoice_enabled_skills_json),
 		nonAgentSettings: parseObjectJson(row.non_agent_settings_json),
 		updatedAt: row.updated_at,
 	};
@@ -2002,21 +1376,11 @@ function mailboxSettingsInputToColumns(
 		auto_draft: input.autoDraft === null ? null : input.autoDraft ? 1 : 0,
 		agent_model: input.agentModel,
 		email_reply_model: input.emailReplyModel,
-		invoice_model: input.invoiceModel,
 		agent_system_prompt: input.agentSystemPrompt,
-		invoice_agent_system_prompt: input.invoiceAgentSystemPrompt,
-		invoice_source_domains_json:
-			input.invoiceSourceDomains === null
-				? null
-				: JSON.stringify([...input.invoiceSourceDomains]),
 		email_reply_enabled_skills_json:
 			input.emailReplyEnabledSkills === null
 				? null
 				: JSON.stringify([...input.emailReplyEnabledSkills]),
-		invoice_enabled_skills_json:
-			input.invoiceEnabledSkills === null
-				? null
-				: JSON.stringify([...input.invoiceEnabledSkills]),
 		non_agent_settings_json:
 			input.nonAgentSettings === null ? null : JSON.stringify(input.nonAgentSettings),
 		updated_at: Date.now(),

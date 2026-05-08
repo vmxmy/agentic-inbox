@@ -44,7 +44,7 @@ export interface CapabilityContext {
 	/** Set when triggered from inbound-email rule. */
 	emailId?: string;
 	/** Set when invoked as an agent tool. */
-	agentId?: "email-reply" | "invoice";
+	agentId?: "email-reply";
 	triggeredBy: "rule" | "agent-tool" | "mcp";
 	/** Cloudflare Worker `ExecutionContext.waitUntil`. Capabilities that
 	 *  schedule fire-and-forget async work (subrequests, DO dispatches)

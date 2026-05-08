@@ -55,79 +55,9 @@ export const attachments = sqliteTable("attachments", {
 	parent_attachment_id: text("parent_attachment_id"),
 });
 
-export const invoices = sqliteTable("invoices", {
-	id: text("id").primaryKey(),
-	email_id: text("email_id")
-		.notNull()
-		.references(() => emails.id, { onDelete: "cascade" }),
-	attachment_id: text("attachment_id")
-		.notNull()
-		.references(() => attachments.id, { onDelete: "cascade" }),
-	invoice_number: text("invoice_number").notNull(),
-	invoice_code: text("invoice_code"),
-	invoice_type: text("invoice_type"),
-	issue_date: text("issue_date").notNull(),
-	seller_name: text("seller_name"),
-	seller_tax_id: text("seller_tax_id"),
-	buyer_name: text("buyer_name"),
-	buyer_tax_id: text("buyer_tax_id"),
-	amount_excl_tax: real("amount_excl_tax"),
-	tax_amount: real("tax_amount"),
-	amount_incl_tax: real("amount_incl_tax"),
-	currency: text("currency").default("CNY"),
-	remark: text("remark"),
-	raw_xml: text("raw_xml"),
-	created_at: text("created_at").notNull(),
-	/** 'xml' for XML attachments, 'pdf-ocr' for DeepRead results. */
-	source_kind: text("source_kind").notNull().default("xml"),
-	/** 1 if any OCR'd field tripped DeepRead's HIL flag; user should audit. */
-	needs_review: integer("needs_review").notNull().default(0),
-	/** 红字发票指向的原票号；普通票为 null。 */
-	original_invoice_number: text("original_invoice_number"),
-	/** 1 = 此票已被红冲（原票视角）。 */
-	is_voided: integer("is_voided").notNull().default(0),
-});
-
-export const invoiceItems = sqliteTable("invoice_items", {
-	id: text("id").primaryKey(),
-	invoice_id: text("invoice_id")
-		.notNull()
-		.references(() => invoices.id, { onDelete: "cascade" }),
-	ord: integer("ord").notNull(),
-	item_name: text("item_name"),
-	spec: text("spec"),
-	unit: text("unit"),
-	quantity: real("quantity"),
-	unit_price: real("unit_price"),
-	amount: real("amount"),
-	tax_rate: real("tax_rate"),
-	tax_amount: real("tax_amount"),
-});
-
-export const bundles = sqliteTable("bundles", {
-	id: text("id").primaryKey(),
-	name: text("name").notNull(),
-	note: text("note"),
-	/** 'draft' | 'submitted' | 'reimbursed' — free-form enum, not enforced. */
-	status: text("status").notNull().default("draft"),
-	created_at: text("created_at").notNull(),
-});
-
-export const bundleInvoices = sqliteTable(
-	"bundle_invoices",
-	{
-		bundle_id: text("bundle_id")
-			.notNull()
-			.references(() => bundles.id, { onDelete: "cascade" }),
-		invoice_id: text("invoice_id")
-			.notNull()
-			.references(() => invoices.id, { onDelete: "cascade" }),
-		position: integer("position").notNull().default(0),
-	},
-	(t) => ({
-		pk: primaryKey({ columns: [t.bundle_id, t.invoice_id] }),
-	}),
-);
+// Invoice and bundle tables removed (invoice business retired). The legacy
+// SQL tables remain in existing per-mailbox SQLite databases for forensics
+// (soft delete) but no Drizzle code references them anymore.
 
 /**
  * Inbox processing rules. One row per rule, ordered by `position`. The DO is
@@ -187,12 +117,8 @@ export const mailboxSettings = sqliteTable("mailbox_settings", {
 	auto_draft: integer("auto_draft"),
 	agent_model: text("agent_model"),
 	email_reply_model: text("email_reply_model"),
-	invoice_model: text("invoice_model"),
 	agent_system_prompt: text("agent_system_prompt"),
-	invoice_agent_system_prompt: text("invoice_agent_system_prompt"),
-	invoice_source_domains_json: text("invoice_source_domains_json"),
 	email_reply_enabled_skills_json: text("email_reply_enabled_skills_json"),
-	invoice_enabled_skills_json: text("invoice_enabled_skills_json"),
 	/**
 	 * Opaque JSON object holding the non-agent UI settings that previously
 	 * lived in the R2 omnibus blob: `fromName`, `forwarding`, `signature`,
@@ -201,6 +127,9 @@ export const mailboxSettings = sqliteTable("mailbox_settings", {
 	 */
 	non_agent_settings_json: text("non_agent_settings_json"),
 	updated_at: integer("updated_at").notNull(),
+	// Legacy invoice_* columns (invoice_model, invoice_agent_system_prompt,
+	// invoice_source_domains_json, invoice_enabled_skills_json) remain in
+	// existing DOs as a soft-delete artefact of the retired invoice business.
 });
 
 /**

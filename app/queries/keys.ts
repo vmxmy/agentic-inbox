@@ -34,15 +34,4 @@ export const queryKeys = {
 	adminMailboxes: ["admin", "mailboxes"] as const,
 	adminTeams: ["admin", "teams"] as const,
 	adminTeamUsers: (teamId: string) => ["admin", "teams", teamId, "users"] as const,
-	invoices: {
-		list: (mailboxId: string, filters: Record<string, unknown>) =>
-			["invoices", mailboxId, filters] as const,
-		detail: (mailboxId: string, invoiceId: string) =>
-			["invoices", mailboxId, invoiceId] as const,
-	},
-	bundles: {
-		list: (mailboxId: string) => ["bundles", mailboxId] as const,
-		detail: (mailboxId: string, bundleId: string) =>
-			["bundles", mailboxId, bundleId] as const,
-	},
 };

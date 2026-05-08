@@ -155,7 +155,7 @@ function toolNameFromCapabilityId(id: string): string {
 function buildToolsFor(
 	env: Env,
 	mailboxId: string,
-	agentId: "email-reply" | "invoice",
+	agentId: "email-reply",
 	enabledSkills: readonly string[] | null,
 	allowedDefaults: readonly string[],
 	user: AuthUser | null,

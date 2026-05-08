@@ -491,8 +491,8 @@ export default function SettingsRoute() {
 
 							{activeAgent.hasModelOverride && (() => {
 								// Per-agent model bound to the active agent's slot.
-								const activeModel = activeAgent.id === "invoice" ? invoiceModel : emailReplyModel;
-								const setActiveModel = activeAgent.id === "invoice" ? setInvoiceModel : setEmailReplyModel;
+								const activeModel = emailReplyModel;
+								const setActiveModel = setEmailReplyModel;
 								return (
 								<div>
 									<label className="block text-xs font-medium text-kumo-default mb-1.5">Model</label>
@@ -554,7 +554,7 @@ export default function SettingsRoute() {
 									value={activePromptValue}
 									onChange={(e) => setActivePrompt(e.target.value)}
 									placeholder={activePromptPlaceholder}
-									rows={activeAgent.id === "invoice" ? 10 : 12}
+									rows={12}
 									className="w-full resize-y rounded-lg border border-kumo-line bg-kumo-recessed px-3 py-2 text-xs text-kumo-default placeholder:text-kumo-subtle focus:outline-none focus:ring-1 focus:ring-kumo-ring font-mono leading-relaxed"
 								/>
 								<p className="text-xs text-kumo-subtle mt-2">

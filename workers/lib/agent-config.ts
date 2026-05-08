@@ -6,8 +6,8 @@
  * Mailbox-level Agent configuration.
  *
  * The agent-config slice (autoDraft, system prompts, model overrides,
- * enabled-skill allowlists, invoice-source domains) lives in the per-mailbox
- * MailboxDO `mailbox_settings` table. Reads and writes both route through the
+ * enabled-skill allowlists) lives in the per-mailbox MailboxDO
+ * `mailbox_settings` table. Reads and writes both route through the
  * DO. The legacy R2 settings blob is no longer consulted — by the time PR 8
  * lands, PR 5/6's lazy-backfill has run for at least one production cycle and
  * `mailbox_settings` is the sole authoritative source.
@@ -16,10 +16,6 @@
  * (D1-backed, with its own one-shot R2 backfill).
  */
 import type { Env } from "../types";
-import {
-	DEFAULT_INVOICE_SOURCE_DOMAINS,
-	isValidInvoiceSourceDomain,
-} from "./invoice-link-scanner";
 import type { Rule } from "./rules";
 import { loadRulesForEvaluation } from "./rules-store";
 import { getMailboxStub } from "./email-helpers";
@@ -54,27 +50,12 @@ export interface AgentConfig {
 	/** Per-agent override for the EmailAgent. `null` = use the legacy `model`
 	 *  field, then env default. */
 	emailReplyModel: string | null;
-	/** Per-agent override for the InvoiceAgent. Same fallback chain. */
-	invoiceModel: string | null;
 	customSystemPrompt: string | null;
 	rules: Rule[];
-	/** Per-mailbox extras appended to the built-in invoice-source whitelist.
-	 *  Stored on the settings blob as `invoiceSourceDomains`. Malformed
-	 *  entries are filtered out silently — tighter than an error, but still
-	 *  observable because they won't show up in get_mailbox_settings. */
-	invoiceSourceDomains: readonly string[];
-	/** Custom system prompt for the InvoiceAgent chat surface. Null falls back
-	 *  to the built-in DEFAULT_SYSTEM_PROMPT defined in
-	 *  `workers/invoice-agent/index.ts`. Stored as `invoiceAgentSystemPrompt`
-	 *  on the settings blob (parallel to `agentSystemPrompt` for EmailAgent). */
-	invoiceAgentSystemPrompt: string | null;
 	/** Capability ids the EmailAgent is permitted to invoke as tools. `null`
 	 *  means "use the agent's default allowlist" — preserves pre-Capability
 	 *  behaviour for mailboxes that haven't opted into per-skill toggles. */
 	emailReplyEnabledSkills: readonly string[] | null;
-	/** Reserved for the Phase-2 invoice-tool migration. Read but not yet
-	 *  consumed by InvoiceAgent. */
-	invoiceEnabledSkills: readonly string[] | null;
 }
 
 function coerceModel(raw: unknown, env: Env): AgentModel {
@@ -85,20 +66,6 @@ function coerceModel(raw: unknown, env: Env): AgentModel {
 function coerceOptionalModel(raw: unknown): string | null {
 	if (typeof raw === "string" && raw.trim()) return raw.trim();
 	return null;
-}
-
-function coerceInvoiceSourceDomains(raw: unknown): readonly string[] {
-	if (!Array.isArray(raw)) return [];
-	const seen = new Set<string>();
-	const out: string[] = [];
-	for (const entry of raw) {
-		if (!isValidInvoiceSourceDomain(entry)) continue;
-		const lower = entry.toLowerCase();
-		if (seen.has(lower)) continue;
-		seen.add(lower);
-		out.push(lower);
-	}
-	return out;
 }
 
 /**
@@ -149,20 +116,12 @@ function buildAgentConfigFromDoRow(
 		autoDraft: row.autoDraft !== false,
 		model: coerceModel(row.agentModel, env),
 		emailReplyModel: coerceOptionalModel(row.emailReplyModel),
-		invoiceModel: coerceOptionalModel(row.invoiceModel),
 		customSystemPrompt:
 			typeof row.agentSystemPrompt === "string" && row.agentSystemPrompt.trim()
 				? row.agentSystemPrompt
 				: null,
 		rules,
-		invoiceSourceDomains: coerceInvoiceSourceDomains(row.invoiceSourceDomains),
-		invoiceAgentSystemPrompt:
-			typeof row.invoiceAgentSystemPrompt === "string" &&
-			row.invoiceAgentSystemPrompt.trim()
-				? row.invoiceAgentSystemPrompt
-				: null,
 		emailReplyEnabledSkills: coerceSkills(row.emailReplyEnabledSkills),
-		invoiceEnabledSkills: coerceSkills(row.invoiceEnabledSkills),
 	};
 }
 
@@ -176,12 +135,8 @@ export const AGENT_CONFIG_FIELDS = [
 	"autoDraft",
 	"agentModel",
 	"emailReplyModel",
-	"invoiceModel",
 	"agentSystemPrompt",
-	"invoiceAgentSystemPrompt",
-	"invoiceSourceDomains",
 	"emailReplyEnabledSkills",
-	"invoiceEnabledSkills",
 ] as const;
 
 export type AgentConfigField = (typeof AGENT_CONFIG_FIELDS)[number];
@@ -215,35 +170,13 @@ export function agentSettingsPatchFromRaw(
 				? raw.emailReplyModel.trim()
 				: null;
 	}
-	if ("invoiceModel" in raw) {
-		patch.invoiceModel =
-			typeof raw.invoiceModel === "string" && raw.invoiceModel.trim()
-				? raw.invoiceModel.trim()
-				: null;
-	}
 	if ("agentSystemPrompt" in raw) {
 		patch.agentSystemPrompt =
 			typeof raw.agentSystemPrompt === "string" ? raw.agentSystemPrompt : null;
 	}
-	if ("invoiceAgentSystemPrompt" in raw) {
-		patch.invoiceAgentSystemPrompt =
-			typeof raw.invoiceAgentSystemPrompt === "string"
-				? raw.invoiceAgentSystemPrompt
-				: null;
-	}
-	if ("invoiceSourceDomains" in raw) {
-		patch.invoiceSourceDomains = Array.isArray(raw.invoiceSourceDomains)
-			? raw.invoiceSourceDomains.filter((s): s is string => typeof s === "string")
-			: null;
-	}
 	if ("emailReplyEnabledSkills" in raw) {
 		patch.emailReplyEnabledSkills = Array.isArray(raw.emailReplyEnabledSkills)
 			? raw.emailReplyEnabledSkills.filter((s): s is string => typeof s === "string")
-			: null;
-	}
-	if ("invoiceEnabledSkills" in raw) {
-		patch.invoiceEnabledSkills = Array.isArray(raw.invoiceEnabledSkills)
-			? raw.invoiceEnabledSkills.filter((s): s is string => typeof s === "string")
 			: null;
 	}
 	return patch;
@@ -263,19 +196,9 @@ export function mailboxSettingsRowToR2Shape(
 	if (row.autoDraft !== null) out.autoDraft = row.autoDraft;
 	if (row.agentModel !== null) out.agentModel = row.agentModel;
 	if (row.emailReplyModel !== null) out.emailReplyModel = row.emailReplyModel;
-	if (row.invoiceModel !== null) out.invoiceModel = row.invoiceModel;
 	if (row.agentSystemPrompt !== null) out.agentSystemPrompt = row.agentSystemPrompt;
-	if (row.invoiceAgentSystemPrompt !== null) {
-		out.invoiceAgentSystemPrompt = row.invoiceAgentSystemPrompt;
-	}
-	if (row.invoiceSourceDomains !== null) {
-		out.invoiceSourceDomains = [...row.invoiceSourceDomains];
-	}
 	if (row.emailReplyEnabledSkills !== null) {
 		out.emailReplyEnabledSkills = [...row.emailReplyEnabledSkills];
-	}
-	if (row.invoiceEnabledSkills !== null) {
-		out.invoiceEnabledSkills = [...row.invoiceEnabledSkills];
 	}
 	return out;
 }
@@ -360,29 +283,10 @@ function defaults(env: Env): AgentConfig {
 		autoDraft: true,
 		model: env.LLM_DEFAULT_MODEL?.trim() || DEFAULT_AGENT_MODEL,
 		emailReplyModel: null,
-		invoiceModel: null,
 		customSystemPrompt: null,
 		rules: [],
-		invoiceSourceDomains: [],
-		invoiceAgentSystemPrompt: null,
 		emailReplyEnabledSkills: null,
-		invoiceEnabledSkills: null,
 	};
-}
-
-/**
- * Effective invoice-source domain whitelist for a mailbox: built-in defaults
- * concatenated with valid per-mailbox extras. Pipeline callers feed this to
- * `fetchInvoiceFile` / `scanInvoiceLinks` so per-mailbox onboarding of new
- * tax/ticket platforms doesn't need a redeploy.
- */
-export async function resolveInvoiceSourceDomains(
-	env: Env,
-	mailboxId: string,
-): Promise<readonly string[]> {
-	const config = await getAgentConfig(env, mailboxId);
-	if (config.invoiceSourceDomains.length === 0) return DEFAULT_INVOICE_SOURCE_DOMAINS;
-	return [...DEFAULT_INVOICE_SOURCE_DOMAINS, ...config.invoiceSourceDomains];
 }
 
 // ── Mutation helpers ───────────────────────────────────────────────
@@ -390,22 +294,16 @@ export async function resolveInvoiceSourceDomains(
 export interface AgentConfigUpdate {
 	autoDraft?: boolean;
 	/** Legacy shared model override. New callers should set
-	 *  `emailReplyModel` / `invoiceModel` instead. */
+	 *  `emailReplyModel` instead. */
 	agentModel?: string;
 	/** Per-agent model override for EmailAgent. Pass `null` to clear and fall
 	 *  back to the legacy `agentModel`, then env default. */
 	emailReplyModel?: string | null;
-	/** Per-agent model override for InvoiceAgent. Same fallback chain. */
-	invoiceModel?: string | null;
 	/** Pass `null` to clear the custom prompt and fall back to the default. */
 	agentSystemPrompt?: string | null;
-	/** Pass `null` to clear the InvoiceAgent prompt and fall back to its default. */
-	invoiceAgentSystemPrompt?: string | null;
 	/** Pass `null` to clear the allowlist and fall back to the agent's default
 	 *  set of skills; pass `[]` to disable all skills. */
 	emailReplyEnabledSkills?: readonly string[] | null;
-	/** Reserved — read by getAgentConfig but not yet consumed by InvoiceAgent. */
-	invoiceEnabledSkills?: readonly string[] | null;
 }
 
 /**
@@ -435,25 +333,12 @@ export async function updateAgentConfig(
 				? null
 				: update.emailReplyModel.trim();
 	}
-	if (update.invoiceModel !== undefined) {
-		patch.invoiceModel =
-			update.invoiceModel === null || !update.invoiceModel.trim()
-				? null
-				: update.invoiceModel.trim();
-	}
 	if (update.agentSystemPrompt !== undefined) {
 		patch.agentSystemPrompt = update.agentSystemPrompt;
-	}
-	if (update.invoiceAgentSystemPrompt !== undefined) {
-		patch.invoiceAgentSystemPrompt = update.invoiceAgentSystemPrompt;
 	}
 	if (update.emailReplyEnabledSkills !== undefined) {
 		patch.emailReplyEnabledSkills = update.emailReplyEnabledSkills;
 	}
-	if (update.invoiceEnabledSkills !== undefined) {
-		patch.invoiceEnabledSkills = update.invoiceEnabledSkills;
-	}
 	await stub.updateMailboxSettings(patch);
 	return getAgentConfig(env, mailboxId);
 }
-

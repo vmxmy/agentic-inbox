@@ -9,7 +9,7 @@
  * "fork another panel file".
  *
  * Adding an agent requires:
- *   1. Backend DO + binding (see workers/invoice-agent for a worked example)
+ *   1. Backend DO + binding (see workers/agent for a worked example)
  *   2. A new entry below + add to AGENTS / AGENTS_BY_ID / AgentId union
  *   3. Optional per-agent action footer (UnifiedAgentPanel branches by id)
  *
@@ -21,30 +21,24 @@
 
 import {
 	ArrowBendUpLeftIcon,
-	ArrowsClockwiseIcon,
 	CheckCircleIcon,
 	EnvelopeSimpleIcon,
 	EyeIcon,
-	FoldersIcon,
 	MagnifyingGlassIcon,
-	MinusIcon,
 	PaperPlaneTiltIcon,
-	PencilSimpleIcon,
-	PlusIcon,
-	ReceiptIcon,
 	RobotIcon,
 	TrashIcon,
 } from "@phosphor-icons/react";
 import type { ReactNode } from "react";
 import type { ToolLabelsMap } from "./MessageBubble";
 
-export type AgentId = "email" | "invoice" | "router";
+export type AgentId = "email" | "router";
 
 export interface AgentDef {
 	id: AgentId;
 	/** DO class name — must match `wrangler.jsonc` `durable_objects.bindings`
 	 *  and the `useAgent({ agent: "..." })` hook argument. */
-	bindingName: "EmailAgent" | "InvoiceAgent" | "RouterAgent";
+	bindingName: "EmailAgent" | "RouterAgent";
 	/** Short identifier shown in the @ dropdown, chip, and message header. */
 	label: string;
 	/** One-line description shown beside the label in the @ dropdown
@@ -114,64 +108,6 @@ const EMAIL: AgentDef = {
 	],
 };
 
-const INVOICE: AgentDef = {
-	id: "invoice",
-	bindingName: "InvoiceAgent",
-	label: "invoice",
-	description: "Find invoices, manage reimbursement bundles",
-	icon: <ReceiptIcon size={12} weight="bold" />,
-	largeIcon: (
-		<ReceiptIcon size={24} weight="duotone" className="text-kumo-brand" />
-	),
-	toolLabels: {
-		process_email_invoices: {
-			label: "Re-extracting invoices",
-			icon: <ArrowsClockwiseIcon size={14} weight="bold" />,
-		},
-		list_invoices: {
-			label: "Searching invoices",
-			icon: <MagnifyingGlassIcon size={14} weight="bold" />,
-		},
-		get_invoice: {
-			label: "Reading invoice",
-			icon: <ReceiptIcon size={14} weight="bold" />,
-		},
-		list_bundles: {
-			label: "Listing bundles",
-			icon: <FoldersIcon size={14} weight="bold" />,
-		},
-		get_bundle: {
-			label: "Reading bundle",
-			icon: <EyeIcon size={14} weight="bold" />,
-		},
-		create_bundle: {
-			label: "Creating bundle",
-			icon: <PlusIcon size={14} weight="bold" />,
-		},
-		update_bundle: {
-			label: "Updating bundle",
-			icon: <PencilSimpleIcon size={14} weight="bold" />,
-		},
-		delete_bundle: {
-			label: "Deleting bundle",
-			icon: <TrashIcon size={14} weight="bold" />,
-		},
-		add_invoice_to_bundle: {
-			label: "Adding to bundle",
-			icon: <PlusIcon size={14} weight="bold" />,
-		},
-		remove_invoice_from_bundle: {
-			label: "Removing from bundle",
-			icon: <MinusIcon size={14} weight="bold" />,
-		},
-	},
-	suggestedPrompts: [
-		"Show the latest invoices",
-		"List reimbursement bundles",
-		"How many invoices need review?",
-	],
-};
-
 const ROUTER: AgentDef = {
 	id: "router",
 	bindingName: "RouterAgent",
@@ -186,30 +122,24 @@ const ROUTER: AgentDef = {
 			label: "Asking email agent",
 			icon: <EnvelopeSimpleIcon size={14} weight="bold" />,
 		},
-		ask_invoice_agent: {
-			label: "Asking invoice agent",
-			icon: <ReceiptIcon size={14} weight="bold" />,
-		},
 	},
 	suggestedPrompts: [
 		"Show me the latest inbox emails",
-		"List my reimbursement bundles",
 		"Draft a reply to the latest email",
 	],
 };
 
-export const AGENTS: AgentDef[] = [EMAIL, INVOICE];
+export const AGENTS: AgentDef[] = [EMAIL];
 
 export const AGENTS_BY_ID: Record<AgentId, AgentDef> = {
 	email: EMAIL,
-	invoice: INVOICE,
 	router: ROUTER,
 };
 
 export const DEFAULT_AGENT_ID: AgentId = "email";
 
 export function isAgentId(s: string): s is AgentId {
-	return s === "email" || s === "invoice" || s === "router";
+	return s === "email" || s === "router";
 }
 
 const SESSION_KEY_PREFIX = "agentic-inbox:lastAgent";

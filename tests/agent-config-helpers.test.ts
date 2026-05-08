@@ -11,7 +11,8 @@ describe("AGENT_CONFIG_FIELDS", () => {
 		expect(AGENT_CONFIG_FIELDS).toContain("autoDraft");
 		expect(AGENT_CONFIG_FIELDS).toContain("agentModel");
 		expect(AGENT_CONFIG_FIELDS).toContain("agentSystemPrompt");
-		expect(AGENT_CONFIG_FIELDS).toContain("invoiceSourceDomains");
+		expect(AGENT_CONFIG_FIELDS).toContain("emailReplyModel");
+		expect(AGENT_CONFIG_FIELDS).toContain("emailReplyEnabledSkills");
 		// Non-agent UI fields stay on the R2 omnibus blob:
 		expect(AGENT_CONFIG_FIELDS as readonly string[]).not.toContain("fromName");
 		expect(AGENT_CONFIG_FIELDS as readonly string[]).not.toContain("forwarding");
@@ -34,11 +35,9 @@ describe("agentSettingsPatchFromRaw", () => {
 		const patch = agentSettingsPatchFromRaw({
 			agentModel: "  glm-5.1  ",
 			emailReplyModel: "",
-			invoiceModel: "   ",
 		});
 		expect(patch.agentModel).toBe("glm-5.1");
 		expect(patch.emailReplyModel).toBeNull();
-		expect(patch.invoiceModel).toBeNull();
 	});
 
 	it("filters skill arrays to strings", () => {
@@ -67,12 +66,9 @@ describe("mailboxSettingsRowToR2Shape", () => {
 			autoDraft: null,
 			agentModel: null,
 			emailReplyModel: null,
-			invoiceModel: null,
 			agentSystemPrompt: null,
-			invoiceAgentSystemPrompt: null,
-			invoiceSourceDomains: null,
 			emailReplyEnabledSkills: null,
-			invoiceEnabledSkills: null,
+			nonAgentSettings: null,
 			updatedAt: 0,
 			...overrides,
 		}) as MailboxSettingsRow;
@@ -87,13 +83,13 @@ describe("mailboxSettingsRowToR2Shape", () => {
 			row({
 				autoDraft: false,
 				agentModel: "glm-5.1",
-				invoiceSourceDomains: [".example.com"],
+				emailReplyEnabledSkills: ["core:draft-reply"],
 			}),
 		);
 		expect(shape).toEqual({
 			autoDraft: false,
 			agentModel: "glm-5.1",
-			invoiceSourceDomains: [".example.com"],
+			emailReplyEnabledSkills: ["core:draft-reply"],
 		});
 	});
 });

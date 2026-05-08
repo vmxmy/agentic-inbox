@@ -8,11 +8,9 @@ import {
 	CaretLeftIcon,
 	FileIcon,
 	FolderIcon,
-	PackageIcon,
 	PaperPlaneTiltIcon,
 	PencilSimpleIcon,
 	PlusIcon,
-	ReceiptIcon,
 	TrashIcon,
 	TrayIcon,
 } from "@phosphor-icons/react";
@@ -179,22 +177,6 @@ export default function Sidebar() {
 						onClick={handleNavClick}
 					/>
 				))}
-
-				{/* Invoices — data view, not a folder */}
-				<div className="pt-3">
-					<FolderLink
-						to={`/mailbox/${mailboxId}/invoices`}
-						icon={<ReceiptIcon size={18} weight="regular" />}
-						label="Invoices"
-						onClick={handleNavClick}
-					/>
-					<FolderLink
-						to={`/mailbox/${mailboxId}/bundles`}
-						icon={<PackageIcon size={18} weight="regular" />}
-						label="Bundles"
-						onClick={handleNavClick}
-					/>
-				</div>
 
 				{/* Custom folders */}
 				{customFolders.length > 0 && (

@@ -6,8 +6,8 @@
  * Purity guard for `workers/lib/mcp-audit.ts`:
  *
  *   The module under test MUST stay free of imports from `agents`,
- *   `@cloudflare/ai-chat`, `workers/durableObject/`, `workers/agent/`, or
- *   `workers/invoice-agent/`. CI greps the source file separately
+ *   `@cloudflare/ai-chat`, `workers/durableObject/`, or
+ *   `workers/agent/`. CI greps the source file separately
  *   (see PR description); this suite asserts the public export surface to
  *   keep the contract observable from inside vitest.
  *

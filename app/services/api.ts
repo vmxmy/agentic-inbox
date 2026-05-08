@@ -3,17 +3,11 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import type {
-	Bundle,
-	BundleDetail,
-	BundleSummary,
 	Email,
 	Folder,
 	Mailbox,
 	Team,
 	TeamUser,
-	InvoiceFilters,
-	InvoiceListResponse,
-	InvoiceDetailResponse,
 } from "~/types";
 
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -402,78 +396,6 @@ const api = {
 	// Search
 	searchEmails: (mailboxId: string, params: Record<string, string>) =>
 		get<EmailListResponse | Email[]>(`/api/v1/mailboxes/${mailboxId}/search`, { params }),
-
-	// Invoices
-	listInvoices: (mailboxId: string, filters: InvoiceFilters = {}) => {
-		const params: Record<string, string> = {};
-		for (const [k, v] of Object.entries(filters)) {
-			if (v !== undefined && v !== null && v !== "") params[k] = String(v);
-		}
-		return get<InvoiceListResponse>(`/api/v1/mailboxes/${mailboxId}/invoices`, { params });
-	},
-	getInvoice: (mailboxId: string, invoiceId: string) =>
-		get<InvoiceDetailResponse>(`/api/v1/mailboxes/${mailboxId}/invoices/${invoiceId}`),
-	deleteInvoice: (mailboxId: string, invoiceId: string) =>
-		del<void>(`/api/v1/mailboxes/${mailboxId}/invoices/${invoiceId}`),
-	/**
-	 * Build a download URL for the CSV export. Returned as a string (not
-	 * fetched) so the caller can hand it to the browser's download path
-	 * (`<a href>` / `window.open`) and let the streamed response come down
-	 * directly.
-	 */
-	invoicesExportUrl: (mailboxId: string, filters: InvoiceFilters = {}): string => {
-		const qs = new URLSearchParams();
-		for (const [k, v] of Object.entries(filters)) {
-			if (v !== undefined && v !== null && v !== "") qs.set(k, String(v));
-		}
-		const query = qs.toString();
-		return query
-			? `/api/v1/mailboxes/${mailboxId}/invoices.csv?${query}`
-			: `/api/v1/mailboxes/${mailboxId}/invoices.csv`;
-	},
-	uploadInvoiceFile: (
-		mailboxId: string,
-		emailId: string,
-		args: { filename: string; mimetype?: string; content_base64: string },
-	) =>
-		post<{
-			attachmentId: string;
-			invoiceId?: string;
-			invoice_number?: string;
-			reason?: string;
-		}>(
-			`/api/v1/mailboxes/${mailboxId}/emails/${emailId}/invoice-file`,
-			args,
-		),
-
-	// Reimbursement bundles
-	listBundles: (mailboxId: string) =>
-		get<BundleSummary[]>(`/api/v1/mailboxes/${mailboxId}/bundles`),
-	createBundle: (mailboxId: string, args: { name: string; note?: string | null }) =>
-		post<Bundle>(`/api/v1/mailboxes/${mailboxId}/bundles`, args),
-	getBundle: (mailboxId: string, bundleId: string) =>
-		get<BundleDetail>(`/api/v1/mailboxes/${mailboxId}/bundles/${bundleId}`),
-	updateBundle: (
-		mailboxId: string,
-		bundleId: string,
-		patch: { name?: string; note?: string | null; status?: string },
-	) =>
-		put<Bundle>(
-			`/api/v1/mailboxes/${mailboxId}/bundles/${bundleId}`,
-			patch,
-		),
-	deleteBundle: (mailboxId: string, bundleId: string) =>
-		del<void>(`/api/v1/mailboxes/${mailboxId}/bundles/${bundleId}`),
-	addInvoiceToBundle: (mailboxId: string, bundleId: string, invoiceId: string) =>
-		post<{ ok: boolean }>(
-			`/api/v1/mailboxes/${mailboxId}/bundles/${bundleId}/invoices/${invoiceId}`,
-		),
-	removeInvoiceFromBundle: (mailboxId: string, bundleId: string, invoiceId: string) =>
-		del<void>(
-			`/api/v1/mailboxes/${mailboxId}/bundles/${bundleId}/invoices/${invoiceId}`,
-		),
-	bundleZipUrl: (mailboxId: string, bundleId: string): string =>
-		`/api/v1/mailboxes/${mailboxId}/bundles/${bundleId}.zip`,
 
 	// L4 — external MCP connections (owner-only mutations, member-readable list).
 	// Routes are flag-gated server-side via L4_MCP_ENABLED; the read path

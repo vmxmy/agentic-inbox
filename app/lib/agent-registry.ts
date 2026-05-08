@@ -2,9 +2,9 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { ReceiptIcon, RobotIcon } from "@phosphor-icons/react";
+import { RobotIcon } from "@phosphor-icons/react";
 
-export type AgentId = "email-reply" | "invoice";
+export type AgentId = "email-reply";
 
 export interface AgentTool {
 	name: string;
@@ -16,7 +16,7 @@ export interface AgentDescriptor {
 	name: string;
 	description: string;
 	icon: typeof RobotIcon;
-	promptField: "agentSystemPrompt" | "invoiceAgentSystemPrompt";
+	promptField: "agentSystemPrompt";
 	hasModelOverride: boolean;
 	hasAutoDraft: boolean;
 	tools: AgentTool[];
@@ -34,19 +34,6 @@ const EMAIL_REPLY_TOOLS: AgentTool[] = [
 	{ name: "discard_draft", description: "Delete a draft." },
 ];
 
-const INVOICE_TOOLS: AgentTool[] = [
-	{ name: "process_email_invoices", description: "Re-run extraction on a specific email's attachments." },
-	{ name: "list_invoices", description: "List invoices with filters (sender, date, currency)." },
-	{ name: "get_invoice", description: "Fetch one invoice with line items." },
-	{ name: "list_bundles", description: "List reimbursement bundles." },
-	{ name: "get_bundle", description: "Read one bundle and its members." },
-	{ name: "create_bundle", description: "Create a new reimbursement bundle." },
-	{ name: "update_bundle", description: "Rename or change a bundle's status." },
-	{ name: "delete_bundle", description: "Delete a bundle (invoices stay)." },
-	{ name: "add_invoice_to_bundle", description: "Attach an invoice to a bundle." },
-	{ name: "remove_invoice_from_bundle", description: "Detach an invoice from a bundle." },
-];
-
 export const AGENTS: AgentDescriptor[] = [
 	{
 		id: "email-reply",
@@ -57,15 +44,5 @@ export const AGENTS: AgentDescriptor[] = [
 		hasModelOverride: true,
 		hasAutoDraft: true,
 		tools: EMAIL_REPLY_TOOLS,
-	},
-	{
-		id: "invoice",
-		name: "Invoice Agent",
-		description: "Searches invoices and manages reimbursement bundles.",
-		icon: ReceiptIcon,
-		promptField: "invoiceAgentSystemPrompt",
-		hasModelOverride: true,
-		hasAutoDraft: false,
-		tools: INVOICE_TOOLS,
 	},
 ];

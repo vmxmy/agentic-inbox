@@ -21,7 +21,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router";
 import { Folders } from "shared/folders";
 import { formatListDate } from "shared/dates";
-import { InvoiceBadgeCompact } from "~/components/InvoiceBadge";
 import MailboxSplitView from "~/components/MailboxSplitView";
 import { getSnippetText } from "~/lib/utils";
 import {
@@ -31,7 +30,6 @@ import {
 	useUpdateEmail,
 } from "~/queries/emails";
 import { useFolders } from "~/queries/folders";
-import { useInvoicesIndexByEmail } from "~/queries/invoices";
 import { queryKeys } from "~/queries/keys";
 import { useUIStore } from "~/hooks/useUIStore";
 import type { Email } from "~/types";
@@ -179,7 +177,6 @@ export default function EmailListRoute() {
 	const totalCount = emailData?.totalCount ?? 0;
 
 	const { data: folders = [] } = useFolders(mailboxId);
-	const { index: invoiceIndex } = useInvoicesIndexByEmail(mailboxId);
 
 	const folderName = useMemo(() => {
 		const found = folders.find((f) => f.id === folder);
@@ -319,7 +316,6 @@ export default function EmailListRoute() {
 							{emails.map((email) => {
 								const isSelected = selectedEmailId === email.id;
 								const snippet = getSnippetText(email.snippet);
-								const emailInvoices = invoiceIndex.get(email.id) ?? [];
 								return (
 									<div
 										key={email.id}
@@ -388,12 +384,6 @@ export default function EmailListRoute() {
 														</span>
 													</Tooltip>
 												)}
-												{emailInvoices.length > 0 && mailboxId ? (
-													<InvoiceBadgeCompact
-														mailboxId={mailboxId}
-														invoices={emailInvoices}
-													/>
-												) : null}
 												<span className="text-sm text-kumo-subtle shrink-0 ml-auto">
 													{formatListDate(email.date)}
 												</span>

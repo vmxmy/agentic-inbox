@@ -82,10 +82,6 @@
 				"class_name": "EmailMCP"
 			},
 			{
-				"name": "INVOICE_AGENT",
-				"class_name": "InvoiceAgent"
-			},
-			{
 				"name": "ROUTER_AGENT",
 				"class_name": "RouterAgent"
 			}
@@ -124,6 +120,17 @@
 			"new_sqlite_classes": [
 				"InvoiceAgent",
 				"RouterAgent"
+			]
+		},
+		{
+			// Invoice/bundle business removed; the dedicated InvoiceAgent DO
+			// class is no longer exported by the Worker. The per-mailbox
+			// SQLite tables created by v6 (invoices/invoice_items/bundles/
+			// bundle_invoices on MailboxDO) are intentionally left in place
+			// (soft delete) so historical rows remain readable if rolled back.
+			"tag": "v7",
+			"deleted_classes": [
+				"InvoiceAgent"
 			]
 		}
 	]

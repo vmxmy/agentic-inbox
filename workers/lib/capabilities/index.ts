@@ -28,7 +28,6 @@ import "./builtin/discard-draft";
 import "./builtin/send-email";
 import "./builtin/webhook";
 import "./builtin/extract-attachment-text";
-import "./builtin/extract-invoice";
 
 export * from "./types";
 export * from "./registry";
