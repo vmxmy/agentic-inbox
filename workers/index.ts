@@ -1478,7 +1478,9 @@ app.delete("/api/v1/mailboxes/:mailboxId/agent-files", async (c: AppContext) => 
 	return c.body(null, 204);
 });
 
+// -- Folders --------------------------------------------------------
 
+app.get("/api/v1/mailboxes/:mailboxId/folders", async (c: AppContext) => c.json(await c.var.mailboxStub.getFolders()));
 
 app.post("/api/v1/mailboxes/:mailboxId/folders", async (c: AppContext) => {
 	const { name } = (await c.req.json()) as { name: string };
