@@ -7,12 +7,25 @@ import api from "~/services/api";
 import type { Folder } from "~/types";
 import { queryKeys } from "./keys";
 
+function normalizeFolders(data: unknown): Folder[] {
+	if (Array.isArray(data)) return data as Folder[];
+	if (
+		data &&
+		typeof data === "object" &&
+		"folders" in data &&
+		Array.isArray((data as { folders?: unknown }).folders)
+	) {
+		return (data as { folders: Folder[] }).folders;
+	}
+	return [];
+}
+
 export function useFolders(mailboxId: string | undefined) {
 	return useQuery<Folder[]>({
 		queryKey: mailboxId
 			? queryKeys.folders.list(mailboxId)
 			: ["folders", "_disabled"],
-		queryFn: () => api.listFolders(mailboxId!) as Promise<Folder[]>,
+		queryFn: async () => normalizeFolders(await api.listFolders(mailboxId!)),
 		enabled: !!mailboxId,
 	});
 }
