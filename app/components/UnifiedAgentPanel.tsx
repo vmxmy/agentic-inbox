@@ -162,6 +162,10 @@ function UnifiedChatConnected({
 	const [uploadError, setUploadError] = useState<string | null>(null);
 	const [uploading, setUploading] = useState(false);
 	const fileInputRef = useRef<HTMLInputElement>(null);
+	// Tracks whether the user manually clicked Stop. Workaround for AI SDK
+	// v6 where `chat.stop()` aborts the request but `status` may not flip
+	// back to "ready" if the transport doesn't surface the AbortError.
+	const stoppedByUserRef = useRef(false);
 	// Lazy initializer reads sessionStorage on first render. `readLastAgent`
 	// itself guards `typeof window === "undefined"` for SSR, so this is safe
 	// and avoids a first-paint mis-routing race vs. an effect-based init.
@@ -191,7 +195,17 @@ function UnifiedChatConnected({
 	// resurrected by the resume handshake.
 	const chat = useAgentChat({ agent: routerAgent, resume: false });
 
-	const isStreaming = chat.status === "streaming" || chat.status === "submitted";
+	// Hide loading UI immediately when the user hits Stop, rather than waiting
+	// for the SDK transport to propagate the abort and update status.
+	useEffect(() => {
+		if (chat.status === "ready" || chat.status === "error") {
+			stoppedByUserRef.current = false;
+		}
+	}, [chat.status]);
+
+	const isStreaming =
+		(chat.status === "streaming" || chat.status === "submitted") &&
+		!stoppedByUserRef.current;
 
 	const timeline: TaggedMessage[] = useMemo(
 		() =>
@@ -261,6 +275,7 @@ function UnifiedChatConnected({
 	};
 
 	const handleStop = () => {
+		stoppedByUserRef.current = true;
 		chat.stop();
 	};
 
