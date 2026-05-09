@@ -26,6 +26,14 @@ import {
 	buildReferencesChain,
 	buildThreadingHeaders,
 } from "./email-helpers";
+import { storeAttachments } from "./attachments";
+import {
+	ChatFileError,
+	readChatAttachmentContent,
+	resolveChatFileReferences,
+	type ChatAttachmentRef,
+	type ChatFileMetadata,
+} from "./chat-files";
 import { verifyDraft } from "./ai";
 import { sendEmail } from "../email-sender";
 import { Folders } from "../../shared/folders";
@@ -42,6 +50,31 @@ type MailboxSearchStub = {
 type RateLimitStub = {
 	checkSendRateLimit: () => Promise<string | null>;
 };
+
+type DraftAttachmentParams = {
+	attachments?: ChatAttachmentRef[];
+	chatFiles?: ChatFileMetadata[];
+};
+
+async function resolveDraftAttachments(
+	env: Env,
+	draftId: string,
+	params: DraftAttachmentParams,
+) {
+	if (!params.attachments?.length) return [];
+	try {
+		const files = resolveChatFileReferences(params.chatFiles ?? [], params.attachments);
+		const attachments = await Promise.all(
+			files.map((file) => readChatAttachmentContent(env.BUCKET, file)),
+		);
+		return storeAttachments(env.BUCKET, draftId, attachments);
+	} catch (error) {
+		if (error instanceof ChatFileError) {
+			throw error;
+		}
+		throw new Error("Failed to attach uploaded files to draft");
+	}
+}
 
 // ── list_mailboxes ─────────────────────────────────────────────────
 
@@ -126,6 +159,8 @@ export async function toolDraftReply(
 		body: string;
 		isPlainText?: boolean;
 		runVerifyDraft?: boolean;
+		attachments?: ChatAttachmentRef[];
+		chatFiles?: ChatFileMetadata[];
 	},
 ): Promise<
 	| { status: "draft_saved"; draftId: string; message: string; draft: Record<string, string> }
@@ -163,6 +198,15 @@ export async function toolDraftReply(
 			})
 		: "";
 	const bodyHtml = processedBody + quotedBlock;
+	let attachmentData;
+	try {
+		attachmentData = await resolveDraftAttachments(env, draftId, params);
+	} catch (error) {
+		if (error instanceof ChatFileError) {
+			return { error: error.message };
+		}
+		throw error;
+	}
 
 	await stub.createEmail(
 		Folders.DRAFT,
@@ -177,7 +221,7 @@ export async function toolDraftReply(
 			email_references: null,
 			thread_id: threadId,
 		},
-		[],
+		attachmentData,
 	);
 
 	return {
@@ -208,6 +252,8 @@ export async function toolDraftEmail(
 		in_reply_to?: string;
 		/** Optional thread_id for create_draft style */
 		thread_id?: string;
+		attachments?: ChatAttachmentRef[];
+		chatFiles?: ChatFileMetadata[];
 	},
 ): Promise<
 	| { status: string; draftId: string; threadId?: string; message: string; draft?: Record<string, string> }
@@ -239,6 +285,15 @@ export async function toolDraftEmail(
 	if (!resolvedThreadId) {
 		resolvedThreadId = draftId;
 	}
+	let attachmentData;
+	try {
+		attachmentData = await resolveDraftAttachments(env, draftId, params);
+	} catch (error) {
+		if (error instanceof ChatFileError) {
+			return { error: error.message };
+		}
+		throw error;
+	}
 
 	await stub.createEmail(
 		Folders.DRAFT,
@@ -253,7 +308,7 @@ export async function toolDraftEmail(
 			email_references: null,
 			thread_id: resolvedThreadId,
 		},
-		[],
+		attachmentData,
 	);
 
 	return {

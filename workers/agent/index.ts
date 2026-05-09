@@ -60,6 +60,11 @@ import {
 	wrapExternalTool,
 	type ExternalToolLike,
 } from "../lib/mcp-audit";
+import {
+	formatAvailableFilesForPrompt,
+	listChatFiles,
+	type ChatFileMetadata,
+} from "../lib/chat-files";
 import type { Env } from "../types";
 
 // AI SDK v6 changed tool() overloads significantly. We define tools as plain
@@ -168,6 +173,7 @@ function buildToolsFor(
 	enabledSkills: readonly string[] | null,
 	allowedDefaults: readonly string[],
 	user: AuthUser | null,
+	chatFiles: readonly ChatFileMetadata[] = [],
 ): Record<string, ReturnType<typeof defineTool>> {
 	// `enabledSkills` only narrows: user-supplied ids outside the agent's
 	// allowlist are dropped so an EmailAgent can't accidentally pull invoice
@@ -183,7 +189,7 @@ function buildToolsFor(
 			parameters: cap.inputSchema as z.ZodType<unknown>,
 			execute: async (input: unknown): Promise<unknown> => {
 				const result = await invokeCapability(
-					{ env, mailboxId, agentId, triggeredBy: "agent-tool", user },
+					{ env, mailboxId, agentId, triggeredBy: "agent-tool", user, chatFiles: [...chatFiles] },
 					id,
 					input,
 				);
@@ -199,8 +205,9 @@ function createEmailTools(
 	mailboxId: string,
 	enabledSkills: readonly string[] | null = null,
 	user: AuthUser | null = null,
+	chatFiles: readonly ChatFileMetadata[] = [],
 ) {
-	return buildToolsFor(env, mailboxId, "email-reply", enabledSkills, EMAIL_AGENT_DEFAULT_SKILLS, user);
+	return buildToolsFor(env, mailboxId, "email-reply", enabledSkills, EMAIL_AGENT_DEFAULT_SKILLS, user, chatFiles);
 }
 
 // Use `any` for the Env generic to avoid type conflicts between the custom
@@ -236,8 +243,10 @@ export class EmailAgent extends AIChatAgent<any> {
 		const env = this.env as Env;
 		const mailboxId = this.name;
 		const config = await getAgentConfig(env, mailboxId);
-		const internalTools = createEmailTools(env, mailboxId, config.emailReplyEnabledSkills, this.currentUser);
-		const systemPrompt = resolveSystemPrompt(config.customSystemPrompt);
+		const chatSessionId = this.name;
+		const chatFiles = await listChatFiles(env.BUCKET, mailboxId, chatSessionId);
+		const internalTools = createEmailTools(env, mailboxId, config.emailReplyEnabledSkills, this.currentUser, chatFiles);
+		const systemPrompt = resolveSystemPrompt(config.customSystemPrompt) + formatAvailableFilesForPrompt(chatFiles);
 		const cfg = await resolveLlmConfig(env);
 		const provider = getLlmProvider(env, cfg);
 		const catalog = await listLlmModels(env, { cfg });

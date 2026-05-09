@@ -6,6 +6,13 @@ import { z } from "zod";
 import { register } from "../registry";
 import { toolDraftEmail } from "../../tools";
 
+const AttachmentRef = z.object({
+	fileId: z.string().optional(),
+	filename: z.string().optional(),
+	ordinal: z.number().int().positive().optional(),
+	reference: z.string().optional(),
+});
+
 const Input = z.object({
 	to: z.string().email().describe("Recipient email address"),
 	subject: z.string().min(1).describe("Subject line"),
@@ -20,6 +27,7 @@ const Input = z.object({
 	runVerifyDraft: z.boolean().optional(),
 	in_reply_to: z.string().optional(),
 	thread_id: z.string().optional(),
+	attachments: z.array(AttachmentRef).max(5).optional().describe("Files from the current chat to attach. Use fileId when available; otherwise filename, ordinal, or reference text."),
 });
 
 register({
@@ -35,6 +43,10 @@ register({
 		// Agent surface always treats body as plain text — matches today's
 		// hardcoded `isPlainText: true` in `createEmailTools.draft_email`.
 		const isPlainText = ctx.triggeredBy === "agent-tool" ? true : input.isPlainText;
-		return toolDraftEmail(ctx.env, ctx.mailboxId, { ...input, isPlainText });
+		return toolDraftEmail(ctx.env, ctx.mailboxId, {
+				...input,
+				isPlainText,
+				chatFiles: ctx.chatFiles,
+			});
 	},
 });

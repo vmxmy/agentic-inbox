@@ -108,6 +108,14 @@ import {
 	MCP_AUTH_TYPES,
 	ServerConfigSchema,
 } from "./lib/mcp-connections";
+import {
+	buildChatFileMetadata,
+	ChatFileError,
+	clearChatFiles,
+	listChatFiles,
+	nextChatFileOrdinal,
+	registerChatFile,
+} from "./lib/chat-files";
 import { redactTokenFromText } from "./lib/mcp-token-crypto";
 
 type AppContext = Context<MailboxContext>;
@@ -170,6 +178,13 @@ function boolQuery(c: AppContext, key: string): boolean | undefined {
 	const v = c.req.query(key);
 	if (v === undefined || v === "") return undefined;
 	return v === "true" || v === "1";
+}
+
+function chatFileErrorResponse(c: AppContext, error: unknown): Response {
+	if (error instanceof ChatFileError) {
+		return c.json({ error: error.message, code: error.code }, 400);
+	}
+	throw error;
 }
 
 // -- App & middleware -----------------------------------------------
@@ -1414,9 +1429,56 @@ app.post("/api/v1/mailboxes/:mailboxId/threads/:threadId/read", async (c: AppCon
 app.post("/api/v1/mailboxes/:mailboxId/emails/:id/reply", handleReplyEmail);
 app.post("/api/v1/mailboxes/:mailboxId/emails/:id/forward", handleForwardEmail);
 
-// -- Folders --------------------------------------------------------
+// -- Agent chat files ------------------------------------------------
 
-app.get("/api/v1/mailboxes/:mailboxId/folders", async (c: AppContext) => c.json(await c.var.mailboxStub.getFolders()));
+app.post("/api/v1/mailboxes/:mailboxId/agent-files", async (c: AppContext) => {
+	const mailboxId = c.req.param("mailboxId")!;
+	try {
+		const form = await c.req.formData();
+		const sessionId = String(form.get("sessionId") ?? "").trim();
+		const file = form.get("file");
+		if (!sessionId) return c.json({ error: "sessionId is required" }, 400);
+		if (!(file instanceof File)) return c.json({ error: "file is required" }, 400);
+		const existingFiles = await listChatFiles(c.env.BUCKET, mailboxId, sessionId);
+		if (existingFiles.length >= 5) return c.json({ error: "You can attach at most 5 files" }, 400);
+
+		const metadata = buildChatFileMetadata({
+			mailboxId,
+			sessionId,
+			filename: file.name,
+			mimetype: file.type || "application/octet-stream",
+			size: file.size,
+			ordinal: await nextChatFileOrdinal(c.env.BUCKET, mailboxId, sessionId),
+		});
+		await c.env.BUCKET.put(metadata.key, new Uint8Array(await file.arrayBuffer()), {
+			httpMetadata: { contentType: metadata.mimetype },
+			customMetadata: { mailboxId, sessionId, fileId: metadata.id },
+		});
+		await registerChatFile(c.env.BUCKET, metadata);
+		return c.json({
+			id: metadata.id,
+			filename: metadata.filename,
+			mimetype: metadata.mimetype,
+			size: metadata.size,
+			ordinal: metadata.ordinal,
+		}, 201);
+	} catch (error) {
+		return chatFileErrorResponse(c, error);
+	}
+});
+
+app.delete("/api/v1/mailboxes/:mailboxId/agent-files", async (c: AppContext) => {
+	const mailboxId = c.req.param("mailboxId")!;
+	const sessionId = c.req.query("sessionId")?.trim() ?? "";
+	if (!sessionId) return c.json({ error: "sessionId is required" }, 400);
+	const files = await clearChatFiles(c.env.BUCKET, mailboxId, sessionId);
+	if (files.length > 0) {
+		c.executionCtx.waitUntil(c.env.BUCKET.delete(files.map((file) => file.key)));
+	}
+	return c.body(null, 204);
+});
+
+
 
 app.post("/api/v1/mailboxes/:mailboxId/folders", async (c: AppContext) => {
 	const { name } = (await c.req.json()) as { name: string };

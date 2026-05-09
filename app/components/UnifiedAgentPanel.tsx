@@ -4,6 +4,7 @@
 
 import { Badge, Button, Loader, Tooltip } from "@cloudflare/kumo";
 import {
+	PaperclipIcon,
 	StopIcon,
 	TrashIcon,
 } from "@phosphor-icons/react";
@@ -93,12 +94,56 @@ function ThinkingIndicator({ agent }: { agent: AgentDef }) {
 	);
 }
 
-// ── Inner component (called once both lazy modules are loaded) ──────
-
 interface TaggedMessage {
 	msg: UIMessage;
 	agentId: AgentId;
 }
+
+interface ChatUploadedFile {
+	id: string;
+	filename: string;
+	mimetype: string;
+	size: number;
+	ordinal: number;
+}
+
+const CHAT_FILE_MAX_BYTES = 10 * 1024 * 1024;
+const CHAT_FILE_MAX_ATTACHMENTS = 5;
+
+function formatFileSize(size: number): string {
+	if (size < 1024) return `${size} B`;
+	if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+	return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+async function uploadChatFile(
+	mailboxId: string,
+	sessionId: string,
+	file: File,
+): Promise<ChatUploadedFile> {
+	const formData = new FormData();
+	formData.set("sessionId", sessionId);
+	formData.set("file", file);
+	const response = await fetch(`/api/v1/mailboxes/${encodeURIComponent(mailboxId)}/agent-files`, {
+		method: "POST",
+		body: formData,
+	});
+	const body = await response.json().catch(() => ({})) as { error?: string } & Partial<ChatUploadedFile>;
+	if (!response.ok) {
+		throw new Error(body.error || "Failed to upload file");
+	}
+	if (!body.id || !body.filename || !body.mimetype || !body.size || !body.ordinal) {
+		throw new Error("File upload response was incomplete");
+	}
+	return {
+		id: body.id,
+		filename: body.filename,
+		mimetype: body.mimetype,
+		size: body.size,
+		ordinal: body.ordinal,
+	};
+}
+
 
 function UnifiedChatConnected({
 	mailboxId,
@@ -113,6 +158,10 @@ function UnifiedChatConnected({
 	const isNearBottomRef = useRef(true);
 	const [inputValue, setInputValue] = useState("");
 	const [pendingAgent, setPendingAgent] = useState<AgentId | null>(null);
+	const [uploadedFiles, setUploadedFiles] = useState<ChatUploadedFile[]>([]);
+	const [uploadError, setUploadError] = useState<string | null>(null);
+	const [uploading, setUploading] = useState(false);
+	const fileInputRef = useRef<HTMLInputElement>(null);
 	// Lazy initializer reads sessionStorage on first render. `readLastAgent`
 	// itself guards `typeof window === "undefined"` for SSR, so this is safe
 	// and avoids a first-paint mis-routing race vs. an effect-based init.
@@ -123,6 +172,8 @@ function UnifiedChatConnected({
 	// mailboxes without unmounting the panel), re-read the per-mailbox preference
 	// and drop any in-progress @-mention so it doesn't carry over.
 	useEffect(() => {
+		setUploadedFiles([]);
+		setUploadError(null);
 		setDefaultAgent(readLastAgent(mailboxId));
 		setPendingAgent(null);
 	}, [mailboxId]);
@@ -159,9 +210,39 @@ function UnifiedChatConnected({
 
 	const sendToAgent = (agentId: AgentId, text: string) => {
 		const hint = agentId !== "router" ? `[→${agentId}] ` : "";
-		chat.sendMessage({ text: hint + text });
+		const fileContext = uploadedFiles.length > 0
+			? `\n\nAvailable uploaded files:\n${uploadedFiles
+				.map((file) => `${file.ordinal}. ${file.filename} (id: ${file.id}, ${formatFileSize(file.size)}, ${file.mimetype})`)
+				.join("\n")}`
+			: "";
+		chat.sendMessage({ text: hint + text + fileContext });
 		writeLastAgent(agentId, mailboxId);
 		setDefaultAgent(agentId);
+	};
+
+	const handleFilesSelected = async (files: FileList | null) => {
+		if (!files || files.length === 0) return;
+		setUploadError(null);
+		if (uploadedFiles.length + files.length > CHAT_FILE_MAX_ATTACHMENTS) {
+			setUploadError(`You can attach at most ${CHAT_FILE_MAX_ATTACHMENTS} files.`);
+			return;
+		}
+		setUploading(true);
+		try {
+			const nextFiles: ChatUploadedFile[] = [];
+			for (const file of Array.from(files)) {
+				if (file.size > CHAT_FILE_MAX_BYTES) {
+					throw new Error(`${file.name} exceeds the 10MB upload limit.`);
+				}
+				nextFiles.push(await uploadChatFile(mailboxId, mailboxId, file));
+			}
+			setUploadedFiles((current) => [...current, ...nextFiles]);
+		} catch (error) {
+			setUploadError(error instanceof Error ? error.message : "Failed to upload file");
+		} finally {
+			setUploading(false);
+			if (fileInputRef.current) fileInputRef.current.value = "";
+		}
 	};
 
 	const handleSend = () => {
@@ -190,6 +271,11 @@ function UnifiedChatConnected({
 			)
 		) {
 			await chat.clearHistory();
+			await fetch(`/api/v1/mailboxes/${encodeURIComponent(mailboxId)}/agent-files?sessionId=${encodeURIComponent(mailboxId)}`, {
+				method: "DELETE",
+			}).catch(() => undefined);
+			setUploadedFiles([]);
+			setUploadError(null);
 		}
 	};
 
@@ -250,6 +336,31 @@ function UnifiedChatConnected({
 
 			{/* Composer */}
 			<div className="shrink-0 border-t border-kumo-line px-3 py-2">
+				{uploadError && (
+					<div className="mb-2 text-[11px] text-kumo-error">{uploadError}</div>
+				)}
+				{uploadedFiles.length > 0 && (
+					<div className="mb-2 flex flex-wrap gap-1.5">
+						{uploadedFiles.map((file) => (
+							<span
+								key={file.id}
+								className="inline-flex items-center gap-1 rounded-md border border-kumo-line bg-kumo-fill px-2 py-1 text-[11px] text-kumo-default"
+							>
+								<PaperclipIcon size={12} />
+								<span className="max-w-[160px] truncate">{file.filename}</span>
+								<span className="text-kumo-subtle">{formatFileSize(file.size)}</span>
+								<button
+									type="button"
+									className="ml-0.5 border-0 bg-transparent text-kumo-subtle cursor-pointer"
+									onClick={() => setUploadedFiles((current) => current.filter((item) => item.id !== file.id))}
+									aria-label={`Remove ${file.filename}`}
+								>
+									×
+								</button>
+							</span>
+						))}
+					</div>
+				)}
 				{isStreaming ? (
 					<div className="flex justify-center">
 						<Button
@@ -262,15 +373,37 @@ function UnifiedChatConnected({
 						</Button>
 					</div>
 				) : (
-					<MentionAutocomplete
-						value={inputValue}
-						onChange={setInputValue}
-						onSubmit={handleSend}
-						pendingAgent={pendingAgent}
-						onPendingAgentChange={setPendingAgent}
-						canSubmit={!!inputValue.trim()}
-						placeholder={placeholder}
-					/>
+					<div className="flex items-end gap-1.5">
+						<input
+							ref={fileInputRef}
+							type="file"
+							multiple
+							className="hidden"
+							onChange={(event) => void handleFilesSelected(event.currentTarget.files)}
+						/>
+						<Tooltip content="Upload files for this chat" asChild>
+							<Button
+								variant="secondary"
+								shape="square"
+								size="sm"
+								disabled={uploading || uploadedFiles.length >= CHAT_FILE_MAX_ATTACHMENTS}
+								icon={uploading ? <Loader size="sm" /> : <PaperclipIcon size={14} />}
+								onClick={() => fileInputRef.current?.click()}
+								aria-label="Upload files"
+							/>
+						</Tooltip>
+						<div className="min-w-0 flex-1">
+							<MentionAutocomplete
+								value={inputValue}
+								onChange={setInputValue}
+								onSubmit={handleSend}
+								pendingAgent={pendingAgent}
+								onPendingAgentChange={setPendingAgent}
+								canSubmit={!!inputValue.trim()}
+								placeholder={placeholder}
+							/>
+						</div>
+					</div>
 				)}
 			</div>
 		</div>

@@ -41,6 +41,8 @@ export interface CapabilityContext {
 	mailboxId: string;
 	/** Authenticated caller. Null for system-triggered (rule executor on inbound mail). */
 	user?: CapabilityUser | null;
+	/** Chat-scoped uploaded file metadata visible to agent-tool calls only. */
+	chatFiles?: import("../chat-files").ChatFileMetadata[];
 	/** Set when triggered from inbound-email rule. */
 	emailId?: string;
 	/** Set when invoked as an agent tool. */

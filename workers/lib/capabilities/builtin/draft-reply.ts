@@ -6,6 +6,13 @@ import { z } from "zod";
 import { register } from "../registry";
 import { toolDraftReply } from "../../tools";
 
+const AttachmentRef = z.object({
+	fileId: z.string().optional(),
+	filename: z.string().optional(),
+	ordinal: z.number().int().positive().optional(),
+	reference: z.string().optional(),
+});
+
 const Input = z.object({
 	originalEmailId: z.string().min(1).describe("The ID of the email being replied to"),
 	to: z.string().email().describe("Recipient email address"),
@@ -18,6 +25,7 @@ const Input = z.object({
 	 *  save. MCP callers can pass HTML by setting this false. */
 	isPlainText: z.boolean().default(true),
 	runVerifyDraft: z.boolean().optional(),
+	attachments: z.array(AttachmentRef).max(5).optional().describe("Files from the current chat to attach. Use fileId when available; otherwise filename, ordinal, or reference text."),
 });
 
 register({
@@ -37,9 +45,10 @@ register({
 		const runVerifyDraft =
 			ctx.triggeredBy === "agent-tool" ? true : input.runVerifyDraft;
 		return toolDraftReply(ctx.env, ctx.mailboxId, {
-			...input,
-			isPlainText,
-			runVerifyDraft,
-		});
+				...input,
+				isPlainText,
+				runVerifyDraft,
+				chatFiles: ctx.chatFiles,
+			});
 	},
 });
