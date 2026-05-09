@@ -6,6 +6,7 @@ import { Button, Tooltip } from "@cloudflare/kumo";
 import {
 	ArrowClockwiseIcon,
 	ArrowCounterClockwiseIcon,
+	CodeIcon,
 	LinkBreakIcon,
 	LinkSimpleIcon,
 	ListBulletsIcon,
@@ -26,7 +27,7 @@ import { TextStyle } from "@tiptap/extension-text-style";
 import Underline from "@tiptap/extension-underline";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 interface RichTextEditorProps {
 	value: string;
@@ -37,6 +38,8 @@ export default function RichTextEditor({
 	value,
 	onChange,
 }: RichTextEditorProps) {
+	const [isSourceMode, setIsSourceMode] = useState(false);
+
 	const editor = useEditor({
 		extensions: [
 			StarterKit,
@@ -63,7 +66,6 @@ export default function RichTextEditor({
 	useEffect(() => {
 		if (editor && !editor.isDestroyed && value !== editor.getHTML()) {
 			editor.commands.setContent(value);
-			// Place cursor at the start of the document (above quoted text)
 			const rafId = requestAnimationFrame(() => {
 				if (!editor.isDestroyed) {
 					editor.commands.focus('start');
@@ -85,6 +87,21 @@ export default function RichTextEditor({
 		editor.chain().focus().extendMarkRange("link").setLink({ href: url }).run();
 	}, [editor]);
 
+	const toggleSourceMode = useCallback(() => {
+		setIsSourceMode((prev) => {
+			const next = !prev;
+			if (next && editor) {
+				// Switching to source: sync editor HTML to parent
+				const html = editor.getHTML();
+				if (html !== value) onChange(html);
+			} else if (!next && editor) {
+				// Switching to visual: sync current HTML into editor
+				editor.commands.setContent(value);
+			}
+			return next;
+		});
+	}, [editor, value, onChange]);
+
 	if (!editor) return null;
 
 	return (
@@ -99,6 +116,7 @@ export default function RichTextEditor({
 						size="sm"
 						icon={<TextBIcon size={16} />}
 						onClick={() => editor.chain().focus().toggleBold().run()}
+						disabled={isSourceMode}
 						aria-label="Bold"
 					/>
 				</Tooltip>
@@ -109,6 +127,7 @@ export default function RichTextEditor({
 						size="sm"
 						icon={<TextItalicIcon size={16} />}
 						onClick={() => editor.chain().focus().toggleItalic().run()}
+						disabled={isSourceMode}
 						aria-label="Italic"
 					/>
 				</Tooltip>
@@ -119,6 +138,7 @@ export default function RichTextEditor({
 						size="sm"
 						icon={<TextUnderlineIcon size={16} />}
 						onClick={() => editor.chain().focus().toggleUnderline().run()}
+						disabled={isSourceMode}
 						aria-label="Underline"
 					/>
 				</Tooltip>
@@ -129,6 +149,7 @@ export default function RichTextEditor({
 						size="sm"
 						icon={<TextStrikethroughIcon size={16} />}
 						onClick={() => editor.chain().focus().toggleStrike().run()}
+						disabled={isSourceMode}
 						aria-label="Strikethrough"
 					/>
 				</Tooltip>
@@ -143,6 +164,7 @@ export default function RichTextEditor({
 						size="sm"
 						icon={<ListBulletsIcon size={16} />}
 						onClick={() => editor.chain().focus().toggleBulletList().run()}
+						disabled={isSourceMode}
 						aria-label="Bullet list"
 					/>
 				</Tooltip>
@@ -153,6 +175,7 @@ export default function RichTextEditor({
 						size="sm"
 						icon={<ListNumbersIcon size={16} />}
 						onClick={() => editor.chain().focus().toggleOrderedList().run()}
+						disabled={isSourceMode}
 						aria-label="Numbered list"
 					/>
 				</Tooltip>
@@ -167,6 +190,7 @@ export default function RichTextEditor({
 						size="sm"
 						icon={<QuotesIcon size={16} />}
 						onClick={() => editor.chain().focus().toggleBlockquote().run()}
+						disabled={isSourceMode}
 						aria-label="Blockquote"
 					/>
 				</Tooltip>
@@ -177,6 +201,7 @@ export default function RichTextEditor({
 						size="sm"
 						icon={<LinkSimpleIcon size={16} />}
 						onClick={setLink}
+						disabled={isSourceMode}
 						aria-label="Link"
 					/>
 				</Tooltip>
@@ -188,6 +213,7 @@ export default function RichTextEditor({
 							size="sm"
 							icon={<LinkBreakIcon size={16} />}
 							onClick={() => editor.chain().focus().unsetLink().run()}
+							disabled={isSourceMode}
 							aria-label="Remove link"
 						/>
 					</Tooltip>
@@ -199,6 +225,7 @@ export default function RichTextEditor({
 						size="sm"
 						icon={<MinusIcon size={16} />}
 						onClick={() => editor.chain().focus().setHorizontalRule().run()}
+						disabled={isSourceMode}
 						aria-label="Horizontal rule"
 					/>
 				</Tooltip>
@@ -213,7 +240,7 @@ export default function RichTextEditor({
 						size="sm"
 						icon={<ArrowCounterClockwiseIcon size={16} />}
 						onClick={() => editor.chain().focus().undo().run()}
-						disabled={!editor.can().undo()}
+						disabled={isSourceMode || !editor.can().undo()}
 						aria-label="Undo"
 					/>
 				</Tooltip>
@@ -224,15 +251,38 @@ export default function RichTextEditor({
 						size="sm"
 						icon={<ArrowClockwiseIcon size={16} />}
 						onClick={() => editor.chain().focus().redo().run()}
-						disabled={!editor.can().redo()}
+						disabled={isSourceMode || !editor.can().redo()}
 						aria-label="Redo"
+					/>
+				</Tooltip>
+
+				<div className="flex-1" />
+
+				{/* Source toggle */}
+				<Tooltip content={isSourceMode ? "Visual" : "Source"} side="bottom" asChild>
+					<Button
+						variant={isSourceMode ? "secondary" : "ghost"}
+						shape="square"
+						size="sm"
+						icon={<CodeIcon size={16} />}
+						onClick={toggleSourceMode}
+						aria-label={isSourceMode ? "Visual" : "Source"}
 					/>
 				</Tooltip>
 			</div>
 
 			{/* Editor content */}
 			<div className="flex-1 overflow-y-auto">
-				<EditorContent editor={editor} />
+				{isSourceMode ? (
+					<textarea
+						value={value}
+						onChange={(e) => onChange(e.target.value)}
+						className="w-full h-full min-h-[180px] p-3 text-xs font-mono bg-kumo-base text-kumo-default resize-none focus:outline-none"
+						spellCheck={false}
+					/>
+				) : (
+					<EditorContent editor={editor} />
+				)}
 			</div>
 		</div>
 	);
