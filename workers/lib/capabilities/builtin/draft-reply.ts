@@ -20,9 +20,11 @@ const Input = z.object({
 	body: z
 		.string()
 		.min(1)
-		.describe("The plain text body of the reply. No HTML — just write normally."),
-	/** When true (default for agent surface) the body is HTML-escaped before
-	 *  save. MCP callers can pass HTML by setting this false. */
+		.describe(
+			"Reply body. By default this is plain text. To preserve HTML formatting, pass a safe HTML fragment and set isPlainText to false. Do not wrap HTML in markdown code fences or escape tags.",
+		),
+	/** When true (default) the body is HTML-escaped before save. Set false to
+	 *  preserve a safe HTML fragment. */
 	isPlainText: z.boolean().default(true),
 	runVerifyDraft: z.boolean().optional(),
 	attachments: z.array(AttachmentRef).max(5).optional().describe("Files from the current chat to attach. Use fileId when available; otherwise filename, ordinal, or reference text."),
@@ -32,21 +34,19 @@ register({
 	id: "core:draft-reply",
 	displayName: "Draft a reply",
 	description:
-		"Draft a reply to an existing email and save it to the Drafts folder. This does NOT send — it saves a draft for the operator to review and send from the UI. Write the body as plain text — no HTML tags.",
+		"Draft a reply to an existing email and save it to the Drafts folder. This does NOT send — it saves a draft for the operator to review and send from the UI. Body defaults to plain text; set isPlainText to false only when passing a safe HTML fragment that should render as formatted email content.",
 	surfaces: ["agent-tool", "mcp-tool"],
 	scopes: ["mailbox.write"],
 	version: 1,
 	inputSchema: Input,
 	async run(ctx, input) {
-		// Agent surface forces plain-text + AI safety verify — matches today's
-		// hardcoded `isPlainText: true, runVerifyDraft: true` in
-		// `createEmailTools.draft_reply`.
-		const isPlainText = ctx.triggeredBy === "agent-tool" ? true : input.isPlainText;
 		const runVerifyDraft =
-			ctx.triggeredBy === "agent-tool" ? true : input.runVerifyDraft;
+			ctx.triggeredBy === "agent-tool" && input.isPlainText
+				? true
+				: input.runVerifyDraft;
 		return toolDraftReply(ctx.env, ctx.mailboxId, {
 				...input,
-				isPlainText,
+				isPlainText: input.isPlainText,
 				runVerifyDraft,
 				chatFiles: ctx.chatFiles,
 			});
